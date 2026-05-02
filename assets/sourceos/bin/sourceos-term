@@ -31,11 +31,21 @@ EVENT_SCHEMA = "sourceos.terminal.event.v0"
 RECEIPT_SCHEMA = "sourceos.terminal.receipt.v0"
 
 
+def env(name: str, fallback: str = "") -> str:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return fallback
+    return value
+
+
 def invoked_name() -> str:
     return Path(sys.argv[0]).name or "turtle-term"
 
 
 def product_name() -> str:
+    explicit = env("SOURCEOS_TERMINAL_CLI")
+    if explicit in {"turtle-term", "sourceos-term"}:
+        return explicit
     name = invoked_name()
     if name == "sourceos-term":
         return "sourceos-term"
@@ -54,13 +64,6 @@ def utc_now() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
-
-
-def env(name: str, fallback: str = "") -> str:
-    value = os.environ.get(name)
-    if value is None or value == "":
-        return fallback
-    return value
 
 
 def xdg_runtime_dir() -> Path:
