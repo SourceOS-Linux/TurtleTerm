@@ -1,0 +1,42 @@
+name: Test Homebrew Formula
+
+on:
+  pull_request:
+    paths:
+      - 'Formula/**'
+      - '.github/workflows/test-formula.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'Formula/**'
+      - '.github/workflows/test-formula.yml'
+  workflow_dispatch:
+
+jobs:
+  test-formula:
+    name: Test formula on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - ubuntu-24.04
+
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@v4
+
+      - name: Set up Homebrew on Linux
+        if: runner.os == 'Linux'
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Audit formula
+        run: brew audit --formula --strict Formula/sourceos-wezterm.rb || true
+
+      - name: Install formula from HEAD
+        run: brew install --HEAD Formula/sourceos-wezterm.rb
+
+      - name: Test formula
+        run: brew test sourceos-wezterm
