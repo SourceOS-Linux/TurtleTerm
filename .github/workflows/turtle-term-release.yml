@@ -1,0 +1,90 @@
+name: TurtleTerm Release Artifacts
+
+on:
+  push:
+    tags:
+      - 'turtle-term-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'TurtleTerm version label, for example turtle-term-v0.1.0-dev'
+        required: false
+        default: 'turtle-term-dev'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build TurtleTerm on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: macos-arm64
+          - os: ubuntu-24.04
+            target: linux-x86_64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            python3 \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libssl-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            zlib1g-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config python@3.12 || true
+
+      - name: Build TurtleTerm binaries
+        run: |
+          cargo build --release --locked -p wezterm
+          cargo build --release --locked -p wezterm-gui
+          cargo build --release --locked -p wezterm-mux-server
+
+      - name: Run TurtleTerm smoke test
+        run: python3 assets/sourceos/tests/test_sourceos_term_smoke.py
+
+      - name: Package TurtleTerm
+        shell: bash
+        run: |
+          chmod +x packaging/scripts/package-turtle-term.sh
+          version="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
+          if [ -z "$version" ]; then version="turtle-term-dev"; fi
+          packaging/scripts/package-turtle-term.sh "$version" "${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: turtle-term-${{ matrix.target }}
+          path: |
+            dist/turtle-term-*.tar.gz
+            dist/turtle-term-*.tar.gz.sha256
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/turtle-term-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/turtle-term-*.tar.gz
+            dist/turtle-term-*.tar.gz.sha256
