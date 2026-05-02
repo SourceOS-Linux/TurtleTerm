@@ -9,6 +9,7 @@ on:
       - 'packaging/homebrew/Formula/turtle-term.rb'
       - 'packaging/homebrew/README.md'
       - 'packaging/homebrew/.github/workflows/test-formula.yml'
+      - 'packaging/homebrew/.github/workflows/bottle-formula.yml'
       - '.github/workflows/turtle-term-sync-homebrew-tap.yml'
 
 permissions:
@@ -51,6 +52,7 @@ jobs:
           cp packaging/homebrew/Formula/turtle-term.rb homebrew-tap/Formula/turtle-term.rb
           cp packaging/homebrew/README.md homebrew-tap/README.md
           cp packaging/homebrew/.github/workflows/test-formula.yml homebrew-tap/.github/workflows/test-formula.yml
+          cp packaging/homebrew/.github/workflows/bottle-formula.yml homebrew-tap/.github/workflows/bottle-formula.yml
 
       - name: Commit and push if changed
         if: steps.token-check.outputs.configured == 'true'
@@ -58,7 +60,7 @@ jobs:
         run: |
           git config user.name "turtle-term-release-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add Formula/turtle-term.rb README.md .github/workflows/test-formula.yml
+          git add Formula/turtle-term.rb README.md .github/workflows/test-formula.yml .github/workflows/bottle-formula.yml
           if git diff --cached --quiet; then
             echo "Homebrew tap already up to date."
           else
