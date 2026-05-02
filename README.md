@@ -1,40 +1,44 @@
-# Wez's Terminal
+# TurtleTerm
 
-<img height="128" alt="WezTerm Icon" src="https://raw.githubusercontent.com/wezterm/wezterm/main/assets/icon/wezterm-icon.svg" align="left"> *A GPU-accelerated cross-platform terminal emulator and multiplexer written by <a href="https://github.com/wez">@wez</a> and implemented in <a href="https://www.rust-lang.org/">Rust</a>*
+> They say the world was built on the back of a turtle. TurtleTerm is built on the back of WezTerm.
 
-User facing docs and guide at: https://wezterm.org/
+TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench built on the WezTerm engine.
 
-![Screenshot](docs/screenshots/two.png)
+WezTerm remains the credited upstream terminal emulator and multiplexer. TurtleTerm layers SourceOS session contracts, command receipts, policy-aware execution lanes, Matrix/AgentTerm integration, and macOS/Linux packaging on top of that engine.
 
-*Screenshot of wezterm on macOS, running vim*
+## Install
 
-## Installation
+Current local Homebrew formula install:
 
-https://wezterm.org/installation
+```bash
+brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
+```
 
-## Getting help
+Future public tap flow:
 
-This is a spare time project, so please bear with me.  There are a couple of channels for support:
+```bash
+brew tap SourceOS-Linux/tap
+brew install --HEAD turtle-term
+```
 
-* You can use the [GitHub issue tracker](https://github.com/wezterm/wezterm/issues) to see if someone else has a similar issue, or to file a new one.
-* Start or join a thread in our [GitHub Discussions](https://github.com/wezterm/wezterm/discussions); if you have general
-  questions or want to chat with other wezterm users, you're welcome here!
-* There is a [Matrix room via Element.io](https://app.element.io/#/room/#wezterm:matrix.org)
-  for (potentially!) real time discussions.
+## Commands
 
-The GitHub Discussions and Element/Gitter rooms are better suited for questions
-than bug reports, but don't be afraid to use whichever you are most comfortable
-using and we'll work it out.
+```bash
+turtle-term paths
+turtle-term run -- echo hello
+sourceos-term paths
+```
 
-## Supporting the Project
+`turtle-term` is the product command. `sourceos-term` remains as a compatibility command for SourceOS contract work.
 
-If you use and like WezTerm, please consider sponsoring it: your support helps
-to cover the fees required to maintain the project and to validate the time
-spent working on it!
+## SourceOS additions
 
-[Read more about sponsoring](https://wezterm.org/sponsor.html).
+SourceOS-specific docs, profiles, packaging, and sidecar-friendly wrappers live under:
 
-* [![Sponsor WezTerm](https://img.shields.io/github/sponsors/wez?label=Sponsor%20WezTerm&logo=github&style=for-the-badge)](https://github.com/sponsors/wez)
-* [Patreon](https://patreon.com/WezFurlong)
-* [Ko-Fi](https://ko-fi.com/wezfurlong)
-* [Liberapay](https://liberapay.com/wez)
+- `docs/sourceos/`
+- `assets/sourceos/`
+- `packaging/homebrew/`
+
+## License and attribution
+
+This fork preserves upstream WezTerm attribution and licensing. See `LICENSE.md` for the MIT license and bundled font license notes.
