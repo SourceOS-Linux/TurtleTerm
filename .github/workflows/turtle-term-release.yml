@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Build TurtleTerm on ${{ matrix.os }}
+    name: Build TurtleTerm ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,8 +24,12 @@ jobs:
         include:
           - os: macos-14
             target: macos-arm64
+          - os: macos-15-intel
+            target: macos-x86_64
           - os: ubuntu-24.04
             target: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
 
     steps:
       - name: Check out repository
