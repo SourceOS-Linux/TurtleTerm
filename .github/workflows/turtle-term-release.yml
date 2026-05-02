@@ -67,11 +67,23 @@ jobs:
 
       - name: Package TurtleTerm
         shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           chmod +x packaging/scripts/package-turtle-term.sh
-          version="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
-          if [ -z "$version" ]; then version="turtle-term-dev"; fi
+          if [[ "${GITHUB_REF:-}" == refs/tags/turtle-term-v* ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="${INPUT_VERSION:-turtle-term-dev}"
+          fi
           packaging/scripts/package-turtle-term.sh "$version" "${{ matrix.target }}"
+
+      - name: Verify packaged artifacts
+        shell: bash
+        run: |
+          ls -lah dist/
+          test -n "$(find dist -name 'turtle-term-*.tar.gz' -print -quit)"
+          test -n "$(find dist -name 'turtle-term-*.tar.gz.sha256' -print -quit)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
