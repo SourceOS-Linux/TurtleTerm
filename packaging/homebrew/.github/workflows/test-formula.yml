@@ -1,4 +1,4 @@
-name: Test Homebrew Formula
+name: Test TurtleTerm Homebrew Formula
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ on:
 
 jobs:
   test-formula:
-    name: Test formula on ${{ matrix.os }}
+    name: Test TurtleTerm formula on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -33,10 +33,10 @@ jobs:
         uses: Homebrew/actions/setup-homebrew@master
 
       - name: Audit formula
-        run: brew audit --formula --strict Formula/sourceos-wezterm.rb || true
+        run: brew audit --formula --strict Formula/turtle-term.rb || true
 
       - name: Install formula from HEAD
-        run: brew install --HEAD Formula/sourceos-wezterm.rb
+        run: brew install --HEAD Formula/turtle-term.rb
 
       - name: Test formula
-        run: brew test sourceos-wezterm
+        run: brew test turtle-term
