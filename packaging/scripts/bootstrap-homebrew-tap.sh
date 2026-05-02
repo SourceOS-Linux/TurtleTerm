@@ -26,9 +26,10 @@ mkdir -p "$tap_path/Formula" "$tap_path/.github/workflows"
 cp "$repo_root/packaging/homebrew/Formula/turtle-term.rb" "$tap_path/Formula/turtle-term.rb"
 cp "$repo_root/packaging/homebrew/README.md" "$tap_path/README.md"
 cp "$repo_root/packaging/homebrew/.github/workflows/test-formula.yml" "$tap_path/.github/workflows/test-formula.yml"
+cp "$repo_root/packaging/homebrew/.github/workflows/bottle-formula.yml" "$tap_path/.github/workflows/bottle-formula.yml"
 
 cd "$tap_path"
-git add Formula/turtle-term.rb README.md .github/workflows/test-formula.yml
+git add Formula/turtle-term.rb README.md .github/workflows/test-formula.yml .github/workflows/bottle-formula.yml
 if git diff --cached --quiet; then
   echo "tap already up to date: $tap_path"
 else
