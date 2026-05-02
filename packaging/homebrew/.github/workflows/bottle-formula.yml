@@ -1,0 +1,39 @@
+name: Bottle TurtleTerm Formula
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bottle:
+    name: Bottle TurtleTerm on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - ubuntu-24.04
+
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@v4
+
+      - name: Set up Homebrew on Linux
+        if: runner.os == 'Linux'
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Install for bottle build
+        run: brew install --build-bottle Formula/turtle-term.rb
+
+      - name: Build bottle
+        run: brew bottle --json --root-url "https://github.com/SourceOS-Linux/homebrew-tap/releases/download/turtle-term-bottles" turtle-term
+
+      - name: Upload bottle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: turtle-term-bottle-${{ matrix.os }}
+          path: |
+            turtle-term--*.bottle*.tar.gz
+            turtle-term--*.bottle*.json
+            *.bottle*.tar.gz
+            *.bottle*.json
