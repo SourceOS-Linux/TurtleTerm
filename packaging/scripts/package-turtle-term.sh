@@ -7,6 +7,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out_dir="$repo_root/dist"
 stage="$out_dir/turtle-term-$version-$target"
 archive="$out_dir/turtle-term-$version-$target.tar.gz"
+manifest="$archive.manifest.json"
 
 rm -rf "$stage"
 mkdir -p "$stage/bin" "$stage/etc/turtle-term" "$stage/share/turtle-term/sourceos"
@@ -52,8 +53,13 @@ cp -R bin etc share "$HOME/.local/"
 Then ensure `$HOME/.local/bin` is on PATH.
 EOF
 
-rm -f "$archive"
+rm -f "$archive" "$archive.sha256" "$manifest"
 tar -C "$out_dir" -czf "$archive" "$(basename "$stage")"
 sha256sum "$archive" > "$archive.sha256" 2>/dev/null || shasum -a 256 "$archive" > "$archive.sha256"
+python3 "$repo_root/packaging/scripts/write-turtle-term-manifest.py" \
+  --version "$version" \
+  --target "$target" \
+  --archive "$archive" \
+  --out "$manifest"
 
 echo "$archive"
