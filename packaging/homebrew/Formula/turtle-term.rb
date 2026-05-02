@@ -36,6 +36,9 @@ class TurtleTerm < Formula
     bin.install "target/release/wezterm"
     bin.install "target/release/wezterm-gui"
     bin.install "target/release/wezterm-mux-server"
+
+    chmod 0755, "assets/sourceos/bin/sourceos-term"
+    chmod 0755, "assets/sourceos/bin/turtle-term"
     bin.install "assets/sourceos/bin/sourceos-term"
     bin.install "assets/sourceos/bin/turtle-term"
 
