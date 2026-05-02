@@ -1,0 +1,35 @@
+name: TurtleTerm Script Checks
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/scripts/**'
+      - '.github/workflows/turtle-term-scripts.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'packaging/scripts/**'
+      - '.github/workflows/turtle-term-scripts.yml'
+  workflow_dispatch:
+
+jobs:
+  shell-syntax:
+    name: Shell syntax checks
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check shell script syntax
+        run: |
+          bash -n packaging/scripts/install-turtle-term.sh
+          bash -n packaging/scripts/package-turtle-term.sh
+          bash -n packaging/scripts/bootstrap-homebrew-tap.sh
+
+      - name: Check Python script syntax
+        run: |
+          python3 -m py_compile packaging/scripts/render-stable-homebrew-formula.py
+          python3 -m py_compile assets/sourceos/bin/sourceos-term
+          python3 -m py_compile assets/sourceos/bin/turtle-term
