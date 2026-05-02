@@ -1,0 +1,49 @@
+name: TurtleTerm Homebrew Validation
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/homebrew/**'
+      - 'assets/sourceos/**'
+      - '.github/workflows/turtle-term-homebrew.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'packaging/homebrew/**'
+      - 'assets/sourceos/**'
+      - '.github/workflows/turtle-term-homebrew.yml'
+  workflow_dispatch:
+
+jobs:
+  validate-homebrew-formula:
+    name: Validate Homebrew formula on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Homebrew on Linux
+        if: runner.os == 'Linux'
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Audit TurtleTerm formula
+        run: brew audit --formula --strict packaging/homebrew/Formula/turtle-term.rb || true
+
+      - name: Install TurtleTerm formula from HEAD
+        run: brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
+
+      - name: Test TurtleTerm formula
+        run: brew test turtle-term
+
+      - name: Smoke test TurtleTerm CLI
+        run: |
+          turtle-term paths
+          turtle-term run -- echo turtle-term-homebrew-ok
