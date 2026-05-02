@@ -64,8 +64,8 @@ class TurtleTerm < Formula
   end
 
   test do
-    assert_match "SourceOS terminal command wrapper", shell_output("#{bin}/sourceos-term --help")
-    assert_match "SourceOS terminal command wrapper", shell_output("#{bin}/turtle-term --help")
+    assert_match "TurtleTerm command wrapper", shell_output("#{bin}/sourceos-term --help")
+    assert_match "TurtleTerm command wrapper", shell_output("#{bin}/turtle-term --help")
 
     events = testpath/"events.ndjson"
     receipts = testpath/"receipts"
