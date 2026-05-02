@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Smoke test for SourceOS terminal command wrapper v0."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+WRAPPER = REPO_ROOT / "assets" / "sourceos" / "bin" / "sourceos-term"
+
+
+def read_ndjson(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        events = tmp_path / "events.ndjson"
+        receipts = tmp_path / "receipts"
+
+        env = dict(os.environ)
+        env.update(
+            {
+                "SOURCEOS_TERMINAL_SESSION_ID": "sourceos-term-test",
+                "SOURCEOS_WORKSPACE": "sourceos-test",
+                "SOURCEOS_TERMINAL_EVENTS": str(events),
+                "SOURCEOS_TERMINAL_RECEIPTS": str(receipts),
+                "SOURCEOS_ACTOR_ID": "test:smoke",
+                "SOURCEOS_POLICY_BUNDLE_ID": "policy:test",
+                "SOURCEOS_EXECUTION_DOMAIN": "host",
+            }
+        )
+
+        result = subprocess.run(
+            [sys.executable, str(WRAPPER), "run", "--", sys.executable, "-c", "print('sourceos-smoke')"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "sourceos-smoke" in result.stdout
+        assert events.exists(), "event stream missing"
+
+        event_rows = read_ndjson(events)
+        schemas = [row.get("schema") for row in event_rows]
+        event_types = [row.get("event_type") for row in event_rows if row.get("schema") == "sourceos.terminal.event.v0"]
+
+        assert "sourceos.terminal.session.v0" in schemas
+        assert "command.started" in event_types
+        assert "command.completed" in event_types
+
+        completed = [row for row in event_rows if row.get("event_type") == "command.completed"][-1]
+        receipt_path = Path(completed["receipt_path"])
+        assert receipt_path.exists(), f"receipt missing: {receipt_path}"
+
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        assert receipt["schema"] == "sourceos.terminal.receipt.v0"
+        assert receipt["session_id"] == "sourceos-term-test"
+        assert receipt["workspace_id"] if "workspace_id" in receipt else True
+        assert receipt["exit_status"] == 0
+        assert receipt["command_argv"][-2:] == ["-c", "print('sourceos-smoke')"]
+        assert receipt["stdout_digest"].startswith("sha256:")
+        assert receipt["stderr_digest"].startswith("sha256:")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
