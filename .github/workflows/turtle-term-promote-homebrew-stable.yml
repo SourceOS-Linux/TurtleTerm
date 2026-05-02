@@ -1,0 +1,97 @@
+name: Promote TurtleTerm Stable Homebrew Formula
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, for example turtle-term-v0.1.0'
+        required: true
+      source_sha256:
+        description: 'Optional SHA-256 for GitHub source archive. Leave blank to compute.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  promote-stable-formula:
+    name: Render and sync stable TurtleTerm formula
+    runs-on: ubuntu-24.04
+    env:
+      TURTLE_TERM_TAP_TOKEN: ${{ secrets.TURTLE_TERM_TAP_TOKEN }}
+      INPUT_TAG: ${{ github.event.inputs.tag }}
+      INPUT_SOURCE_SHA256: ${{ github.event.inputs.source_sha256 }}
+
+    steps:
+      - name: Check token availability
+        id: token-check
+        run: |
+          if [ -z "${TURTLE_TERM_TAP_TOKEN:-}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "TURTLE_TERM_TAP_TOKEN is not configured; skipping stable formula promotion."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out TurtleTerm repository
+        if: steps.token-check.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - name: Validate release tag
+        if: steps.token-check.outputs.configured == 'true'
+        run: |
+          case "$INPUT_TAG" in
+            turtle-term-v*) ;;
+            *) echo "tag must start with turtle-term-v" >&2; exit 2 ;;
+          esac
+          git fetch --tags origin "$INPUT_TAG"
+          git rev-parse "$INPUT_TAG" >/dev/null
+
+      - name: Compute source archive SHA-256
+        if: steps.token-check.outputs.configured == 'true'
+        id: sha
+        run: |
+          if [ -n "$INPUT_SOURCE_SHA256" ]; then
+            echo "source_sha256=$INPUT_SOURCE_SHA256" >> "$GITHUB_OUTPUT"
+          else
+            url="https://github.com/SourceOS-Linux/wezterm/archive/refs/tags/$INPUT_TAG.tar.gz"
+            curl -L "$url" -o source.tar.gz
+            digest="$(sha256sum source.tar.gz | awk '{print $1}')"
+            echo "source_sha256=$digest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Render stable Homebrew formula
+        if: steps.token-check.outputs.configured == 'true'
+        run: |
+          python3 packaging/scripts/render-stable-homebrew-formula.py "$INPUT_TAG" "${{ steps.sha.outputs.source_sha256 }}"
+
+      - name: Check out Homebrew tap
+        if: steps.token-check.outputs.configured == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: SourceOS-Linux/homebrew-tap
+          token: ${{ secrets.TURTLE_TERM_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Sync stable formula to tap
+        if: steps.token-check.outputs.configured == 'true'
+        run: |
+          mkdir -p homebrew-tap/Formula homebrew-tap/.github/workflows
+          cp packaging/homebrew/Formula/turtle-term.rb homebrew-tap/Formula/turtle-term.rb
+          cp packaging/homebrew/README.md homebrew-tap/README.md
+          cp packaging/homebrew/.github/workflows/test-formula.yml homebrew-tap/.github/workflows/test-formula.yml
+
+      - name: Commit and push stable formula
+        if: steps.token-check.outputs.configured == 'true'
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "turtle-term-release-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add Formula/turtle-term.rb README.md .github/workflows/test-formula.yml
+          if git diff --cached --quiet; then
+            echo "Homebrew tap already up to date."
+          else
+            git commit -m "Promote TurtleTerm ${INPUT_TAG} formula"
+            git push
+          fi
