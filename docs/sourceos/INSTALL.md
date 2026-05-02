@@ -1,6 +1,16 @@
 # TurtleTerm Install Guide
 
-## Recommended path: Homebrew
+## Fast path: tapless Homebrew install
+
+Before the public tap exists, users can install directly from the raw formula in this repository:
+
+```bash
+brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/wezterm/main/packaging/homebrew/Formula/turtle-term.rb
+```
+
+This is the current easiest no-checkout install path for macOS and Linux.
+
+## Public tap path
 
 After the public tap exists:
 
@@ -8,13 +18,13 @@ After the public tap exists:
 brew install SourceOS-Linux/tap/turtle-term
 ```
 
-For the current HEAD formula:
+For the current HEAD formula through the tap:
 
 ```bash
 brew install --HEAD SourceOS-Linux/tap/turtle-term
 ```
 
-From a local checkout before the tap exists:
+From a local checkout:
 
 ```bash
 brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
