@@ -88,6 +88,7 @@ jobs:
           ls -lah dist/
           test -n "$(find dist -name 'turtle-term-*.tar.gz' -print -quit)"
           test -n "$(find dist -name 'turtle-term-*.tar.gz.sha256' -print -quit)"
+          test -n "$(find dist -name 'turtle-term-*.tar.gz.manifest.json' -print -quit)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -96,6 +97,7 @@ jobs:
           path: |
             dist/turtle-term-*.tar.gz
             dist/turtle-term-*.tar.gz.sha256
+            dist/turtle-term-*.tar.gz.manifest.json
 
       - name: Publish GitHub release assets
         if: startsWith(github.ref, 'refs/tags/turtle-term-v')
@@ -104,3 +106,4 @@ jobs:
           files: |
             dist/turtle-term-*.tar.gz
             dist/turtle-term-*.tar.gz.sha256
+            dist/turtle-term-*.tar.gz.manifest.json
