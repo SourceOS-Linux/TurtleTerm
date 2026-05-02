@@ -18,13 +18,26 @@ jobs:
   sync-tap:
     name: Sync formula to SourceOS-Linux/homebrew-tap
     runs-on: ubuntu-24.04
-    if: ${{ secrets.TURTLE_TERM_TAP_TOKEN != '' }}
+    env:
+      TURTLE_TERM_TAP_TOKEN: ${{ secrets.TURTLE_TERM_TAP_TOKEN }}
 
     steps:
+      - name: Check token availability
+        id: token-check
+        run: |
+          if [ -z "${TURTLE_TERM_TAP_TOKEN:-}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "TURTLE_TERM_TAP_TOKEN is not configured; skipping tap sync."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check out TurtleTerm repository
+        if: steps.token-check.outputs.configured == 'true'
         uses: actions/checkout@v4
 
       - name: Check out Homebrew tap
+        if: steps.token-check.outputs.configured == 'true'
         uses: actions/checkout@v4
         with:
           repository: SourceOS-Linux/homebrew-tap
@@ -32,6 +45,7 @@ jobs:
           path: homebrew-tap
 
       - name: Copy formula and tap files
+        if: steps.token-check.outputs.configured == 'true'
         run: |
           mkdir -p homebrew-tap/Formula homebrew-tap/.github/workflows
           cp packaging/homebrew/Formula/turtle-term.rb homebrew-tap/Formula/turtle-term.rb
@@ -39,6 +53,7 @@ jobs:
           cp packaging/homebrew/.github/workflows/test-formula.yml homebrew-tap/.github/workflows/test-formula.yml
 
       - name: Commit and push if changed
+        if: steps.token-check.outputs.configured == 'true'
         working-directory: homebrew-tap
         run: |
           git config user.name "turtle-term-release-bot"
