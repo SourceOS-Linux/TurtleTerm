@@ -8,18 +8,31 @@ WezTerm remains the credited upstream terminal emulator and multiplexer. TurtleT
 
 ## Install
 
-Current local Homebrew formula install:
+Preferred public Homebrew flow after the tap is published:
+
+```bash
+brew install SourceOS-Linux/tap/turtle-term
+```
+
+Current HEAD formula flow:
+
+```bash
+brew install --HEAD SourceOS-Linux/tap/turtle-term
+```
+
+Local checkout flow before the tap is published:
 
 ```bash
 brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
 ```
 
-Future public tap flow:
+Direct release artifact installer after the first TurtleTerm release exists:
 
 ```bash
-brew tap SourceOS-Linux/tap
-brew install --HEAD turtle-term
+curl -fsSL https://raw.githubusercontent.com/SourceOS-Linux/wezterm/main/packaging/scripts/install-turtle-term.sh | bash
 ```
+
+See `docs/sourceos/INSTALL.md` for full install, profile activation, and validation instructions.
 
 ## Commands
 
@@ -38,6 +51,7 @@ SourceOS-specific docs, profiles, packaging, and sidecar-friendly wrappers live 
 - `docs/sourceos/`
 - `assets/sourceos/`
 - `packaging/homebrew/`
+- `packaging/scripts/`
 
 ## License and attribution
 
