@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""SourceOS terminal command wrapper v0.
+
+Runs a command, mirrors stdout/stderr to the active terminal, and emits
+SourceOS terminal command lifecycle events plus a durable command receipt.
+
+This is intentionally sidecar-friendly and non-invasive: it does not require
+changes to WezTerm internals. It gives SourceOS agents, Matrix/AgentTerm, and
+workstation-contract tooling a structured event stream without granting ambient
+shell authority.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import hashlib
+import json
+import os
+import selectors
+import socket
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Iterable
+
+
+SESSION_SCHEMA = "sourceos.terminal.session.v0"
+EVENT_SCHEMA = "sourceos.terminal.event.v0"
+RECEIPT_SCHEMA = "sourceos.terminal.receipt.v0"
+
+
+def utc_now() -> str:
+    return _dt.datetime.now(tz=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def env(name: str, fallback: str = "") -> str:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return fallback
+    return value
+
+
+def xdg_runtime_dir() -> Path:
+    return Path(env("XDG_RUNTIME_DIR", f"/tmp/sourceos-runtime-{os.getuid()}"))
+
+
+def xdg_state_home() -> Path:
+    return Path(env("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+
+
+def events_path() -> Path:
+    return Path(env("SOURCEOS_TERMINAL_EVENTS", str(xdg_runtime_dir() / "sourceos" / "terminal" / "events.ndjson")))
+
+
+def receipts_dir(session_id: str) -> Path:
+    base = Path(env("SOURCEOS_TERMINAL_RECEIPTS", str(xdg_state_home() / "sourceos" / "terminal" / "receipts")))
+    return base / session_id
+
+
+def append_event(event: dict[str, Any]) -> None:
+    path = events_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, sort_keys=True, separators=(",", ":")))
+        handle.write("\n")
+
+
+def write_receipt(session_id: str, event_id: str, receipt: dict[str, Any]) -> Path:
+    directory = receipts_dir(session_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{event_id}.json"
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+    return path
+
+
+def run_git(args: Iterable[str]) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=os.getcwd(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def detect_repo_root() -> str:
+    return run_git(["rev-parse", "--show-toplevel"])
+
+
+def detect_git_branch() -> str:
+    branch = run_git(["branch", "--show-current"])
+    if branch:
+        return branch
+    return run_git(["rev-parse", "--short", "HEAD"])
+
+
+def detect_execution_domain() -> str:
+    explicit = env("SOURCEOS_EXECUTION_DOMAIN")
+    if explicit:
+        return explicit
+    if env("container") or Path("/.dockerenv").exists():
+        return "container"
+    if env("DISTROBOX_ENTER_PATH") or env("DISTROBOX_HOST_HOME"):
+        return "distrobox"
+    if env("TOOLBOX_PATH") or env("TOOLBOX_CONTAINER"):
+        return "toolbox"
+    if env("SSH_CONNECTION") or env("SSH_CLIENT"):
+        return "ssh"
+    return "host"
+
+
+def build_context(command: list[str]) -> dict[str, Any]:
+    session_id = env("SOURCEOS_TERMINAL_SESSION_ID", f"sourceos-term-{uuid.uuid4().hex}")
+    workspace_id = env("SOURCEOS_WORKSPACE", "sourceos")
+    actor_id = env("SOURCEOS_ACTOR_ID", f"human:{env('USER', 'local-user')}")
+    policy_bundle_id = env("SOURCEOS_POLICY_BUNDLE_ID", "unbound")
+    cwd = os.getcwd()
+
+    return {
+        "session_id": session_id,
+        "workspace_id": workspace_id,
+        "actor_id": actor_id,
+        "policy_bundle_id": policy_bundle_id,
+        "execution_domain": detect_execution_domain(),
+        "cwd": cwd,
+        "repo_root": detect_repo_root(),
+        "git_branch": detect_git_branch(),
+        "host": socket.gethostname(),
+        "user": env("USER", "local-user"),
+        "container_id": env("container", "") or None,
+        "window_id": env("WEZTERM_WINDOW_ID", "unknown"),
+        "tab_id": env("WEZTERM_TAB_ID", "unknown"),
+        "pane_id": env("WEZTERM_PANE", env("WEZTERM_PANE_ID", "unknown")),
+        "command": " ".join(command),
+    }
+
+
+def emit_session(context: dict[str, Any], created_at: str) -> None:
+    event = {
+        "schema": SESSION_SCHEMA,
+        "session_id": context["session_id"],
+        "workspace_id": context["workspace_id"],
+        "created_at": created_at,
+        "actor_id": context["actor_id"],
+        "frontend": env("SOURCEOS_TERMINAL_FRONTEND", "wezterm"),
+        "frontend_version": env("SOURCEOS_TERMINAL_FRONTEND_VERSION", "unknown"),
+        "execution_domain": context["execution_domain"],
+        "policy_bundle_id": context["policy_bundle_id"],
+    }
+    append_event(event)
+
+
+def event_base(context: dict[str, Any], event_type: str, event_id: str) -> dict[str, Any]:
+    return {
+        "schema": EVENT_SCHEMA,
+        "event_type": event_type,
+        "event_id": event_id,
+        "session_id": context["session_id"],
+        "workspace_id": context["workspace_id"],
+        "window_id": context["window_id"],
+        "tab_id": context["tab_id"],
+        "pane_id": context["pane_id"],
+        "actor_id": context["actor_id"],
+        "policy_bundle_id": context["policy_bundle_id"],
+        "execution_domain": context["execution_domain"],
+        "cwd": context["cwd"],
+        "repo_root": context["repo_root"],
+        "git_branch": context["git_branch"],
+        "host": context["host"],
+        "user": context["user"],
+        "container_id": context["container_id"],
+        "command": context["command"],
+    }
+
+
+def stream_process(command: list[str], child_env: dict[str, str]) -> tuple[int, str, str]:
+    stdout_hash = hashlib.sha256()
+    stderr_hash = hashlib.sha256()
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=sys.stdin,
+        env=child_env,
+        bufsize=0,
+    )
+
+    assert process.stdout is not None
+    assert process.stderr is not None
+
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+
+    while selector.get_map():
+        for key, _ in selector.select(timeout=0.1):
+            stream = key.fileobj
+            label = key.data
+            chunk = stream.read1(8192) if hasattr(stream, "read1") else stream.read(8192)
+            if not chunk:
+                selector.unregister(stream)
+                continue
+            if label == "stdout":
+                stdout_hash.update(chunk)
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            else:
+                stderr_hash.update(chunk)
+                sys.stderr.buffer.write(chunk)
+                sys.stderr.buffer.flush()
+
+        if process.poll() is not None and not selector.get_map():
+            break
+
+    returncode = process.wait()
+    return returncode, f"sha256:{stdout_hash.hexdigest()}", f"sha256:{stderr_hash.hexdigest()}"
+
+
+def run_command(command: list[str]) -> int:
+    if not command:
+        print("sourceos-term: no command provided", file=sys.stderr)
+        return 2
+
+    started_at = utc_now()
+    context = build_context(command)
+    session_created = env("SOURCEOS_TERMINAL_SESSION_CREATED_AT", started_at)
+    event_started_id = new_id("evt")
+    event_completed_id = new_id("evt")
+
+    emit_session(context, session_created)
+
+    started = event_base(context, "command.started", event_started_id)
+    started["started_at"] = started_at
+    append_event(started)
+
+    child_env = dict(os.environ)
+    child_env["SOURCEOS_TERMINAL_SESSION_ID"] = context["session_id"]
+    child_env["SOURCEOS_WORKSPACE"] = context["workspace_id"]
+    child_env["SOURCEOS_EXECUTION_DOMAIN"] = context["execution_domain"]
+
+    try:
+        exit_status, stdout_digest, stderr_digest = stream_process(command, child_env)
+    except FileNotFoundError:
+        exit_status = 127
+        stdout_digest = "sha256:" + hashlib.sha256(b"").hexdigest()
+        stderr_digest = "sha256:" + hashlib.sha256(f"command not found: {command[0]}\n".encode()).hexdigest()
+        print(f"sourceos-term: command not found: {command[0]}", file=sys.stderr)
+    except KeyboardInterrupt:
+        exit_status = 130
+        stdout_digest = "sha256:unknown"
+        stderr_digest = "sha256:unknown"
+
+    completed_at = utc_now()
+    completed = event_base(context, "command.completed", event_completed_id)
+    completed.update(
+        {
+            "exit_status": exit_status,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "stdout_digest": stdout_digest,
+            "stderr_digest": stderr_digest,
+            "artifact_paths": [],
+        }
+    )
+
+    receipt = {
+        "schema": RECEIPT_SCHEMA,
+        "receipt_id": new_id("receipt"),
+        "session_id": context["session_id"],
+        "event_id": event_completed_id,
+        "actor_id": context["actor_id"],
+        "requested_by": env("SOURCEOS_REQUESTED_BY", context["actor_id"]),
+        "approved_by": env("SOURCEOS_APPROVED_BY", context["policy_bundle_id"]),
+        "policy_bundle_id": context["policy_bundle_id"],
+        "execution_domain": context["execution_domain"],
+        "cwd": context["cwd"],
+        "repo_root": context["repo_root"],
+        "git_branch": context["git_branch"],
+        "host": context["host"],
+        "user": context["user"],
+        "container_id": context["container_id"],
+        "command": context["command"],
+        "exit_status": exit_status,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "stdout_digest": stdout_digest,
+        "stderr_digest": stderr_digest,
+        "artifacts": [],
+        "replay": {
+            "kind": "terminal-event-pointer",
+            "uri": f"sourceos-terminal://{context['session_id']}/events/{event_completed_id}",
+        },
+    }
+
+    receipt_path = write_receipt(context["session_id"], event_completed_id, receipt)
+    completed["receipt_path"] = str(receipt_path)
+    append_event(completed)
+
+    return exit_status
+
+
+def print_paths() -> int:
+    session_id = env("SOURCEOS_TERMINAL_SESSION_ID", "<session-id>")
+    print(json.dumps({
+        "events": str(events_path()),
+        "receipts": str(receipts_dir(session_id)),
+    }, indent=2, sort_keys=True))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="SourceOS terminal command wrapper v0")
+    subparsers = parser.add_subparsers(dest="command_name")
+
+    run_parser = subparsers.add_parser("run", help="run a command and emit SourceOS terminal events")
+    run_parser.add_argument("cmd", nargs=argparse.REMAINDER)
+
+    subparsers.add_parser("paths", help="print event and receipt paths")
+
+    args = parser.parse_args(argv)
+
+    if args.command_name == "paths":
+        return print_paths()
+
+    if args.command_name == "run":
+        command = args.cmd
+        if command and command[0] == "--":
+            command = command[1:]
+        return run_command(command)
+
+    # Convenience: `sourceos-term -- make test` and `sourceos-term make test`.
+    command = argv[1:] if argv[:1] == ["--"] else argv
+    return run_command(command)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
