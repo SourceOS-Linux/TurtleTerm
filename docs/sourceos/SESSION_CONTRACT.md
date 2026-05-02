@@ -67,6 +67,7 @@ Initial values:
 | Value | Meaning |
 | --- | --- |
 | `host` | Runs directly on the user's host system. |
+| `container` | Runs inside a generic container that has not been classified more specifically. |
 | `podman` | Runs inside a Podman container. |
 | `distrobox` | Runs inside Distrobox. |
 | `toolbox` | Runs inside Toolbox. |
@@ -75,7 +76,7 @@ Initial values:
 | `layered-vm-container` | Reserved for future layered VM/container execution. |
 | `unknown` | Domain could not be determined. |
 
-Agents must treat `unknown` as higher risk than an explicitly isolated domain.
+Agents must treat `unknown` as higher risk than an explicitly isolated domain. Agents must also treat `host` as more sensitive than an isolated container, Distrobox/Toolbox, SSH remote, or future microVM lane.
 
 ## Command lifecycle events
 
@@ -101,7 +102,9 @@ A command event describes a command observed or executed inside a terminal sessi
   "git_branch": "main",
   "host": "sourceos-laptop",
   "user": "user",
+  "container_id": null,
   "command": "cargo test",
+  "command_argv": ["cargo", "test"],
   "started_at": "2026-05-02T00:00:00Z"
 }
 ```
@@ -126,7 +129,9 @@ A command event describes a command observed or executed inside a terminal sessi
   "git_branch": "main",
   "host": "sourceos-laptop",
   "user": "user",
+  "container_id": null,
   "command": "cargo test",
+  "command_argv": ["cargo", "test"],
   "exit_status": 0,
   "started_at": "2026-05-02T00:00:00Z",
   "completed_at": "2026-05-02T00:00:20Z",
@@ -148,6 +153,7 @@ Minimum receipt shape:
   "schema": "sourceos.terminal.receipt.v0",
   "receipt_id": "receipt_01J00000000000000000000000",
   "session_id": "sourceos-term-01J00000000000000000000000",
+  "workspace_id": "sourceos-workspace-default",
   "event_id": "evt_01J00000000000000000000001",
   "actor_id": "human:local-user",
   "requested_by": "human:local-user",
@@ -157,7 +163,11 @@ Minimum receipt shape:
   "cwd": "/home/user/dev/sourceos",
   "repo_root": "/home/user/dev/sourceos",
   "git_branch": "main",
+  "host": "sourceos-laptop",
+  "user": "user",
+  "container_id": null,
   "command": "cargo test",
+  "command_argv": ["cargo", "test"],
   "exit_status": 0,
   "started_at": "2026-05-02T00:00:00Z",
   "completed_at": "2026-05-02T00:00:20Z",
@@ -165,7 +175,7 @@ Minimum receipt shape:
   "stderr_digest": "sha256:unknown",
   "artifacts": [],
   "replay": {
-    "kind": "terminal-scrollback-pointer",
+    "kind": "terminal-event-pointer",
     "uri": "sourceos-terminal://sourceos-term-01J00000000000000000000000/events/evt_01J00000000000000000000001"
   }
 }
