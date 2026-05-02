@@ -1,0 +1,52 @@
+name: Sync TurtleTerm Homebrew Tap
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packaging/homebrew/Formula/turtle-term.rb'
+      - 'packaging/homebrew/README.md'
+      - 'packaging/homebrew/.github/workflows/test-formula.yml'
+      - '.github/workflows/turtle-term-sync-homebrew-tap.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sync-tap:
+    name: Sync formula to SourceOS-Linux/homebrew-tap
+    runs-on: ubuntu-24.04
+    if: ${{ secrets.TURTLE_TERM_TAP_TOKEN != '' }}
+
+    steps:
+      - name: Check out TurtleTerm repository
+        uses: actions/checkout@v4
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: SourceOS-Linux/homebrew-tap
+          token: ${{ secrets.TURTLE_TERM_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Copy formula and tap files
+        run: |
+          mkdir -p homebrew-tap/Formula homebrew-tap/.github/workflows
+          cp packaging/homebrew/Formula/turtle-term.rb homebrew-tap/Formula/turtle-term.rb
+          cp packaging/homebrew/README.md homebrew-tap/README.md
+          cp packaging/homebrew/.github/workflows/test-formula.yml homebrew-tap/.github/workflows/test-formula.yml
+
+      - name: Commit and push if changed
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "turtle-term-release-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add Formula/turtle-term.rb README.md .github/workflows/test-formula.yml
+          if git diff --cached --quiet; then
+            echo "Homebrew tap already up to date."
+          else
+            git commit -m "Sync TurtleTerm Homebrew formula"
+            git push
+          fi
