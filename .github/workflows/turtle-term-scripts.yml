@@ -3,19 +3,27 @@ name: TurtleTerm Script Checks
 on:
   pull_request:
     paths:
+      - 'assets/sourceos/**'
+      - 'docs/sourceos/**'
+      - 'packaging/homebrew/**'
       - 'packaging/scripts/**'
+      - 'README.md'
       - '.github/workflows/turtle-term-scripts.yml'
   push:
     branches:
       - main
     paths:
+      - 'assets/sourceos/**'
+      - 'docs/sourceos/**'
+      - 'packaging/homebrew/**'
       - 'packaging/scripts/**'
+      - 'README.md'
       - '.github/workflows/turtle-term-scripts.yml'
   workflow_dispatch:
 
 jobs:
-  shell-syntax:
-    name: Shell syntax checks
+  script-and-brand-checks:
+    name: Script, smoke, and brand checks
     runs-on: ubuntu-24.04
 
     steps:
@@ -33,3 +41,11 @@ jobs:
           python3 -m py_compile packaging/scripts/render-stable-homebrew-formula.py
           python3 -m py_compile assets/sourceos/bin/sourceos-term
           python3 -m py_compile assets/sourceos/bin/turtle-term
+          python3 -m py_compile assets/sourceos/tests/test_sourceos_term_smoke.py
+          python3 -m py_compile assets/sourceos/tests/test_turtle_term_branding.py
+
+      - name: Run TurtleTerm smoke tests
+        run: python3 assets/sourceos/tests/test_sourceos_term_smoke.py
+
+      - name: Run TurtleTerm branding guard
+        run: python3 assets/sourceos/tests/test_turtle_term_branding.py
