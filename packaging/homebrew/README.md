@@ -1,79 +1,61 @@
-# SourceOS WezTerm Homebrew Packaging
+# TurtleTerm Homebrew Packaging
 
-This directory stages the Homebrew packaging lane for SourceOS Terminal Workbench.
+This directory stages Homebrew packaging for TurtleTerm, the SourceOS policy-aware agent terminal workbench built on the WezTerm engine.
 
-The final tap should live in:
+The final tap should live in `SourceOS-Linux/homebrew-tap`. Until that tap exists, developers can test the formula directly from this repository.
 
-```text
-SourceOS-Linux/homebrew-tap
-```
+## Local install
 
-Until that tap exists, developers can test the formula directly from this repository.
-
-## Local install from this repository
+From a local checkout of this repository, install the experimental HEAD formula:
 
 ```bash
-git clone https://github.com/SourceOS-Linux/wezterm.git
-cd wezterm
-brew install --HEAD ./packaging/homebrew/Formula/sourceos-wezterm.rb
+brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
 ```
 
-## Local reinstall while iterating
+To reinstall while iterating:
 
 ```bash
-brew uninstall sourceos-wezterm || true
-brew install --HEAD ./packaging/homebrew/Formula/sourceos-wezterm.rb
+brew uninstall turtle-term || true
+brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
 ```
 
-## Test installed wrapper
+## Test installed commands
 
 ```bash
+turtle-term paths
+turtle-term run -- echo hello
 sourceos-term paths
-sourceos-term run -- echo hello
 ```
 
-## Activate the SourceOS WezTerm profile
+`turtle-term` is the product command. `sourceos-term` remains as a compatibility command for existing SourceOS contract work.
 
-The formula installs the SourceOS profile under Homebrew `etc`.
+## Activate the profile
+
+The formula installs the TurtleTerm WezTerm profile under Homebrew `etc`:
 
 ```bash
-ln -sf "$(brew --prefix)/etc/sourceos/wezterm/wezterm.lua" ~/.wezterm.lua
+ln -sf "$(brew --prefix)/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
 ```
 
-Then launch:
+Then launch `wezterm-gui`.
 
-```bash
-wezterm-gui
-```
+## Future tap flow
 
-## Future tap install flow
-
-After `SourceOS-Linux/homebrew-tap` exists and the formula is copied to `Formula/sourceos-wezterm.rb`:
+After `SourceOS-Linux/homebrew-tap` exists and the formula is copied to `Formula/turtle-term.rb`, the intended install flow is:
 
 ```bash
 brew tap SourceOS-Linux/tap
-brew install --HEAD sourceos-wezterm
+brew install --HEAD turtle-term
 ```
 
-After tagged releases and bottles exist:
+After tagged releases and bottles exist, the intended stable flow is:
 
 ```bash
-brew install sourceos-wezterm
+brew install turtle-term
 ```
 
 ## Formula responsibilities
 
-The formula installs:
+The formula installs `wezterm`, `wezterm-gui`, `wezterm-mux-server`, `turtle-term`, the `sourceos-term` compatibility command, the TurtleTerm profile, and SourceOS terminal documentation.
 
-- `wezterm`
-- `wezterm-gui`
-- `wezterm-mux-server`
-- `sourceos-term`
-- SourceOS WezTerm Lua profile
-- SourceOS terminal documentation
-
-## Current status
-
-This is an experimental source-build formula. It is meant to prove macOS/Linux installation before release tarballs, checksums, and bottles exist.
-
-Windows packaging is postponed. The likely Windows lane is Chocolatey, WinGet, or Scoop after Homebrew is stable.
+Windows packaging is postponed until the macOS and Linux Homebrew lane is stable.
