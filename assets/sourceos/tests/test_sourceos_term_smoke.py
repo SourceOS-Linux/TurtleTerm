@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test for SourceOS terminal command wrapper v0."""
+"""Smoke tests for TurtleTerm / SourceOS terminal command wrappers v0."""
 
 from __future__ import annotations
 
@@ -12,14 +12,15 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-WRAPPER = REPO_ROOT / "assets" / "sourceos" / "bin" / "sourceos-term"
+SOURCEOS_WRAPPER = REPO_ROOT / "assets" / "sourceos" / "bin" / "sourceos-term"
+TURTLE_WRAPPER = REPO_ROOT / "assets" / "sourceos" / "bin" / "turtle-term"
 
 
 def read_ndjson(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def main() -> int:
+def run_wrapper(wrapper: Path, session_id: str, workspace: str, expected_text: str) -> tuple[list[dict], dict]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         events = tmp_path / "events.ndjson"
@@ -28,8 +29,8 @@ def main() -> int:
         env = dict(os.environ)
         env.update(
             {
-                "SOURCEOS_TERMINAL_SESSION_ID": "sourceos-term-test",
-                "SOURCEOS_WORKSPACE": "sourceos-test",
+                "SOURCEOS_TERMINAL_SESSION_ID": session_id,
+                "SOURCEOS_WORKSPACE": workspace,
                 "SOURCEOS_TERMINAL_EVENTS": str(events),
                 "SOURCEOS_TERMINAL_RECEIPTS": str(receipts),
                 "SOURCEOS_ACTOR_ID": "test:smoke",
@@ -37,9 +38,10 @@ def main() -> int:
                 "SOURCEOS_EXECUTION_DOMAIN": "host",
             }
         )
+        env.pop("SOURCEOS_TERMINAL_FRONTEND", None)
 
         result = subprocess.run(
-            [sys.executable, str(WRAPPER), "run", "--", sys.executable, "-c", "print('sourceos-smoke')"],
+            [sys.executable, str(wrapper), "run", "--", sys.executable, "-c", f"print('{expected_text}')"],
             cwd=str(REPO_ROOT),
             env=env,
             text=True,
@@ -49,7 +51,7 @@ def main() -> int:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "sourceos-smoke" in result.stdout
+        assert expected_text in result.stdout
         assert events.exists(), "event stream missing"
 
         event_rows = read_ndjson(events)
@@ -66,12 +68,23 @@ def main() -> int:
 
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         assert receipt["schema"] == "sourceos.terminal.receipt.v0"
-        assert receipt["session_id"] == "sourceos-term-test"
-        assert receipt["workspace_id"] if "workspace_id" in receipt else True
+        assert receipt["session_id"] == session_id
+        assert receipt["workspace_id"] == workspace
         assert receipt["exit_status"] == 0
-        assert receipt["command_argv"][-2:] == ["-c", "print('sourceos-smoke')"]
+        assert receipt["command_argv"][-2:] == ["-c", f"print('{expected_text}')"]
         assert receipt["stdout_digest"].startswith("sha256:")
         assert receipt["stderr_digest"].startswith("sha256:")
+
+        session = [row for row in event_rows if row.get("schema") == "sourceos.terminal.session.v0"][-1]
+        return event_rows, session
+
+
+def main() -> int:
+    _, sourceos_session = run_wrapper(SOURCEOS_WRAPPER, "sourceos-term-test", "sourceos-test", "sourceos-smoke")
+    assert sourceos_session["frontend"] == "sourceos-term"
+
+    _, turtle_session = run_wrapper(TURTLE_WRAPPER, "turtle-term-test", "turtle-test", "turtle-smoke")
+    assert turtle_session["frontend"] == "turtle-term"
 
     return 0
 
