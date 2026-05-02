@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""SourceOS terminal command wrapper v0.
+"""TurtleTerm / SourceOS terminal command wrapper v0.
 
 Runs a command, mirrors stdout/stderr to the active terminal, and emits
 SourceOS terminal command lifecycle events plus a durable command receipt.
 
-This is intentionally sidecar-friendly and non-invasive: it does not require
-changes to WezTerm internals. It gives SourceOS agents, Matrix/AgentTerm, and
-workstation-contract tooling a structured event stream without granting ambient
-shell authority.
+`turtle-term` is the product CLI. `sourceos-term` remains as a compatibility
+entrypoint for SourceOS contract work. The event and receipt schemas remain
+namespaced as `sourceos.*` because they are platform contracts.
 """
 
 from __future__ import annotations
@@ -30,6 +29,23 @@ from typing import Any, Iterable
 SESSION_SCHEMA = "sourceos.terminal.session.v0"
 EVENT_SCHEMA = "sourceos.terminal.event.v0"
 RECEIPT_SCHEMA = "sourceos.terminal.receipt.v0"
+
+
+def invoked_name() -> str:
+    return Path(sys.argv[0]).name or "turtle-term"
+
+
+def product_name() -> str:
+    name = invoked_name()
+    if name == "sourceos-term":
+        return "sourceos-term"
+    return "turtle-term"
+
+
+def default_session_prefix() -> str:
+    if product_name() == "sourceos-term":
+        return "sourceos-term"
+    return "turtle-term"
 
 
 def utc_now() -> str:
@@ -127,7 +143,7 @@ def detect_execution_domain() -> str:
 
 
 def build_context(command: list[str]) -> dict[str, Any]:
-    session_id = env("SOURCEOS_TERMINAL_SESSION_ID", f"sourceos-term-{uuid.uuid4().hex}")
+    session_id = env("SOURCEOS_TERMINAL_SESSION_ID", f"{default_session_prefix()}-{uuid.uuid4().hex}")
     workspace_id = env("SOURCEOS_WORKSPACE", "sourceos")
     actor_id = env("SOURCEOS_ACTOR_ID", f"human:{env('USER', 'local-user')}")
     policy_bundle_id = env("SOURCEOS_POLICY_BUNDLE_ID", "unbound")
@@ -160,7 +176,7 @@ def emit_session(context: dict[str, Any], created_at: str) -> None:
         "workspace_id": context["workspace_id"],
         "created_at": created_at,
         "actor_id": context["actor_id"],
-        "frontend": env("SOURCEOS_TERMINAL_FRONTEND", "wezterm"),
+        "frontend": env("SOURCEOS_TERMINAL_FRONTEND", product_name()),
         "frontend_version": env("SOURCEOS_TERMINAL_FRONTEND_VERSION", "unknown"),
         "execution_domain": context["execution_domain"],
         "policy_bundle_id": context["policy_bundle_id"],
@@ -238,7 +254,7 @@ def stream_process(command: list[str], child_env: dict[str, str]) -> tuple[int, 
 
 def run_command(command: list[str]) -> int:
     if not command:
-        print("sourceos-term: no command provided", file=sys.stderr)
+        print(f"{product_name()}: no command provided", file=sys.stderr)
         return 2
 
     started_at = utc_now()
@@ -264,7 +280,7 @@ def run_command(command: list[str]) -> int:
         exit_status = 127
         stdout_digest = "sha256:" + hashlib.sha256(b"").hexdigest()
         stderr_digest = "sha256:" + hashlib.sha256(f"command not found: {command[0]}\n".encode()).hexdigest()
-        print(f"sourceos-term: command not found: {command[0]}", file=sys.stderr)
+        print(f"{product_name()}: command not found: {command[0]}", file=sys.stderr)
     except KeyboardInterrupt:
         exit_status = 130
         stdout_digest = "sha256:unknown"
@@ -337,12 +353,10 @@ def parse_run_command(raw: list[str]) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    # Convenience: `sourceos-term -- make test` and `sourceos-term make test`.
-    # argparse subcommands would otherwise reject arbitrary command names.
     if argv and argv[0] not in {"run", "paths", "-h", "--help"}:
         return run_command(parse_run_command(argv))
 
-    parser = argparse.ArgumentParser(description="SourceOS terminal command wrapper v0")
+    parser = argparse.ArgumentParser(description="TurtleTerm command wrapper v0")
     subparsers = parser.add_subparsers(dest="command_name")
 
     run_parser = subparsers.add_parser("run", help="run a command and emit SourceOS terminal events")
