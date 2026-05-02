@@ -1,0 +1,79 @@
+# TurtleTerm Install Guide
+
+## Recommended path: Homebrew
+
+After the public tap exists:
+
+```bash
+brew install SourceOS-Linux/tap/turtle-term
+```
+
+For the current HEAD formula:
+
+```bash
+brew install --HEAD SourceOS-Linux/tap/turtle-term
+```
+
+From a local checkout before the tap exists:
+
+```bash
+brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
+```
+
+## Direct release artifact install
+
+For users who do not want Homebrew, use the release artifact installer after the first TurtleTerm release exists:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SourceOS-Linux/wezterm/main/packaging/scripts/install-turtle-term.sh | bash
+```
+
+Override install prefix:
+
+```bash
+TURTLE_TERM_PREFIX=/usr/local bash packaging/scripts/install-turtle-term.sh
+```
+
+Install a specific release:
+
+```bash
+TURTLE_TERM_VERSION=turtle-term-v0.1.0 bash packaging/scripts/install-turtle-term.sh
+```
+
+Skip Homebrew fallback entirely:
+
+```bash
+TURTLE_TERM_USE_BREW=never bash packaging/scripts/install-turtle-term.sh
+```
+
+## Validate install
+
+```bash
+turtle-term paths
+turtle-term run -- echo turtle-term-ok
+sourceos-term paths
+```
+
+## Activate TurtleTerm WezTerm profile
+
+Homebrew profile path:
+
+```bash
+ln -sf "$(brew --prefix)/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
+```
+
+Direct install profile path:
+
+```bash
+ln -sf "$HOME/.local/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
+```
+
+Then launch:
+
+```bash
+wezterm-gui
+```
+
+## Windows status
+
+Windows packaging is postponed until macOS and Linux distribution are stable. Candidate lanes are Chocolatey, WinGet, and Scoop.
