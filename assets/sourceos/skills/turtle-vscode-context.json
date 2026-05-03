@@ -1,0 +1,25 @@
+{
+  "id": "urn:srcos:skill:turtle-vscode-context",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-vscode-context",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/VSCODE_EXTENSION.md",
+  "description": "Collect VS Code-compatible editor and integrated-terminal context for TurtleTerm without directly executing commands.",
+  "activationRules": {
+    "commands": ["vscode.context", "vscode.terminal.summarize", "vscode.receipts"],
+    "filePatterns": [],
+    "intentTags": ["vscode", "editor-context", "integrated-terminal"]
+  },
+  "requires": {
+    "binaries": ["turtle-term"],
+    "anyBins": [],
+    "tools": ["vscode-extension-host"]
+  },
+  "executionSurfaceRef": null,
+  "policyBindings": ["urn:srcos:policy:turtle-vscode-context"],
+  "artifactOutputs": ["editor-context", "terminal-summary"],
+  "reviewMode": true,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
