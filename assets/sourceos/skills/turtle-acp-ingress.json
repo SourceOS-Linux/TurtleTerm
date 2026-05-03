@@ -1,0 +1,25 @@
+{
+  "id": "urn:srcos:skill:turtle-acp-ingress",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-acp-ingress",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/ACP_A2A_BRIDGE.md",
+  "description": "Accept ACP editor/client requests and normalize them into SourceOS AgentSession, A2A, MCP, and policy-gated TurtleTerm flows.",
+  "activationRules": {
+    "commands": ["acp.inspect", "acp.summarize", "acp.propose", "acp.request_execution", "acp.delegate"],
+    "filePatterns": [],
+    "intentTags": ["acp", "editor-agent", "a2a-ingress"]
+  },
+  "requires": {
+    "binaries": ["turtle-term"],
+    "anyBins": [],
+    "tools": ["a2a-gateway", "policy-fabric", "agent-registry"]
+  },
+  "executionSurfaceRef": "urn:srcos:surface:turtle-acp-default",
+  "policyBindings": ["urn:srcos:policy:turtle-acp-ingress"],
+  "artifactOutputs": ["agent-session", "execution-decision", "session-receipt"],
+  "reviewMode": false,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
