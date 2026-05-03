@@ -1,0 +1,25 @@
+{
+  "id": "urn:srcos:skill:turtle-agent-registry-client",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-agent-registry-client",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/AGENT_REGISTRY_BRIDGE.md",
+  "description": "Resolve registered agent, provider, skill, execution surface, and policy binding identities before TurtleTerm delegation or execution.",
+  "activationRules": {
+    "commands": ["agent.lookup", "skill.lookup", "provider.lookup", "surface.lookup"],
+    "filePatterns": [],
+    "intentTags": ["agent-registry", "registered-agent", "skill-manifest"]
+  },
+  "requires": {
+    "binaries": ["turtle-term"],
+    "anyBins": [],
+    "tools": ["agent-registry"]
+  },
+  "executionSurfaceRef": null,
+  "policyBindings": ["urn:srcos:policy:turtle-agent-registry-client"],
+  "artifactOutputs": ["agent-ref", "skill-ref", "provider-ref", "execution-surface-ref"],
+  "reviewMode": true,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
