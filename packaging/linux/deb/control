@@ -1,0 +1,12 @@
+Package: turtle-term
+Version: 0.1.0
+Section: devel
+Priority: optional
+Architecture: amd64
+Maintainer: SourceOS Linux <maintainers@sourceos.local>
+Depends: libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkbcommon0, zlib1g
+Homepage: https://github.com/SourceOS-Linux/TurtleTerm
+Description: TurtleTerm trusted terminal and agent workbench
+ TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench
+ for trusted command execution, terminal receipts, agent delegation, and
+ reproducible operator workflows.
