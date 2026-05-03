@@ -19,6 +19,9 @@ REQUIRED_FILES = [
     "docs/sourceos/SUPPLY_CHAIN.md",
     "docs/sourceos/UPSTREAM_SYNC.md",
     "assets/sourceos/brand/turtleterm-icon.svg",
+    "assets/sourceos/brand/ai.sourceos.TurtleTerm.svg",
+    "assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop",
+    "assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml",
     "assets/sourceos/bin/turtleterm",
     "assets/sourceos/bin/turtleterm-mux-server",
     "assets/sourceos/bin/turtle-term",
@@ -66,7 +69,9 @@ REQUIRED_FORMULA_SNIPPETS = [
     "libexec/\"turtle-term\"",
     "turtleterm",
     "turtleterm.lua",
-    "pkgshare.install \"assets/sourceos/brand\" => \"brand\"",
+    "ai.sourceos.TurtleTerm.desktop",
+    "ai.sourceos.TurtleTerm.metainfo.xml",
+    "ai.sourceos.TurtleTerm.svg",
     "assert_match \"TurtleTerm command wrapper\"",
 ]
 
@@ -87,7 +92,12 @@ REQUIRED_PACKAGE_SCRIPT_SNIPPETS = [
     "libexec/turtle-term",
     "turtleterm",
     "turtleterm.lua",
-    "share/turtle-term/brand",
+    "share/applications",
+    "share/metainfo",
+    "share/icons/hicolor/scalable/apps",
+    "ai.sourceos.TurtleTerm.desktop",
+    "ai.sourceos.TurtleTerm.metainfo.xml",
+    "ai.sourceos.TurtleTerm.svg",
     "THIRD_PARTY_NOTICES.md",
 ]
 
