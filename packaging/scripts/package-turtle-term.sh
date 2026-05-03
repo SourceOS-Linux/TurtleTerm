@@ -42,6 +42,11 @@ cp -R "$repo_root/assets/sourceos/desktop/." "$stage/share/turtle-term/desktop/"
 cp "$repo_root/LICENSE.md" "$stage/"
 cp "$repo_root/THIRD_PARTY_NOTICES.md" "$stage/" 2>/dev/null || true
 
+if [[ "$target" == macos-* ]] || [[ "$(uname -s)" == "Darwin" ]]; then
+  chmod +x "$repo_root/packaging/scripts/stage-macos-app.sh"
+  "$repo_root/packaging/scripts/stage-macos-app.sh" "$version" "$stage/share/turtle-term" >/dev/null
+fi
+
 cat > "$stage/README.md" <<'EOF'
 # TurtleTerm Release Artifact
 
@@ -57,6 +62,7 @@ This artifact includes:
 - TurtleTerm mux launcher
 - TurtleTerm profile
 - TurtleTerm Linux desktop metadata
+- TurtleTerm staged macOS app metadata when built for macOS
 - TurtleTerm skill manifests
 - TurtleTerm turtle icon
 - SourceOS terminal documentation
