@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>ai.sourceos.TurtleTerm</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>TurtleTerm</name>
+  <summary>Trusted terminal sessions, command receipts, and agent-governed execution</summary>
+  <description>
+    <p>TurtleTerm is a SourceOS terminal workbench for trusted command execution, terminal receipts, agent delegation, and reproducible operator workflows.</p>
+    <p>It provides TurtleTerm launchers, a TurtleTerm profile, a local agent gateway, tmux bridge, skill manifests, and release verification surfaces.</p>
+  </description>
+  <launchable type="desktop-id">ai.sourceos.TurtleTerm.desktop</launchable>
+  <categories>
+    <category>System</category>
+    <category>Development</category>
+    <category>TerminalEmulator</category>
+  </categories>
+  <url type="homepage">https://github.com/SourceOS-Linux/TurtleTerm</url>
+  <provides>
+    <binary>turtleterm</binary>
+    <binary>turtle-term</binary>
+    <binary>turtle-agentctl</binary>
+  </provides>
+</component>
