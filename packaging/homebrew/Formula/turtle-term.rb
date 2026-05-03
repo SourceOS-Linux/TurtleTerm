@@ -43,13 +43,28 @@ class TurtleTerm < Formula
       turtle-agentd
       turtle-agentctl
       turtle-tmux
-      turtleterm
-      turtleterm-mux-server
     ]
     turtle_scripts.each do |script|
       chmod 0755, "assets/sourceos/bin/#{script}"
       bin.install "assets/sourceos/bin/#{script}"
     end
+
+    libexec.install "assets/sourceos/bin/turtleterm" => "turtleterm"
+    libexec.install "assets/sourceos/bin/turtleterm-mux-server" => "turtleterm-mux-server"
+    chmod 0755, libexec/"turtleterm"
+    chmod 0755, libexec/"turtleterm-mux-server"
+
+    (bin/"turtleterm").write <<~EOS
+      #!/bin/sh
+      export TURTLE_TERM_RUNTIME_DIR="#{libexec}/turtle-term"
+      export TURTLETERM_CONFIG="#{etc}/turtle-term/turtleterm.lua"
+      exec "#{libexec}/turtleterm" "$@"
+    EOS
+    (bin/"turtleterm-mux-server").write <<~EOS
+      #!/bin/sh
+      export TURTLE_TERM_RUNTIME_DIR="#{libexec}/turtle-term"
+      exec "#{libexec}/turtleterm-mux-server" "$@"
+    EOS
 
     etc.install "assets/sourceos/turtleterm.lua" => "turtle-term/turtleterm.lua"
     pkgshare.install "docs/sourceos"
