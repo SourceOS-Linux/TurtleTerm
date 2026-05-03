@@ -89,6 +89,8 @@ def main() -> int:
         raise SystemExit("manifest archive hash does not match")
     if manifest.get("runtime") != "private-terminal-runtime":
         raise SystemExit("manifest runtime must be private-terminal-runtime")
+    if manifest.get("profile") != "etc/turtle-term/turtleterm.lua":
+        raise SystemExit("manifest must point at TurtleTerm product profile")
 
     public_commands = set(manifest.get("public_commands", []))
     missing_commands = REQUIRED_PUBLIC_COMMANDS - public_commands
@@ -110,8 +112,8 @@ def main() -> int:
         if not suffix_present(members, suffix):
             raise SystemExit(f"archive missing {suffix}")
 
-    if not suffix_present(members, "etc/turtle-term/wezterm.lua"):
-        raise SystemExit("archive missing TurtleTerm profile")
+    if not suffix_present(members, "etc/turtle-term/turtleterm.lua"):
+        raise SystemExit("archive missing TurtleTerm product profile")
     if not any("share/turtle-term/sourceos/" in member for member in members):
         raise SystemExit("archive missing SourceOS documentation")
     if not any("share/turtle-term/skills/" in member for member in members):
