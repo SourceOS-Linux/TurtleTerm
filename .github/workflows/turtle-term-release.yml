@@ -13,6 +13,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 jobs:
   build:
@@ -89,6 +92,14 @@ jobs:
           test -n "$(find dist -name 'turtle-term-*.tar.gz' -print -quit)"
           test -n "$(find dist -name 'turtle-term-*.tar.gz.sha256' -print -quit)"
           test -n "$(find dist -name 'turtle-term-*.tar.gz.manifest.json' -print -quit)"
+
+      - name: Attest TurtleTerm release artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/turtle-term-*.tar.gz
+            dist/turtle-term-*.tar.gz.sha256
+            dist/turtle-term-*.tar.gz.manifest.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
