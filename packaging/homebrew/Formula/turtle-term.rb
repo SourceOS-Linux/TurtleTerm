@@ -2,9 +2,9 @@
 
 class TurtleTerm < Formula
   desc "TurtleTerm: SourceOS policy-aware agent terminal fabric based on WezTerm"
-  homepage "https://github.com/SourceOS-Linux/wezterm"
+  homepage "https://github.com/SourceOS-Linux/TurtleTerm"
   license "MIT"
-  head "https://github.com/SourceOS-Linux/wezterm.git", branch: "main"
+  head "https://github.com/SourceOS-Linux/TurtleTerm.git", branch: "main"
 
   depends_on "rust" => :build
   depends_on "pkg-config" => :build
