@@ -32,26 +32,32 @@ def main() -> int:
     manifest = {
         "schema": "sourceos.turtle-term.release.manifest.v0",
         "product": "TurtleTerm",
-        "engine": "WezTerm",
         "version": args.version,
         "target": args.target,
         "archive": archive.name,
         "archive_sha256": sha256(archive),
         "license": "MIT",
-        "upstream_attribution": "Built on the WezTerm engine; upstream WezTerm attribution and license are preserved.",
-        "binaries": [
-            "wezterm",
-            "wezterm-gui",
-            "wezterm-mux-server",
+        "notices": "THIRD_PARTY_NOTICES.md",
+        "runtime": "private-terminal-runtime",
+        "public_commands": [
+            "turtleterm",
+            "turtleterm-mux-server",
             "turtle-term",
-            "sourceos-term",
+            "turtle-agentd",
+            "turtle-agentctl",
+            "turtle-tmux",
+            "sourceos-term"
         ],
+        "private_runtime_path": "libexec/turtle-term",
         "profile": "etc/turtle-term/wezterm.lua",
         "docs": "share/turtle-term/sourceos",
+        "skills": "share/turtle-term/skills",
+        "brand": "share/turtle-term/brand",
         "install_validation": [
+            "turtleterm --version || true",
             "turtle-term paths",
             "turtle-term run -- echo turtle-term-ok",
-            "sourceos-term paths",
+            "turtle-agentctl --stdio ping"
         ],
     }
 
