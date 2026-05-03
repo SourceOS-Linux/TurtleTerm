@@ -33,9 +33,9 @@ class TurtleTerm < Formula
     system "cargo", "build", "--release", "--locked", "-p", "wezterm-gui"
     system "cargo", "build", "--release", "--locked", "-p", "wezterm-mux-server"
 
-    libexec.install "target/release/wezterm"
-    libexec.install "target/release/wezterm-gui"
-    libexec.install "target/release/wezterm-mux-server"
+    (libexec/"turtle-term").install "target/release/wezterm"
+    (libexec/"turtle-term").install "target/release/wezterm-gui"
+    (libexec/"turtle-term").install "target/release/wezterm-mux-server"
 
     turtle_scripts = %w[
       sourceos-term
@@ -50,8 +50,6 @@ class TurtleTerm < Formula
       chmod 0755, "assets/sourceos/bin/#{script}"
       bin.install "assets/sourceos/bin/#{script}"
     end
-
-    bin.env_script_all_files(libexec, PATH: "#{libexec}:$PATH")
 
     etc.install "assets/sourceos/wezterm.lua" => "turtle-term/wezterm.lua"
     pkgshare.install "docs/sourceos"
