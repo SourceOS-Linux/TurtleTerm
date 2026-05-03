@@ -15,6 +15,7 @@ REQUIRED_FILES = [
     "docs/sourceos/PACKAGING.md",
     "docs/sourceos/RELEASE_CHECKLIST.md",
     "docs/sourceos/SESSION_CONTRACT.md",
+    "docs/sourceos/SUPPLY_CHAIN.md",
     "docs/sourceos/UPSTREAM_SYNC.md",
     "assets/sourceos/bin/turtle-term",
     "assets/sourceos/bin/sourceos-term",
@@ -66,6 +67,8 @@ REQUIRED_RELEASE_WORKFLOW_SNIPPETS = [
     "linux-arm64",
     "softprops/action-gh-release",
     "turtle-term-*.tar.gz.manifest.json",
+    "anchore/sbom-action",
+    "actions/attest@v4",
 ]
 
 REQUIRED_PACKAGE_SCRIPT_SNIPPETS = [
@@ -73,6 +76,13 @@ REQUIRED_PACKAGE_SCRIPT_SNIPPETS = [
     "--version",
     "--target",
     "--archive",
+]
+
+REQUIRED_SUPPLY_CHAIN_SNIPPETS = [
+    "GitHub artifact attestations",
+    "SPDX JSON SBOM",
+    "verify-turtle-term-artifact.py",
+    "turtle-term-<version>-<target>.tar.gz.manifest.json",
 ]
 
 
@@ -97,6 +107,7 @@ def main() -> int:
     assert_contains("packaging/homebrew/Formula/turtle-term.rb", REQUIRED_FORMULA_SNIPPETS)
     assert_contains(".github/workflows/turtle-term-release.yml", REQUIRED_RELEASE_WORKFLOW_SNIPPETS)
     assert_contains("packaging/scripts/package-turtle-term.sh", REQUIRED_PACKAGE_SCRIPT_SNIPPETS)
+    assert_contains("docs/sourceos/SUPPLY_CHAIN.md", REQUIRED_SUPPLY_CHAIN_SNIPPETS)
 
     install = read("docs/sourceos/INSTALL.md")
     assert "Windows packaging is postponed" in install
