@@ -11,18 +11,26 @@ ROOT = Path(__file__).resolve().parents[3]
 REQUIRED_FILES = [
     "README.md",
     "LICENSE.md",
+    "THIRD_PARTY_NOTICES.md",
     "docs/sourceos/INSTALL.md",
     "docs/sourceos/PACKAGING.md",
     "docs/sourceos/RELEASE_CHECKLIST.md",
     "docs/sourceos/SESSION_CONTRACT.md",
     "docs/sourceos/SUPPLY_CHAIN.md",
     "docs/sourceos/UPSTREAM_SYNC.md",
+    "assets/sourceos/brand/turtleterm-icon.svg",
+    "assets/sourceos/bin/turtleterm",
+    "assets/sourceos/bin/turtleterm-mux-server",
     "assets/sourceos/bin/turtle-term",
     "assets/sourceos/bin/sourceos-term",
+    "assets/sourceos/bin/turtle-agentd",
+    "assets/sourceos/bin/turtle-agentctl",
+    "assets/sourceos/bin/turtle-tmux",
     "assets/sourceos/wezterm.lua",
     "assets/sourceos/tests/test_sourceos_term_smoke.py",
     "assets/sourceos/tests/test_turtle_term_branding.py",
     "assets/sourceos/tests/test_turtle_term_release_readiness.py",
+    "assets/sourceos/tests/test_turtle_agentic_integration_plan.py",
     "packaging/homebrew/Formula/turtle-term.rb",
     "packaging/homebrew/templates/turtle-term.rb.template",
     "packaging/homebrew/README.md",
@@ -32,6 +40,7 @@ REQUIRED_FILES = [
     "packaging/scripts/bootstrap-homebrew-tap.sh",
     "packaging/scripts/render-stable-homebrew-formula.py",
     "packaging/scripts/write-turtle-term-manifest.py",
+    "packaging/scripts/verify-turtle-term-artifact.py",
     ".github/workflows/turtle-term-release.yml",
     ".github/workflows/turtle-term-homebrew.yml",
     ".github/workflows/turtle-term-scripts.yml",
@@ -44,18 +53,19 @@ FORBIDDEN_FILES = [
 ]
 
 REQUIRED_README_SNIPPETS = [
-    "TurtleTerm is built on the back of WezTerm",
-    "brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/wezterm/main/packaging/homebrew/Formula/turtle-term.rb",
+    "TurtleTerm carries the shell on its back",
+    "brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/packaging/homebrew/Formula/turtle-term.rb",
     "brew install SourceOS-Linux/tap/turtle-term",
-    "turtle-term run -- echo hello",
+    "turtleterm",
+    "TurtleTerm turtle icon",
 ]
 
 REQUIRED_FORMULA_SNIPPETS = [
     "class TurtleTerm < Formula",
-    "desc \"TurtleTerm:",
-    "bin.install \"target/release/wezterm\"",
-    "bin.install \"assets/sourceos/bin/turtle-term\"",
-    "etc.install \"assets/sourceos/wezterm.lua\" => \"turtle-term/wezterm.lua\"",
+    "desc \"TurtleTerm: SourceOS policy-aware agent terminal fabric\"",
+    "libexec/\"turtle-term\"",
+    "turtleterm",
+    "pkgshare.install \"assets/sourceos/brand\" => \"brand\"",
     "assert_match \"TurtleTerm command wrapper\"",
 ]
 
@@ -73,9 +83,10 @@ REQUIRED_RELEASE_WORKFLOW_SNIPPETS = [
 
 REQUIRED_PACKAGE_SCRIPT_SNIPPETS = [
     "write-turtle-term-manifest.py",
-    "--version",
-    "--target",
-    "--archive",
+    "libexec/turtle-term",
+    "turtleterm",
+    "share/turtle-term/brand",
+    "THIRD_PARTY_NOTICES.md",
 ]
 
 REQUIRED_SUPPLY_CHAIN_SNIPPETS = [
@@ -112,6 +123,7 @@ def main() -> int:
     install = read("docs/sourceos/INSTALL.md")
     assert "Windows packaging is postponed" in install
     assert "TURTLE_TERM_VERSION=turtle-term-v0.1.0" in install
+    assert "Then launch TurtleTerm:" in install
 
     checklist = read("docs/sourceos/RELEASE_CHECKLIST.md")
     assert "macOS ARM64" in checklist
