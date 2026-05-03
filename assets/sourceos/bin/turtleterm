@@ -7,10 +7,23 @@ bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
 
+profile_arg=""
+if [ -n "${TURTLETERM_CONFIG:-}" ]; then
+  profile_arg="--config-file $TURTLETERM_CONFIG"
+elif [ -f "${bin_dir}/../etc/turtle-term/turtleterm.lua" ]; then
+  profile_arg="--config-file ${bin_dir}/../etc/turtle-term/turtleterm.lua"
+elif [ -f "${bin_dir}/../opt/turtle-term/etc/turtle-term/turtleterm.lua" ]; then
+  profile_arg="--config-file ${bin_dir}/../opt/turtle-term/etc/turtle-term/turtleterm.lua"
+fi
+
 try_exec() {
   candidate="$1"
   shift
   if [ -x "$candidate" ]; then
+    if [ -n "$profile_arg" ]; then
+      # shellcheck disable=SC2086
+      exec "$candidate" $profile_arg "$@"
+    fi
     exec "$candidate" "$@"
   fi
 }
@@ -23,4 +36,8 @@ try_exec "${bin_dir}/../libexec/turtle-term/wezterm-gui" "$@"
 try_exec "${bin_dir}/../opt/turtle-term/libexec/turtle-term/wezterm-gui" "$@"
 try_exec "${bin_dir}/../Cellar/turtle-term/HEAD/libexec/turtle-term/wezterm-gui" "$@"
 
+if [ -n "$profile_arg" ]; then
+  # shellcheck disable=SC2086
+  exec wezterm-gui $profile_arg "$@"
+fi
 exec wezterm-gui "$@"
