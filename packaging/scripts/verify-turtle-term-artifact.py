@@ -32,6 +32,12 @@ REQUIRED_TOP_LEVEL_SUFFIXES = {
     "THIRD_PARTY_NOTICES.md",
 }
 
+REQUIRED_DESKTOP_SUFFIXES = {
+    "share/applications/ai.sourceos.TurtleTerm.desktop",
+    "share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml",
+    "share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg",
+}
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -112,6 +118,10 @@ def main() -> int:
         if not suffix_present(members, suffix):
             raise SystemExit(f"archive missing {suffix}")
 
+    for suffix in REQUIRED_DESKTOP_SUFFIXES:
+        if not suffix_present(members, suffix):
+            raise SystemExit(f"archive missing desktop metadata: {suffix}")
+
     if not suffix_present(members, "etc/turtle-term/turtleterm.lua"):
         raise SystemExit("archive missing TurtleTerm product profile")
     if not any("share/turtle-term/sourceos/" in member for member in members):
@@ -120,6 +130,8 @@ def main() -> int:
         raise SystemExit("archive missing TurtleTerm skill manifests")
     if not any("share/turtle-term/brand/" in member for member in members):
         raise SystemExit("archive missing TurtleTerm brand assets")
+    if not any("share/turtle-term/desktop/" in member for member in members):
+        raise SystemExit("archive missing TurtleTerm desktop source metadata")
 
     print(f"verified {archive.name}")
     return 0
