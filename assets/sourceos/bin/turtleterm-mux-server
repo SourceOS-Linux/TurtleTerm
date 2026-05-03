@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# TurtleTerm mux server launcher.
+set -eu
+export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
+exec wezterm-mux-server "$@"
