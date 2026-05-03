@@ -12,6 +12,7 @@ on:
         default: 'turtle-term-dev'
 
 permissions:
+  actions: read
   contents: write
   id-token: write
   attestations: write
@@ -85,6 +86,15 @@ jobs:
           fi
           packaging/scripts/package-turtle-term.sh "$version" "${{ matrix.target }}"
 
+      - name: Generate TurtleTerm SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/turtle-term-${{ matrix.target }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
       - name: Verify packaged artifacts
         shell: bash
         run: |
@@ -93,6 +103,7 @@ jobs:
           test -n "$archive"
           test -f "$archive.sha256"
           test -f "$archive.manifest.json"
+          test -f "dist/turtle-term-${{ matrix.target }}.spdx.json"
           python3 packaging/scripts/verify-turtle-term-artifact.py "$archive"
 
       - name: Attest TurtleTerm release artifacts
@@ -103,6 +114,12 @@ jobs:
             dist/turtle-term-*.tar.gz.sha256
             dist/turtle-term-*.tar.gz.manifest.json
 
+      - name: Attest TurtleTerm SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/turtle-term-*.tar.gz
+          sbom-path: dist/turtle-term-${{ matrix.target }}.spdx.json
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -111,6 +128,7 @@ jobs:
             dist/turtle-term-*.tar.gz
             dist/turtle-term-*.tar.gz.sha256
             dist/turtle-term-*.tar.gz.manifest.json
+            dist/turtle-term-${{ matrix.target }}.spdx.json
 
       - name: Publish GitHub release assets
         if: startsWith(github.ref, 'refs/tags/turtle-term-v')
@@ -120,3 +138,4 @@ jobs:
             dist/turtle-term-*.tar.gz
             dist/turtle-term-*.tar.gz.sha256
             dist/turtle-term-*.tar.gz.manifest.json
+            dist/turtle-term-${{ matrix.target }}.spdx.json
