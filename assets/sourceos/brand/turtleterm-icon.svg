@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">TurtleTerm Icon</title>
+  <desc id="desc">A geometric turtle shell terminal mark for TurtleTerm.</desc>
+  <rect width="512" height="512" rx="112" fill="#07130f"/>
+  <path d="M256 86c-79 0-143 55-153 130-31 10-53 39-53 73 0 42 34 76 76 76h13c27 37 69 61 117 61s90-24 117-61h13c42 0 76-34 76-76 0-34-22-63-53-73C399 141 335 86 256 86Z" fill="#39d98a"/>
+  <path d="M256 122c-59 0-108 41-119 96h238c-11-55-60-96-119-96Z" fill="#0f3d2e"/>
+  <path d="M149 246h214c0 58-48 106-107 106S149 304 149 246Z" fill="#123f31"/>
+  <path d="M256 143v209M176 219l160 1M196 164l120 120M316 164 196 284" stroke="#7fffc1" stroke-width="18" stroke-linecap="round" opacity="0.88"/>
+  <path d="M176 320h160" stroke="#07130f" stroke-width="26" stroke-linecap="round"/>
+  <path d="M194 320l46 32-46 32" fill="none" stroke="#d9ffe9" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M260 374h78" stroke="#d9ffe9" stroke-width="18" stroke-linecap="round"/>
+</svg>
