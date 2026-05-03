@@ -1,0 +1,25 @@
+{
+  "id": "urn:srcos:skill:turtle-bearbrowser-handoff",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-bearbrowser-handoff",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/BROWSER_HANDOFF.md",
+  "description": "Delegate browser-required terminal tasks to BearBrowser through registered Stagehand and Playwright lanes with Policy Fabric enforcement.",
+  "activationRules": {
+    "commands": ["browser.handoff", "bearbrowser.delegate", "stagehand.request", "playwright.request"],
+    "filePatterns": [],
+    "intentTags": ["browser", "bearbrowser", "stagehand", "playwright", "handoff"]
+  },
+  "requires": {
+    "binaries": ["turtle-term"],
+    "anyBins": [],
+    "tools": ["agent-registry", "policy-fabric", "bearbrowser"]
+  },
+  "executionSurfaceRef": "urn:srcos:surface:turtle-bearbrowser-handoff-default",
+  "policyBindings": ["urn:srcos:policy:turtle-bearbrowser-handoff"],
+  "artifactOutputs": ["browser-receipt", "browser-artifact", "terminal-session-link"],
+  "reviewMode": false,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
