@@ -49,7 +49,7 @@ def main() -> int:
             "sourceos-term"
         ],
         "private_runtime_path": "libexec/turtle-term",
-        "profile": "etc/turtle-term/wezterm.lua",
+        "profile": "etc/turtle-term/turtleterm.lua",
         "docs": "share/turtle-term/sourceos",
         "skills": "share/turtle-term/skills",
         "brand": "share/turtle-term/brand",
