@@ -38,6 +38,12 @@ REQUIRED_DESKTOP_SUFFIXES = {
     "share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg",
 }
 
+REQUIRED_MACOS_SUFFIXES = {
+    "share/turtle-term/TurtleTerm.app/Contents/Info.plist",
+    "share/turtle-term/TurtleTerm.app/Contents/MacOS/turtleterm",
+    "share/turtle-term/TurtleTerm.app/Contents/Resources/turtleterm-icon.svg",
+}
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -121,6 +127,11 @@ def main() -> int:
     for suffix in REQUIRED_DESKTOP_SUFFIXES:
         if not suffix_present(members, suffix):
             raise SystemExit(f"archive missing desktop metadata: {suffix}")
+
+    if "macos-" in archive.name:
+        for suffix in REQUIRED_MACOS_SUFFIXES:
+            if not suffix_present(members, suffix):
+                raise SystemExit(f"archive missing macOS app metadata: {suffix}")
 
     if not suffix_present(members, "etc/turtle-term/turtleterm.lua"):
         raise SystemExit("archive missing TurtleTerm product profile")
