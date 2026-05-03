@@ -1,5 +1,14 @@
 #!/usr/bin/env sh
 # TurtleTerm mux server launcher.
 set -eu
+
+bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+private_mux="${bin_dir}/../libexec/turtle-term/wezterm-mux-server"
+
 export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
+
+if [ -x "$private_mux" ]; then
+  exec "$private_mux" "$@"
+fi
+
 exec wezterm-mux-server "$@"
