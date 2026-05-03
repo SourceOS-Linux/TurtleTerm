@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""TurtleTerm local agent gateway v0.
+
+This is the first executable scaffold for TurtleTerm's local agent gateway. It is
+intentionally conservative: it supports local JSON requests over stdin/stdout or
+a Unix socket, exposes read/inspect/propose flows, and records policy-required
+execution requests without executing commands.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import socket
+import sys
+import uuid
+from pathlib import Path
+from typing import Any
+
+
+SCHEMA = "sourceos.turtle.agentd.response.v0"
+REQUEST_SCHEMA = "sourceos.turtle.agentd.request.v0"
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def env(name: str, fallback: str = "") -> str:
+    value = os.environ.get(name)
+    return value if value else fallback
+
+
+def runtime_dir() -> Path:
+    return Path(env("XDG_RUNTIME_DIR", f"/tmp/sourceos-runtime-{os.getuid()}")) / "sourceos" / "turtle-term"
+
+
+def default_socket_path() -> Path:
+    return Path(env("TURTLE_AGENTD_SOCKET", str(runtime_dir() / "agentd.sock")))
+
+
+def event_stream_path() -> Path:
+    return Path(env("SOURCEOS_TERMINAL_EVENTS", str(runtime_dir().parent / "terminal" / "events.ndjson")))
+
+
+def receipts_root() -> Path:
+    return Path(env("SOURCEOS_TERMINAL_RECEIPTS", str(Path.home() / ".local" / "state" / "sourceos" / "terminal" / "receipts")))
+
+
+def read_ndjson(path: Path, limit: int = 100) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
+def decision_stub(action: str, reason: str, decision: str = "ask") -> dict[str, Any]:
+    payload = {
+        "id": f"urn:srcos:exec-decision:{uuid.uuid4().hex}",
+        "type": "ExecutionDecision",
+        "specVersion": "2.0.0",
+        "decision": decision,
+        "reason": reason,
+        "issuedAt": utc_now(),
+        "action": action,
+    }
+    return payload
+
+
+def response(kind: str, data: dict[str, Any] | list[Any] | None = None, *, status: str = "ok") -> dict[str, Any]:
+    return {
+        "schema": SCHEMA,
+        "status": status,
+        "kind": kind,
+        "capturedAt": utc_now(),
+        "data": data if data is not None else {},
+    }
+
+
+def handle_request(request: dict[str, Any]) -> dict[str, Any]:
+    action = request.get("action")
+
+    if action == "ping":
+        return response("pong", {"service": "turtle-agentd", "version": "0.1.0"})
+
+    if action == "sessions":
+        events = read_ndjson(event_stream_path(), limit=500)
+        sessions: dict[str, dict[str, Any]] = {}
+        for event in events:
+            session_id = event.get("session_id")
+            if not session_id:
+                continue
+            sessions.setdefault(session_id, {}).update({
+                "session_id": session_id,
+                "workspace_id": event.get("workspace_id"),
+                "frontend": event.get("frontend"),
+                "execution_domain": event.get("execution_domain"),
+                "last_event_type": event.get("event_type", event.get("schema")),
+            })
+        return response("sessions", {"sessions": list(sessions.values()), "event_stream": str(event_stream_path())})
+
+    if action == "inspect":
+        session_id = request.get("session_id")
+        events = [row for row in read_ndjson(event_stream_path(), limit=500) if not session_id or row.get("session_id") == session_id]
+        return response("inspection", {"session_id": session_id, "events": events[-50:]})
+
+    if action == "summarize":
+        session_id = request.get("session_id")
+        events = [row for row in read_ndjson(event_stream_path(), limit=500) if not session_id or row.get("session_id") == session_id]
+        completed = [row for row in events if row.get("event_type") == "command.completed"]
+        failures = [row for row in completed if row.get("exit_status") not in (0, None)]
+        summary = {
+            "session_id": session_id,
+            "event_count": len(events),
+            "completed_commands": len(completed),
+            "failed_commands": len(failures),
+            "last_command": completed[-1].get("command") if completed else None,
+            "last_exit_status": completed[-1].get("exit_status") if completed else None,
+        }
+        return response("summary", summary)
+
+    if action == "propose_command":
+        command = request.get("command")
+        if not command:
+            return response("error", {"message": "command is required"}, status="error")
+        return response("command_proposal", {
+            "command": command,
+            "requiresDecision": True,
+            "decision": decision_stub("terminal.propose_command", "Command proposal recorded; execution still requires policy."),
+        })
+
+    if action == "request_execution":
+        command = request.get("command")
+        if not command:
+            return response("error", {"message": "command is required"}, status="error")
+        return response("execution_request", {
+            "command": command,
+            "executionAllowed": False,
+            "decision": decision_stub("terminal.execute_command", "Execution requires Policy Fabric approval; turtle-agentd v0 does not execute commands."),
+        })
+
+    if action == "receipts":
+        session_id = request.get("session_id")
+        root = receipts_root()
+        paths = []
+        if session_id:
+            paths = sorted(str(path) for path in (root / session_id).glob("*.json")) if (root / session_id).exists() else []
+        else:
+            paths = sorted(str(path) for path in root.glob("*/*.json")) if root.exists() else []
+        return response("receipts", {"session_id": session_id, "receipts": paths[-100:]})
+
+    if action == "promote_agentplane_bundle":
+        return response("agentplane_promotion_request", {
+            "status": "deferred",
+            "decision": decision_stub("agentplane.bundle.create", "AgentPlane bundle promotion is specified but not implemented in turtle-agentd v0.", "defer"),
+        })
+
+    return response("error", {"message": f"unknown action: {action}"}, status="error")
+
+
+def serve_stdio() -> int:
+    try:
+        request = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        print(json.dumps(response("error", {"message": str(exc)}, status="error")))
+        return 2
+    print(json.dumps(handle_request(request), indent=2, sort_keys=True))
+    return 0
+
+
+def serve_socket(path: Path) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.listen(8)
+    print(json.dumps(response("listening", {"socket": str(path)})), flush=True)
+    try:
+        while True:
+            conn, _ = server.accept()
+            with conn:
+                raw = conn.recv(1024 * 1024)
+                try:
+                    request = json.loads(raw.decode("utf-8"))
+                    result = handle_request(request)
+                except Exception as exc:  # noqa: BLE001 - defensive boundary
+                    result = response("error", {"message": str(exc)}, status="error")
+                conn.sendall((json.dumps(result, sort_keys=True) + "\n").encode("utf-8"))
+    finally:
+        server.close()
+        if path.exists():
+            path.unlink()
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="TurtleTerm local agent gateway v0")
+    parser.add_argument("--stdio", action="store_true", help="read one JSON request from stdin and write one JSON response")
+    parser.add_argument("--socket", default=str(default_socket_path()), help="Unix socket path for daemon mode")
+    args = parser.parse_args(argv)
+
+    if args.stdio:
+        return serve_stdio()
+    return serve_socket(Path(args.socket))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
