@@ -1,0 +1,25 @@
+{
+  "id": "urn:srcos:skill:turtle-tmux-bridge",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-tmux-bridge",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/TMUX_BRIDGE.md",
+  "description": "Inspect, summarize, and request policy-gated actions against existing tmux sessions, windows, and panes.",
+  "activationRules": {
+    "commands": ["tmux.inspect", "tmux.summarize", "tmux.request_execution"],
+    "filePatterns": [],
+    "intentTags": ["tmux", "terminal-native", "pane-inspection"]
+  },
+  "requires": {
+    "binaries": ["tmux", "turtle-term"],
+    "anyBins": [],
+    "tools": ["policy-fabric"]
+  },
+  "executionSurfaceRef": "urn:srcos:surface:turtle-tmux-default",
+  "policyBindings": ["urn:srcos:policy:turtle-tmux-bridge"],
+  "artifactOutputs": ["terminal-summary", "terminal-command-receipt"],
+  "reviewMode": false,
+  "allowShellExecution": true,
+  "protectedPaths": ["$HOME/.ssh", "$HOME/.gnupg", "$HOME/.aws", "$HOME/.kube"]
+}
