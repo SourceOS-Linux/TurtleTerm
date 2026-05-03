@@ -35,15 +35,18 @@ Each tarball has a checksum file.
 Each tarball has a TurtleTerm manifest with:
 
 - product identity
-- engine attribution
 - version
 - target
 - archive file name
 - archive SHA-256
 - license
-- included binaries
+- third-party notice reference
+- public TurtleTerm commands
+- private runtime path
 - profile path
 - docs path
+- skill manifest path
+- brand asset path
 - install validation commands
 
 ### Artifact verifier
@@ -62,11 +65,13 @@ The verifier checks:
 - checksum matches archive
 - manifest schema is expected
 - product is TurtleTerm
-- engine is WezTerm
 - manifest archive hash matches
-- required binaries are present
-- license and README files are present
-- TurtleTerm profile is present
+- TurtleTerm public commands are present
+- private runtime binaries are not exposed on the product PATH
+- license and third-party notice files are present
+- TurtleTerm product profile is present
+- TurtleTerm brand assets are present
+- TurtleTerm skill manifests are present
 - SourceOS documentation is present
 
 ### GitHub artifact attestations
@@ -91,7 +96,7 @@ Homebrew is the preferred macOS/Linux installation path.
 Current no-checkout install path:
 
 ```bash
-brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/wezterm/main/packaging/homebrew/Formula/turtle-term.rb
+brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/packaging/homebrew/Formula/turtle-term.rb
 ```
 
 Future tap path:
@@ -99,6 +104,10 @@ Future tap path:
 ```bash
 brew install SourceOS-Linux/tap/turtle-term
 ```
+
+## Third-party notices
+
+Required third-party notices are preserved in `THIRD_PARTY_NOTICES.md` and release artifacts.
 
 ## Windows status
 
