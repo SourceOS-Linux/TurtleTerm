@@ -39,13 +39,21 @@ class TurtleTerm < Formula
     bin.install "target/release/wezterm-gui"
     bin.install "target/release/wezterm-mux-server"
 
-    chmod 0755, "assets/sourceos/bin/sourceos-term"
-    chmod 0755, "assets/sourceos/bin/turtle-term"
-    bin.install "assets/sourceos/bin/sourceos-term"
-    bin.install "assets/sourceos/bin/turtle-term"
+    turtle_scripts = %w[
+      sourceos-term
+      turtle-term
+      turtle-agentd
+      turtle-agentctl
+      turtle-tmux
+    ]
+    turtle_scripts.each do |script|
+      chmod 0755, "assets/sourceos/bin/#{script}"
+      bin.install "assets/sourceos/bin/#{script}"
+    end
 
     etc.install "assets/sourceos/wezterm.lua" => "turtle-term/wezterm.lua"
     pkgshare.install "docs/sourceos"
+    pkgshare.install "assets/sourceos/skills" => "skills"
   end
 
   def caveats
@@ -59,6 +67,7 @@ class TurtleTerm < Formula
       To test TurtleTerm:
         turtle-term paths
         turtle-term run -- echo hello
+        turtle-agentctl --stdio ping
 
       `sourceos-term` is installed as a compatibility command.
     EOS
@@ -67,6 +76,9 @@ class TurtleTerm < Formula
   test do
     assert_match "TurtleTerm command wrapper", shell_output("#{bin}/sourceos-term --help")
     assert_match "TurtleTerm command wrapper", shell_output("#{bin}/turtle-term --help")
+    assert_match "TurtleTerm local agent gateway", shell_output("#{bin}/turtle-agentd --help")
+    assert_match "TurtleTerm agent gateway CLI", shell_output("#{bin}/turtle-agentctl --help")
+    assert_match "TurtleTerm tmux bridge", shell_output("#{bin}/turtle-tmux --help")
 
     events = testpath/"events.ndjson"
     receipts = testpath/"receipts"
@@ -81,5 +93,6 @@ class TurtleTerm < Formula
     assert_match "hello", shell_output("#{bin}/turtle-term run -- echo hello")
     assert_predicate events, :exist?
     assert_match "command.completed", events.read
+    assert_match "turtle-agentd", shell_output("#{bin}/turtle-agentctl --stdio ping")
   end
 end
