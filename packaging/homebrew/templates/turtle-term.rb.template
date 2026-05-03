@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 class TurtleTerm < Formula
-  desc "TurtleTerm: SourceOS policy-aware agent terminal fabric based on WezTerm"
+  desc "TurtleTerm: SourceOS policy-aware agent terminal fabric"
   homepage "https://github.com/SourceOS-Linux/TurtleTerm"
   url "https://github.com/SourceOS-Linux/TurtleTerm/archive/refs/tags/{{TAG}}.tar.gz"
   sha256 "{{SOURCE_SHA256}}"
@@ -35,9 +35,9 @@ class TurtleTerm < Formula
     system "cargo", "build", "--release", "--locked", "-p", "wezterm-gui"
     system "cargo", "build", "--release", "--locked", "-p", "wezterm-mux-server"
 
-    bin.install "target/release/wezterm"
-    bin.install "target/release/wezterm-gui"
-    bin.install "target/release/wezterm-mux-server"
+    (libexec/"turtle-term").install "target/release/wezterm"
+    (libexec/"turtle-term").install "target/release/wezterm-gui"
+    (libexec/"turtle-term").install "target/release/wezterm-mux-server"
 
     turtle_scripts = %w[
       sourceos-term
@@ -45,6 +45,8 @@ class TurtleTerm < Formula
       turtle-agentd
       turtle-agentctl
       turtle-tmux
+      turtleterm
+      turtleterm-mux-server
     ]
     turtle_scripts.each do |script|
       chmod 0755, "assets/sourceos/bin/#{script}"
@@ -54,22 +56,24 @@ class TurtleTerm < Formula
     etc.install "assets/sourceos/wezterm.lua" => "turtle-term/wezterm.lua"
     pkgshare.install "docs/sourceos"
     pkgshare.install "assets/sourceos/skills" => "skills"
+    pkgshare.install "assets/sourceos/brand" => "brand"
   end
 
   def caveats
     <<~EOS
-      TurtleTerm installed the SourceOS WezTerm profile at:
+      TurtleTerm installed its profile at:
         #{etc}/turtle-term/wezterm.lua
 
-      To use it as your WezTerm config:
+      To use it as your terminal profile:
         ln -sf #{etc}/turtle-term/wezterm.lua ~/.wezterm.lua
+
+      To launch TurtleTerm:
+        turtleterm
 
       To test TurtleTerm:
         turtle-term paths
         turtle-term run -- echo hello
         turtle-agentctl --stdio ping
-
-      `sourceos-term` is installed as a compatibility command.
     EOS
   end
 
