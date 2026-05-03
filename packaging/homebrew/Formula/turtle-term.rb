@@ -51,7 +51,7 @@ class TurtleTerm < Formula
       bin.install "assets/sourceos/bin/#{script}"
     end
 
-    etc.install "assets/sourceos/wezterm.lua" => "turtle-term/wezterm.lua"
+    etc.install "assets/sourceos/turtleterm.lua" => "turtle-term/turtleterm.lua"
     pkgshare.install "docs/sourceos"
     pkgshare.install "assets/sourceos/skills" => "skills"
     pkgshare.install "assets/sourceos/brand" => "brand"
@@ -60,10 +60,10 @@ class TurtleTerm < Formula
   def caveats
     <<~EOS
       TurtleTerm installed its profile at:
-        #{etc}/turtle-term/wezterm.lua
+        #{etc}/turtle-term/turtleterm.lua
 
       To use it as your terminal profile:
-        ln -sf #{etc}/turtle-term/wezterm.lua ~/.wezterm.lua
+        ln -sf #{etc}/turtle-term/turtleterm.lua ~/.wezterm.lua
 
       To launch TurtleTerm:
         turtleterm
