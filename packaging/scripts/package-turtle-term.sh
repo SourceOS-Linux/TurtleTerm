@@ -10,7 +10,17 @@ archive="$out_dir/turtle-term-$version-$target.tar.gz"
 manifest="$archive.manifest.json"
 
 rm -rf "$stage"
-mkdir -p "$stage/bin" "$stage/etc/turtle-term" "$stage/share/turtle-term/sourceos" "$stage/share/turtle-term/skills" "$stage/share/turtle-term/brand" "$stage/libexec/turtle-term"
+mkdir -p \
+  "$stage/bin" \
+  "$stage/etc/turtle-term" \
+  "$stage/share/applications" \
+  "$stage/share/icons/hicolor/scalable/apps" \
+  "$stage/share/metainfo" \
+  "$stage/share/turtle-term/sourceos" \
+  "$stage/share/turtle-term/skills" \
+  "$stage/share/turtle-term/brand" \
+  "$stage/share/turtle-term/desktop" \
+  "$stage/libexec/turtle-term"
 
 cp "$repo_root/target/release/wezterm" "$stage/libexec/turtle-term/"
 cp "$repo_root/target/release/wezterm-gui" "$stage/libexec/turtle-term/"
@@ -22,9 +32,13 @@ for script in sourceos-term turtle-term turtle-agentd turtle-agentctl turtle-tmu
 done
 
 cp "$repo_root/assets/sourceos/turtleterm.lua" "$stage/etc/turtle-term/turtleterm.lua"
+cp "$repo_root/assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop" "$stage/share/applications/"
+cp "$repo_root/assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml" "$stage/share/metainfo/"
+cp "$repo_root/assets/sourceos/brand/ai.sourceos.TurtleTerm.svg" "$stage/share/icons/hicolor/scalable/apps/"
 cp -R "$repo_root/docs/sourceos/." "$stage/share/turtle-term/sourceos/"
 cp -R "$repo_root/assets/sourceos/skills/." "$stage/share/turtle-term/skills/"
 cp -R "$repo_root/assets/sourceos/brand/." "$stage/share/turtle-term/brand/"
+cp -R "$repo_root/assets/sourceos/desktop/." "$stage/share/turtle-term/desktop/"
 cp "$repo_root/LICENSE.md" "$stage/"
 cp "$repo_root/THIRD_PARTY_NOTICES.md" "$stage/" 2>/dev/null || true
 
@@ -42,6 +56,7 @@ This artifact includes:
 - TurtleTerm tmux bridge
 - TurtleTerm mux launcher
 - TurtleTerm profile
+- TurtleTerm Linux desktop metadata
 - TurtleTerm skill manifests
 - TurtleTerm turtle icon
 - SourceOS terminal documentation
