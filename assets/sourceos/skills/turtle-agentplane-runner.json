@@ -1,0 +1,25 @@
+{
+  "id": "urn:srcos:skill:turtle-agentplane-runner",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-agentplane-runner",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/AGENTPLANE_BRIDGE.md",
+  "description": "Promote TurtleTerm sessions into AgentPlane bundles and collect validation, placement, run, replay, and session evidence artifacts.",
+  "activationRules": {
+    "commands": ["agentplane.bundle.create", "agentplane.validate", "agentplane.run", "agentplane.artifacts.attach"],
+    "filePatterns": ["bundle.json"],
+    "intentTags": ["agentplane", "evidence", "replay", "bundle"]
+  },
+  "requires": {
+    "binaries": ["turtle-term"],
+    "anyBins": [],
+    "tools": ["agentplane"]
+  },
+  "executionSurfaceRef": "urn:srcos:surface:turtle-agentplane-default",
+  "policyBindings": ["urn:srcos:policy:turtle-agentplane-runner"],
+  "artifactOutputs": ["ValidationArtifact", "PlacementDecision", "RunArtifact", "ReplayArtifact", "SessionArtifact"],
+  "reviewMode": false,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
