@@ -21,7 +21,7 @@ for script in sourceos-term turtle-term turtle-agentd turtle-agentctl turtle-tmu
   chmod 0755 "$stage/bin/$script"
 done
 
-cp "$repo_root/assets/sourceos/wezterm.lua" "$stage/etc/turtle-term/wezterm.lua"
+cp "$repo_root/assets/sourceos/turtleterm.lua" "$stage/etc/turtle-term/turtleterm.lua"
 cp -R "$repo_root/docs/sourceos/." "$stage/share/turtle-term/sourceos/"
 cp -R "$repo_root/assets/sourceos/skills/." "$stage/share/turtle-term/skills/"
 cp -R "$repo_root/assets/sourceos/brand/." "$stage/share/turtle-term/brand/"
