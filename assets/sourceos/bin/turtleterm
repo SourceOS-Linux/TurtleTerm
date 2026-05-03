@@ -4,12 +4,23 @@
 set -eu
 
 bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-private_gui="${bin_dir}/../libexec/turtle-term/wezterm-gui"
 
 export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
 
-if [ -x "$private_gui" ]; then
-  exec "$private_gui" "$@"
+try_exec() {
+  candidate="$1"
+  shift
+  if [ -x "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+}
+
+if [ -n "${TURTLE_TERM_RUNTIME_DIR:-}" ]; then
+  try_exec "$TURTLE_TERM_RUNTIME_DIR/wezterm-gui" "$@"
 fi
+
+try_exec "${bin_dir}/../libexec/turtle-term/wezterm-gui" "$@"
+try_exec "${bin_dir}/../opt/turtle-term/libexec/turtle-term/wezterm-gui" "$@"
+try_exec "${bin_dir}/../Cellar/turtle-term/HEAD/libexec/turtle-term/wezterm-gui" "$@"
 
 exec wezterm-gui "$@"
