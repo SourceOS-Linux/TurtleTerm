@@ -1,0 +1,25 @@
+{
+  "id": "urn:srcos:skill:turtle-a2a-gateway",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-a2a-gateway",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/A2A_MCP_ZEROTRUST_BRIDGE.md",
+  "description": "Delegate TurtleTerm tasks to registered agents through A2A with Agent Registry and Policy Fabric enforcement.",
+  "activationRules": {
+    "commands": ["a2a.delegate", "a2a.status", "a2a.receipts"],
+    "filePatterns": [],
+    "intentTags": ["a2a", "agent-delegation", "registered-agent"]
+  },
+  "requires": {
+    "binaries": ["turtle-term"],
+    "anyBins": [],
+    "tools": ["agent-registry", "policy-fabric"]
+  },
+  "executionSurfaceRef": "urn:srcos:surface:turtle-a2a-default",
+  "policyBindings": ["urn:srcos:policy:turtle-a2a-gateway"],
+  "artifactOutputs": ["agent-session", "session-receipt", "delegation-receipt"],
+  "reviewMode": false,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
