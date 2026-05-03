@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# TurtleTerm graphical launcher.
+# This is the product-facing launcher for the terminal application.
+set -eu
+export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
+exec wezterm-gui "$@"
