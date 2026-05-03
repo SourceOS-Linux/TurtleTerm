@@ -26,7 +26,7 @@ REQUIRED_FILES = [
     "assets/sourceos/bin/turtle-agentd",
     "assets/sourceos/bin/turtle-agentctl",
     "assets/sourceos/bin/turtle-tmux",
-    "assets/sourceos/wezterm.lua",
+    "assets/sourceos/turtleterm.lua",
     "assets/sourceos/tests/test_sourceos_term_smoke.py",
     "assets/sourceos/tests/test_turtle_term_branding.py",
     "assets/sourceos/tests/test_turtle_term_release_readiness.py",
@@ -65,6 +65,7 @@ REQUIRED_FORMULA_SNIPPETS = [
     "desc \"TurtleTerm: SourceOS policy-aware agent terminal fabric\"",
     "libexec/\"turtle-term\"",
     "turtleterm",
+    "turtleterm.lua",
     "pkgshare.install \"assets/sourceos/brand\" => \"brand\"",
     "assert_match \"TurtleTerm command wrapper\"",
 ]
@@ -85,6 +86,7 @@ REQUIRED_PACKAGE_SCRIPT_SNIPPETS = [
     "write-turtle-term-manifest.py",
     "libexec/turtle-term",
     "turtleterm",
+    "turtleterm.lua",
     "share/turtle-term/brand",
     "THIRD_PARTY_NOTICES.md",
 ]
@@ -124,6 +126,7 @@ def main() -> int:
     assert "Windows packaging is postponed" in install
     assert "TURTLE_TERM_VERSION=turtle-term-v0.1.0" in install
     assert "Then launch TurtleTerm:" in install
+    assert "turtleterm.lua" in install
 
     checklist = read("docs/sourceos/RELEASE_CHECKLIST.md")
     assert "macOS ARM64" in checklist
