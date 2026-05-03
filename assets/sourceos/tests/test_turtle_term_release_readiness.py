@@ -21,6 +21,7 @@ REQUIRED_FILES = [
     "assets/sourceos/wezterm.lua",
     "assets/sourceos/tests/test_sourceos_term_smoke.py",
     "assets/sourceos/tests/test_turtle_term_branding.py",
+    "assets/sourceos/tests/test_turtle_term_release_readiness.py",
     "packaging/homebrew/Formula/turtle-term.rb",
     "packaging/homebrew/templates/turtle-term.rb.template",
     "packaging/homebrew/README.md",
@@ -29,6 +30,7 @@ REQUIRED_FILES = [
     "packaging/scripts/package-turtle-term.sh",
     "packaging/scripts/bootstrap-homebrew-tap.sh",
     "packaging/scripts/render-stable-homebrew-formula.py",
+    "packaging/scripts/write-turtle-term-manifest.py",
     ".github/workflows/turtle-term-release.yml",
     ".github/workflows/turtle-term-homebrew.yml",
     ".github/workflows/turtle-term-scripts.yml",
@@ -63,6 +65,14 @@ REQUIRED_RELEASE_WORKFLOW_SNIPPETS = [
     "linux-x86_64",
     "linux-arm64",
     "softprops/action-gh-release",
+    "turtle-term-*.tar.gz.manifest.json",
+]
+
+REQUIRED_PACKAGE_SCRIPT_SNIPPETS = [
+    "write-turtle-term-manifest.py",
+    "--version",
+    "--target",
+    "--archive",
 ]
 
 
@@ -86,6 +96,7 @@ def main() -> int:
     assert_contains("README.md", REQUIRED_README_SNIPPETS)
     assert_contains("packaging/homebrew/Formula/turtle-term.rb", REQUIRED_FORMULA_SNIPPETS)
     assert_contains(".github/workflows/turtle-term-release.yml", REQUIRED_RELEASE_WORKFLOW_SNIPPETS)
+    assert_contains("packaging/scripts/package-turtle-term.sh", REQUIRED_PACKAGE_SCRIPT_SNIPPETS)
 
     install = read("docs/sourceos/INSTALL.md")
     assert "Windows packaging is postponed" in install
@@ -96,6 +107,7 @@ def main() -> int:
     assert "macOS Intel" in checklist
     assert "Linux x86_64" in checklist
     assert "Linux ARM64" in checklist
+    assert "manifest" in checklist.lower()
 
     return 0
 
