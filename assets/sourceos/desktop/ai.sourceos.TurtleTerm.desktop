@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=TurtleTerm
+GenericName=Terminal Workbench
+Comment=Trusted terminal sessions, command receipts, and agent-governed execution
+Exec=turtleterm %u
+Icon=ai.sourceos.TurtleTerm
+Terminal=false
+Categories=System;TerminalEmulator;Development;
+Keywords=terminal;shell;agent;sourceos;turtle;receipt;policy;
+StartupNotify=true
+StartupWMClass=TurtleTerm
+MimeType=x-scheme-handler/turtleterm;
