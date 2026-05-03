@@ -70,6 +70,13 @@ class TurtleTerm < Formula
     pkgshare.install "docs/sourceos"
     pkgshare.install "assets/sourceos/skills" => "skills"
     pkgshare.install "assets/sourceos/brand" => "brand"
+    pkgshare.install "assets/sourceos/desktop" => "desktop"
+
+    if OS.linux?
+      (share/"applications").install "assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop"
+      (share/"metainfo").install "assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml"
+      (share/"icons/hicolor/scalable/apps").install "assets/sourceos/brand/ai.sourceos.TurtleTerm.svg"
+    end
   end
 
   def caveats
