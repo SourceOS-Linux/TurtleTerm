@@ -1,0 +1,40 @@
+{
+  "id": "urn:srcos:skill:turtle-terminal-inspector",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-terminal-inspector",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/SESSION_CONTRACT.md",
+  "description": "Inspect and summarize TurtleTerm terminal sessions, panes, receipts, and metadata without executing commands.",
+  "activationRules": {
+    "commands": [
+      "terminal.inspect",
+      "terminal.summarize",
+      "terminal.receipts"
+    ],
+    "filePatterns": [],
+    "intentTags": [
+      "terminal-inspection",
+      "session-summary",
+      "receipt-review"
+    ]
+  },
+  "requires": {
+    "binaries": [
+      "turtle-term"
+    ],
+    "anyBins": [],
+    "tools": []
+  },
+  "executionSurfaceRef": null,
+  "policyBindings": [
+    "urn:srcos:policy:turtle-terminal-inspect"
+  ],
+  "artifactOutputs": [
+    "terminal-summary",
+    "receipt-reference"
+  ],
+  "reviewMode": true,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
