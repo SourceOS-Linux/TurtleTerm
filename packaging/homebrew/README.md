@@ -1,6 +1,6 @@
 # TurtleTerm Homebrew Packaging
 
-This directory stages Homebrew packaging for TurtleTerm, the SourceOS policy-aware agent terminal workbench built on the WezTerm engine.
+This directory stages Homebrew packaging for TurtleTerm, the SourceOS policy-aware agent terminal fabric.
 
 The final tap should live in `SourceOS-Linux/homebrew-tap`. Until that tap exists, developers can test the formula directly from this repository.
 
@@ -22,22 +22,28 @@ brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
 ## Test installed commands
 
 ```bash
+turtleterm --version || true
 turtle-term paths
 turtle-term run -- echo hello
+turtle-agentctl --stdio ping
 sourceos-term paths
 ```
 
-`turtle-term` is the product command. `sourceos-term` remains as a compatibility command for existing SourceOS contract work.
+`turtleterm` is the graphical product launcher. `turtle-term` is the command wrapper. `sourceos-term` remains available for SourceOS contract compatibility.
 
 ## Activate the profile
 
-The formula installs the TurtleTerm WezTerm profile under Homebrew `etc`:
+The formula installs the TurtleTerm profile under Homebrew `etc`:
 
 ```bash
 ln -sf "$(brew --prefix)/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
 ```
 
-Then launch `wezterm-gui`.
+Then launch TurtleTerm:
+
+```bash
+turtleterm
+```
 
 ## Future tap flow
 
@@ -56,6 +62,6 @@ brew install turtle-term
 
 ## Formula responsibilities
 
-The formula installs `wezterm`, `wezterm-gui`, `wezterm-mux-server`, `turtle-term`, the `sourceos-term` compatibility command, the TurtleTerm profile, and SourceOS terminal documentation.
+The formula installs TurtleTerm launchers, TurtleTerm command tools, the TurtleTerm profile, TurtleTerm skill manifests, TurtleTerm brand assets, and SourceOS terminal documentation. Private terminal runtime binaries are installed under `libexec/turtle-term` and are not exposed as product commands.
 
 Windows packaging is postponed until the macOS and Linux Homebrew lane is stable.
