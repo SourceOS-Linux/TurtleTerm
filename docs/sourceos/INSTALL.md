@@ -5,7 +5,7 @@
 Before the public tap exists, users can install directly from the raw formula in this repository:
 
 ```bash
-brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/wezterm/main/packaging/homebrew/Formula/turtle-term.rb
+brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/packaging/homebrew/Formula/turtle-term.rb
 ```
 
 This is the current easiest no-checkout install path for macOS and Linux.
@@ -35,7 +35,7 @@ brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
 For users who do not want Homebrew, use the release artifact installer after the first TurtleTerm release exists:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SourceOS-Linux/wezterm/main/packaging/scripts/install-turtle-term.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/packaging/scripts/install-turtle-term.sh | bash
 ```
 
 Override install prefix:
