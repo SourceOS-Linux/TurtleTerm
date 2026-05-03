@@ -1,6 +1,15 @@
 #!/usr/bin/env sh
 # TurtleTerm graphical launcher.
-# This is the product-facing launcher for the terminal application.
+# Product-facing launcher for the terminal application.
 set -eu
+
+bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+private_gui="${bin_dir}/../libexec/turtle-term/wezterm-gui"
+
 export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
+
+if [ -x "$private_gui" ]; then
+  exec "$private_gui" "$@"
+fi
+
 exec wezterm-gui "$@"
