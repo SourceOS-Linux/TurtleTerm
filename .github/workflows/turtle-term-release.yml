@@ -89,9 +89,11 @@ jobs:
         shell: bash
         run: |
           ls -lah dist/
-          test -n "$(find dist -name 'turtle-term-*.tar.gz' -print -quit)"
-          test -n "$(find dist -name 'turtle-term-*.tar.gz.sha256' -print -quit)"
-          test -n "$(find dist -name 'turtle-term-*.tar.gz.manifest.json' -print -quit)"
+          archive="$(find dist -name 'turtle-term-*.tar.gz' -print -quit)"
+          test -n "$archive"
+          test -f "$archive.sha256"
+          test -f "$archive.manifest.json"
+          python3 packaging/scripts/verify-turtle-term-artifact.py "$archive"
 
       - name: Attest TurtleTerm release artifacts
         uses: actions/attest@v4
