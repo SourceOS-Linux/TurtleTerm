@@ -10,18 +10,26 @@ import tarfile
 from pathlib import Path
 
 
-REQUIRED_BINARIES = {
+REQUIRED_PUBLIC_COMMANDS = {
+    "turtleterm",
+    "turtleterm-mux-server",
+    "turtle-term",
+    "turtle-agentd",
+    "turtle-agentctl",
+    "turtle-tmux",
+    "sourceos-term",
+}
+
+REQUIRED_PRIVATE_RUNTIME = {
     "wezterm",
     "wezterm-gui",
     "wezterm-mux-server",
-    "turtle-term",
-    "sourceos-term",
 }
 
 REQUIRED_TOP_LEVEL_SUFFIXES = {
     "LICENSE.md",
     "README.md",
-    "UPSTREAM_WEZTERM_README.md",
+    "THIRD_PARTY_NOTICES.md",
 }
 
 
@@ -75,22 +83,28 @@ def main() -> int:
         raise SystemExit("unexpected manifest schema")
     if manifest.get("product") != "TurtleTerm":
         raise SystemExit("unexpected manifest product")
-    if manifest.get("engine") != "WezTerm":
-        raise SystemExit("unexpected manifest engine")
     if manifest.get("archive") != archive.name:
         raise SystemExit("manifest archive name does not match")
     if manifest.get("archive_sha256") != archive_hash:
         raise SystemExit("manifest archive hash does not match")
+    if manifest.get("runtime") != "private-terminal-runtime":
+        raise SystemExit("manifest runtime must be private-terminal-runtime")
 
-    binaries = set(manifest.get("binaries", []))
-    missing_manifest_bins = REQUIRED_BINARIES - binaries
-    if missing_manifest_bins:
-        raise SystemExit(f"manifest missing binaries: {sorted(missing_manifest_bins)}")
+    public_commands = set(manifest.get("public_commands", []))
+    missing_commands = REQUIRED_PUBLIC_COMMANDS - public_commands
+    if missing_commands:
+        raise SystemExit(f"manifest missing public commands: {sorted(missing_commands)}")
 
     members = archive_members(archive)
-    for binary in REQUIRED_BINARIES:
-        if not suffix_present(members, f"bin/{binary}"):
-            raise SystemExit(f"archive missing binary: {binary}")
+    for command in REQUIRED_PUBLIC_COMMANDS:
+        if not suffix_present(members, f"bin/{command}"):
+            raise SystemExit(f"archive missing public command: {command}")
+
+    for runtime in REQUIRED_PRIVATE_RUNTIME:
+        if not suffix_present(members, f"libexec/turtle-term/{runtime}"):
+            raise SystemExit(f"archive missing private runtime binary: {runtime}")
+        if suffix_present(members, f"bin/{runtime}"):
+            raise SystemExit(f"private runtime binary exposed on product PATH: {runtime}")
 
     for suffix in REQUIRED_TOP_LEVEL_SUFFIXES:
         if not suffix_present(members, suffix):
@@ -100,6 +114,10 @@ def main() -> int:
         raise SystemExit("archive missing TurtleTerm profile")
     if not any("share/turtle-term/sourceos/" in member for member in members):
         raise SystemExit("archive missing SourceOS documentation")
+    if not any("share/turtle-term/skills/" in member for member in members):
+        raise SystemExit("archive missing TurtleTerm skill manifests")
+    if not any("share/turtle-term/brand/" in member for member in members):
+        raise SystemExit("archive missing TurtleTerm brand assets")
 
     print(f"verified {archive.name}")
     return 0
