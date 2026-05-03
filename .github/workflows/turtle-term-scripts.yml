@@ -59,6 +59,7 @@ jobs:
           python3 -m py_compile assets/sourceos/tests/test_turtle_term_release_readiness.py
           python3 -m py_compile assets/sourceos/tests/test_turtle_agentic_integration_plan.py
           python3 -m py_compile assets/sourceos/tests/test_turtle_product_identity.py
+          python3 -m py_compile assets/sourceos/tests/test_turtle_linux_desktop_identity.py
 
       - name: Run smoke test
         run: python3 assets/sourceos/tests/test_sourceos_term_smoke.py
@@ -68,6 +69,9 @@ jobs:
 
       - name: Run product identity guard
         run: python3 assets/sourceos/tests/test_turtle_product_identity.py
+
+      - name: Run Linux desktop identity guard
+        run: python3 assets/sourceos/tests/test_turtle_linux_desktop_identity.py
 
       - name: Run package readiness guard
         run: python3 assets/sourceos/tests/test_turtle_term_release_readiness.py
