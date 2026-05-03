@@ -59,12 +59,13 @@ TURTLE_TERM_USE_BREW=never bash packaging/scripts/install-turtle-term.sh
 ## Validate install
 
 ```bash
+turtleterm --version || true
 turtle-term paths
 turtle-term run -- echo turtle-term-ok
-sourceos-term paths
+turtle-agentctl --stdio ping
 ```
 
-## Activate TurtleTerm WezTerm profile
+## Activate TurtleTerm profile
 
 Homebrew profile path:
 
@@ -78,10 +79,10 @@ Direct install profile path:
 ln -sf "$HOME/.local/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
 ```
 
-Then launch:
+Then launch TurtleTerm:
 
 ```bash
-wezterm-gui
+turtleterm
 ```
 
 ## Windows status
