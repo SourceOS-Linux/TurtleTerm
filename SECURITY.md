@@ -2,18 +2,21 @@
 
 ## Scope
 
-TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench built on the WezTerm engine.
+TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench for trusted command execution, terminal receipts, agent delegation, and reproducible operator workflows.
 
 Security-sensitive areas include:
 
 - terminal command execution
-- `turtle-term` and `sourceos-term` wrappers
+- `turtleterm`, `turtle-term`, and `sourceos-term` wrappers
+- `turtle-agentd` local gateway
+- `turtle-agentctl` command interface
+- `turtle-tmux` bridge
 - SourceOS terminal event and receipt generation
 - release packaging and installer scripts
 - Homebrew formulae and tap automation
 - GitHub Actions release workflows
 - artifact checksums, manifests, SBOMs, and attestations
-- upstream WezTerm integration and sync posture
+- third-party notice and private runtime packaging boundaries
 
 ## Supported versions
 
@@ -50,11 +53,10 @@ Release artifacts should include:
 - release manifest JSON
 - SPDX JSON SBOM
 - GitHub artifact attestations
+- third-party notices
 
 Release workflows should verify artifacts before publishing them.
 
-## Upstream attribution and sync
+## Runtime and notices
 
-TurtleTerm is built on the WezTerm engine. Upstream WezTerm attribution and license posture must be preserved.
-
-Upstream-friendly fixes should be suitable for upstream submission when practical. SourceOS-specific behavior should remain namespaced, opt-in, and documented.
+TurtleTerm presents TurtleTerm product commands and stores private terminal runtime files outside the public command path. Required third-party notices and license attribution are preserved in `LICENSE.md`, `THIRD_PARTY_NOTICES.md`, and release artifacts.
