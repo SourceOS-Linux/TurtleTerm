@@ -8,6 +8,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 
+PRODUCT_SURFACES = [
+    "README.md",
+    "docs/sourceos/INSTALL.md",
+    "packaging/homebrew/Formula/turtle-term.rb",
+    "packaging/homebrew/templates/turtle-term.rb.template",
+]
+
+FORBIDDEN_PRODUCT_SURFACE_TERMS = [
+    "built on the back of WezTerm",
+    "WezTerm engine",
+    "SourceOS WezTerm profile",
+    "upstream terminal emulator",
+]
+
 
 def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
@@ -18,19 +32,33 @@ def main() -> int:
     formula = read("packaging/homebrew/Formula/turtle-term.rb")
     template = read("packaging/homebrew/templates/turtle-term.rb.template")
     install = read("docs/sourceos/INSTALL.md")
+    notices = read("THIRD_PARTY_NOTICES.md")
 
     assert "They say the world was built on the back of a turtle" in readme
-    assert "TurtleTerm is built on the back of WezTerm" in readme
-    assert "brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/wezterm/main/packaging/homebrew/Formula/turtle-term.rb" in readme
+    assert "TurtleTerm carries the shell on its back" in readme
+    assert "brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/packaging/homebrew/Formula/turtle-term.rb" in readme
+    assert "turtleterm" in readme
+    assert "TurtleTerm turtle icon" in readme
 
     assert "class TurtleTerm < Formula" in formula
     assert "class TurtleTerm < Formula" in template
-    assert "turtle-term run -- echo hello" in formula
+    assert "desc \"TurtleTerm: SourceOS policy-aware agent terminal fabric\"" in formula
+    assert "To launch TurtleTerm:" in formula
+    assert "turtleterm" in formula
     assert "TurtleTerm command wrapper" in formula
     assert "TurtleTerm command wrapper" in template
 
-    assert "brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/wezterm/main/packaging/homebrew/Formula/turtle-term.rb" in install
+    assert "brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/packaging/homebrew/Formula/turtle-term.rb" in install
+    assert "Then launch TurtleTerm:" in install
     assert "Windows packaging is postponed" in install
+
+    assert "WezTerm" in notices
+    assert "Third-Party Notices" in notices
+
+    for path in PRODUCT_SURFACES:
+        content = read(path)
+        for term in FORBIDDEN_PRODUCT_SURFACE_TERMS:
+            assert term not in content, f"product surface {path} leaked forbidden term: {term}"
 
     return 0
 
