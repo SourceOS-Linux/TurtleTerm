@@ -1,10 +1,10 @@
 # TurtleTerm
 
-> They say the world was built on the back of a turtle. TurtleTerm is built on the back of WezTerm.
+> They say the world was built on the back of a turtle. TurtleTerm carries the shell on its back.
 
-TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench built on the WezTerm engine.
+TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench for trusted command execution, terminal receipts, agent delegation, and reproducible operator workflows.
 
-WezTerm remains the credited upstream terminal emulator and multiplexer. TurtleTerm layers SourceOS session contracts, command receipts, policy-aware execution lanes, Matrix/AgentTerm integration, and macOS/Linux packaging on top of that engine.
+TurtleTerm presents its own product surface: TurtleTerm launchers, TurtleTerm profile, TurtleTerm agent gateway, TurtleTerm release artifacts, and TurtleTerm skill manifests. Third-party notices and required license attribution are preserved in the repository license files and release artifacts.
 
 ## Install
 
@@ -40,25 +40,35 @@ curl -fsSL https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/pack
 
 See `docs/sourceos/INSTALL.md` for full install, profile activation, and validation instructions.
 
+## Launch
+
+```bash
+turtleterm
+```
+
 ## Commands
 
 ```bash
 turtle-term paths
 turtle-term run -- echo hello
-sourceos-term paths
+turtle-agentctl --stdio ping
+turtle-tmux panes
 ```
 
-`turtle-term` is the product command. `sourceos-term` remains as a compatibility command for SourceOS contract work.
+`turtle-term` is the command wrapper. `turtleterm` is the graphical launcher. `sourceos-term` remains available for SourceOS contract compatibility.
 
-## SourceOS additions
+## Product surfaces
 
-SourceOS-specific docs, profiles, packaging, and sidecar-friendly wrappers live under:
+- TurtleTerm graphical launcher
+- TurtleTerm mux launcher
+- TurtleTerm command wrapper
+- TurtleTerm local agent gateway
+- TurtleTerm agent CLI
+- TurtleTerm tmux bridge
+- TurtleTerm skill manifests
+- TurtleTerm turtle icon
+- TurtleTerm release artifacts, manifests, SBOMs, and attestations
 
-- `docs/sourceos/`
-- `assets/sourceos/`
-- `packaging/homebrew/`
-- `packaging/scripts/`
+## License and notices
 
-## License and attribution
-
-This fork preserves upstream WezTerm attribution and licensing. See `LICENSE.md` for the MIT license and bundled font license notes.
+TurtleTerm is MIT licensed. Required third-party notices are preserved in `LICENSE.md` and release artifacts.
