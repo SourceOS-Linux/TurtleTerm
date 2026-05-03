@@ -1,0 +1,25 @@
+{
+  "id": "urn:srcos:skill:turtle-mcp-bridge",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-mcp-bridge",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/MCP_BRIDGE.md",
+  "description": "Expose TurtleTerm terminal/session tools and resources through MCP without granting raw shell authority.",
+  "activationRules": {
+    "commands": ["mcp.terminal.sessions", "mcp.terminal.inspect", "mcp.terminal.summarize", "mcp.terminal.request_execution"],
+    "filePatterns": [],
+    "intentTags": ["mcp", "tools", "resources", "terminal-context"]
+  },
+  "requires": {
+    "binaries": ["turtle-term"],
+    "anyBins": [],
+    "tools": ["policy-fabric"]
+  },
+  "executionSurfaceRef": "urn:srcos:surface:turtle-mcp-default",
+  "policyBindings": ["urn:srcos:policy:turtle-mcp-bridge"],
+  "artifactOutputs": ["mcp-tool-result", "execution-decision", "terminal-command-receipt"],
+  "reviewMode": false,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
