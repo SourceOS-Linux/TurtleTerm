@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""TurtleTerm tmux bridge v0.
+
+This bridge is inspect/propose-first. It reads tmux state and routes summaries or
+execution requests through turtle-agentctl. It does not inject commands directly
+into tmux panes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+AGENTCTL = Path(__file__).with_name("turtle-agentctl")
+
+
+def require_tmux() -> None:
+    if shutil.which("tmux") is None:
+        raise SystemExit("tmux is required for turtle-tmux")
+
+
+def tmux(args: list[str]) -> str:
+    require_tmux()
+    result = subprocess.run(["tmux", *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or result.stdout.strip())
+    return result.stdout
+
+
+def agentctl(args: list[str]) -> dict[str, Any]:
+    result = subprocess.run([sys.executable, str(AGENTCTL), "--stdio", *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    if result.returncode != 0:
+        raise SystemExit(result.stderr.strip() or result.stdout.strip())
+    return json.loads(result.stdout)
+
+
+def print_json(payload: Any) -> int:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def list_sessions() -> list[dict[str, str]]:
+    output = tmux(["list-sessions", "-F", "#{session_id}\t#{session_name}\t#{session_windows}\t#{session_attached}"])
+    rows = []
+    for line in output.splitlines():
+        sid, name, windows, attached = line.split("\t")
+        rows.append({"session_id": sid, "name": name, "windows": windows, "attached": attached})
+    return rows
+
+
+def list_panes() -> list[dict[str, str]]:
+    fmt = "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_active}"
+    output = tmux(["list-panes", "-a", "-F", fmt])
+    rows = []
+    for line in output.splitlines():
+        session, window, pane, pane_id, cwd, command, active = line.split("\t")
+        rows.append({
+            "session": session,
+            "window": window,
+            "pane": pane,
+            "pane_id": pane_id,
+            "cwd": cwd,
+            "command": command,
+            "active": active,
+        })
+    return rows
+
+
+def capture_pane(pane_id: str, lines: int) -> dict[str, Any]:
+    output = tmux(["capture-pane", "-p", "-t", pane_id, "-S", f"-{lines}"])
+    return {"pane_id": pane_id, "lines": lines, "output": output}
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="TurtleTerm tmux bridge v0")
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("sessions")
+    sub.add_parser("panes")
+
+    inspect_p = sub.add_parser("inspect")
+    inspect_p.add_argument("pane_id")
+    inspect_p.add_argument("--lines", type=int, default=200)
+
+    summarize_p = sub.add_parser("summarize")
+    summarize_p.add_argument("pane_id")
+    summarize_p.add_argument("--lines", type=int, default=200)
+
+    propose_p = sub.add_parser("propose")
+    propose_p.add_argument("pane_id")
+    propose_p.add_argument("cmd", nargs=argparse.REMAINDER)
+
+    exec_p = sub.add_parser("request-execution")
+    exec_p.add_argument("pane_id")
+    exec_p.add_argument("cmd", nargs=argparse.REMAINDER)
+
+    args = parser.parse_args(argv)
+
+    if args.command == "sessions":
+        return print_json({"sessions": list_sessions()})
+    if args.command == "panes":
+        return print_json({"panes": list_panes()})
+    if args.command == "inspect":
+        return print_json(capture_pane(args.pane_id, args.lines))
+    if args.command == "summarize":
+        captured = capture_pane(args.pane_id, args.lines)
+        response = agentctl(["summarize"])
+        response.setdefault("data", {})["tmux_pane"] = {"pane_id": args.pane_id, "captured_lines": args.lines, "captured_bytes": len(captured["output"])}
+        return print_json(response)
+    if args.command == "propose":
+        command = " ".join(args.cmd).strip()
+        return print_json(agentctl(["propose", command]))
+    if args.command == "request-execution":
+        command = " ".join(args.cmd).strip()
+        response = agentctl(["request-execution", command])
+        response.setdefault("data", {})["tmux_pane_id"] = args.pane_id
+        return print_json(response)
+
+    parser.print_help(sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
