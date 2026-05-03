@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${TURTLE_TERM_REPO:-SourceOS-Linux/wezterm}"
+repo="${TURTLE_TERM_REPO:-SourceOS-Linux/TurtleTerm}"
 prefix="${TURTLE_TERM_PREFIX:-$HOME/.local}"
 version="${TURTLE_TERM_VERSION:-latest}"
 use_brew="${TURTLE_TERM_USE_BREW:-auto}"
@@ -63,11 +63,13 @@ if [ -z "$root" ]; then
   exit 1
 fi
 
-mkdir -p "$prefix/bin" "$prefix/etc" "$prefix/share"
+mkdir -p "$prefix/bin" "$prefix/etc" "$prefix/share" "$prefix/libexec"
 cp -R "$root/bin/." "$prefix/bin/"
 cp -R "$root/etc/." "$prefix/etc/"
 cp -R "$root/share/." "$prefix/share/"
+cp -R "$root/libexec/." "$prefix/libexec/"
 
 log "TurtleTerm installed to $prefix"
 log "Ensure $prefix/bin is on PATH."
+log "Launch with: turtleterm"
 log "Test with: turtle-term run -- echo turtle-term-ok"
