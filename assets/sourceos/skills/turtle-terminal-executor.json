@@ -1,0 +1,47 @@
+{
+  "id": "urn:srcos:skill:turtle-terminal-executor",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-terminal-executor",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/A2A_MCP_ZEROTRUST_BRIDGE.md",
+  "description": "Request policy-gated terminal command execution through TurtleTerm. This skill must not execute without an ExecutionDecision.",
+  "activationRules": {
+    "commands": [
+      "terminal.request_execution",
+      "terminal.execute_command"
+    ],
+    "filePatterns": [],
+    "intentTags": [
+      "terminal-execution",
+      "policy-gated-command"
+    ]
+  },
+  "requires": {
+    "binaries": [
+      "turtle-term"
+    ],
+    "anyBins": [],
+    "tools": [
+      "policy-fabric",
+      "agent-registry"
+    ]
+  },
+  "executionSurfaceRef": "urn:srcos:surface:turtle-terminal-default",
+  "policyBindings": [
+    "urn:srcos:policy:turtle-terminal-execute"
+  ],
+  "artifactOutputs": [
+    "terminal-command-receipt",
+    "execution-decision"
+  ],
+  "reviewMode": false,
+  "allowShellExecution": true,
+  "protectedPaths": [
+    "$HOME/.ssh",
+    "$HOME/.gnupg",
+    "$HOME/.config/gh",
+    "$HOME/.aws",
+    "$HOME/.kube"
+  ]
+}
