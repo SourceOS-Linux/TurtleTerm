@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 class TurtleTerm < Formula
-  desc "TurtleTerm: SourceOS policy-aware agent terminal fabric based on WezTerm"
+  desc "TurtleTerm: SourceOS policy-aware agent terminal fabric"
   homepage "https://github.com/SourceOS-Linux/TurtleTerm"
   license "MIT"
   head "https://github.com/SourceOS-Linux/TurtleTerm.git", branch: "main"
@@ -33,9 +33,9 @@ class TurtleTerm < Formula
     system "cargo", "build", "--release", "--locked", "-p", "wezterm-gui"
     system "cargo", "build", "--release", "--locked", "-p", "wezterm-mux-server"
 
-    bin.install "target/release/wezterm"
-    bin.install "target/release/wezterm-gui"
-    bin.install "target/release/wezterm-mux-server"
+    libexec.install "target/release/wezterm"
+    libexec.install "target/release/wezterm-gui"
+    libexec.install "target/release/wezterm-mux-server"
 
     turtle_scripts = %w[
       sourceos-term
@@ -43,32 +43,37 @@ class TurtleTerm < Formula
       turtle-agentd
       turtle-agentctl
       turtle-tmux
+      turtleterm
+      turtleterm-mux-server
     ]
     turtle_scripts.each do |script|
       chmod 0755, "assets/sourceos/bin/#{script}"
       bin.install "assets/sourceos/bin/#{script}"
     end
 
+    bin.env_script_all_files(libexec, PATH: "#{libexec}:$PATH")
+
     etc.install "assets/sourceos/wezterm.lua" => "turtle-term/wezterm.lua"
     pkgshare.install "docs/sourceos"
     pkgshare.install "assets/sourceos/skills" => "skills"
+    pkgshare.install "assets/sourceos/brand" => "brand"
   end
 
   def caveats
     <<~EOS
-      TurtleTerm installed the SourceOS WezTerm profile at:
+      TurtleTerm installed its profile at:
         #{etc}/turtle-term/wezterm.lua
 
-      To use it as your WezTerm config:
+      To use it as your terminal profile:
         ln -sf #{etc}/turtle-term/wezterm.lua ~/.wezterm.lua
+
+      To launch TurtleTerm:
+        turtleterm
 
       To test TurtleTerm:
         turtle-term paths
         turtle-term run -- echo hello
         turtle-agentctl --stdio ping
-
-      `sourceos-term` is installed as a compatibility command.
-      This formula is experimental and currently intended for --HEAD installs.
     EOS
   end
 
