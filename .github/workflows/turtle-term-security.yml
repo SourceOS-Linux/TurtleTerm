@@ -1,0 +1,56 @@
+name: TurtleTerm Security Checks
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '**/Cargo.toml'
+      - 'assets/sourceos/**'
+      - 'packaging/**'
+      - '.github/workflows/turtle-term-security.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '**/Cargo.toml'
+      - 'assets/sourceos/**'
+      - 'packaging/**'
+      - '.github/workflows/turtle-term-security.yml'
+  workflow_dispatch:
+
+jobs:
+  cargo-audit:
+    name: Cargo audit
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  wrapper-safety:
+    name: Wrapper safety checks
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Ensure wrappers do not grant ambient agent shell access
+        run: |
+          grep -R "terminal.execute_command" -n docs/sourceos assets/sourceos || true
+          grep -R "ambient shell" -n docs/sourceos SECURITY.md
+          python3 assets/sourceos/tests/test_sourceos_term_smoke.py
+          python3 assets/sourceos/tests/test_turtle_term_branding.py
+          python3 assets/sourceos/tests/test_turtle_term_release_readiness.py
