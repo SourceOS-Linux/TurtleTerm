@@ -73,8 +73,15 @@ The release workflow builds:
 - Linux x86_64 tarball
 - Linux ARM64 tarball
 - SHA-256 checksum files
+- Release manifest JSON files
 
-Artifacts are attached to the GitHub release for the tag.
+Artifacts are attached to the GitHub release for the tag. Every tarball should have:
+
+```text
+*.tar.gz
+*.tar.gz.sha256
+*.tar.gz.manifest.json
+```
 
 ## Stable Homebrew formula promotion
 
@@ -111,7 +118,7 @@ brew install turtle-term
 5. `turtle-term paths` works.
 6. `turtle-term run -- echo hello` emits events and receipts.
 7. `sourceos-term paths` still works.
-8. A `turtle-term-v0.1.0` release publishes tarballs and checksums.
+8. A `turtle-term-v0.1.0` release publishes tarballs, checksums, and manifests.
 9. README and formula both use TurtleTerm as the public product name.
 
 ## Post-v0 hardening
