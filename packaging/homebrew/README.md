@@ -36,7 +36,7 @@ sourceos-term paths
 The formula installs the TurtleTerm profile under Homebrew `etc`:
 
 ```bash
-ln -sf "$(brew --prefix)/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
+ln -sf "$(brew --prefix)/etc/turtle-term/turtleterm.lua" ~/.wezterm.lua
 ```
 
 Then launch TurtleTerm:
