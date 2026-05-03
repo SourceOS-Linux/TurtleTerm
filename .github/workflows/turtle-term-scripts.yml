@@ -40,6 +40,7 @@ jobs:
         run: |
           python3 -m py_compile packaging/scripts/render-stable-homebrew-formula.py
           python3 -m py_compile packaging/scripts/write-turtle-term-manifest.py
+          python3 -m py_compile packaging/scripts/verify-turtle-term-artifact.py
           python3 -m py_compile assets/sourceos/bin/sourceos-term
           python3 -m py_compile assets/sourceos/bin/turtle-term
           python3 -m py_compile assets/sourceos/tests/test_sourceos_term_smoke.py
