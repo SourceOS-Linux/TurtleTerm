@@ -1,0 +1,25 @@
+{
+  "id": "urn:srcos:skill:turtle-policy-gate",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-policy-gate",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/POLICY_FABRIC_BRIDGE.md",
+  "description": "Submit TurtleTerm execution, delegation, browser handoff, and protected-resource requests to Policy Fabric and emit ExecutionDecision records.",
+  "activationRules": {
+    "commands": ["policy.evaluate", "policy.explain", "execution.decision"],
+    "filePatterns": [],
+    "intentTags": ["policy", "zero-trust", "execution-decision"]
+  },
+  "requires": {
+    "binaries": ["turtle-term"],
+    "anyBins": [],
+    "tools": ["policy-fabric"]
+  },
+  "executionSurfaceRef": null,
+  "policyBindings": ["urn:srcos:policy:turtle-policy-gate"],
+  "artifactOutputs": ["execution-decision", "policy-explanation"],
+  "reviewMode": false,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
