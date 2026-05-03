@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 PRODUCT_SURFACES = [
     "README.md",
     "docs/sourceos/INSTALL.md",
+    "packaging/homebrew/README.md",
     "packaging/homebrew/Formula/turtle-term.rb",
     "packaging/homebrew/templates/turtle-term.rb.template",
 ]
@@ -32,6 +33,7 @@ def main() -> int:
     formula = read("packaging/homebrew/Formula/turtle-term.rb")
     template = read("packaging/homebrew/templates/turtle-term.rb.template")
     install = read("docs/sourceos/INSTALL.md")
+    packaging_readme = read("packaging/homebrew/README.md")
     notices = read("THIRD_PARTY_NOTICES.md")
 
     assert "They say the world was built on the back of a turtle" in readme
@@ -45,12 +47,18 @@ def main() -> int:
     assert "desc \"TurtleTerm: SourceOS policy-aware agent terminal fabric\"" in formula
     assert "To launch TurtleTerm:" in formula
     assert "turtleterm" in formula
+    assert "turtleterm.lua" in formula
+    assert "turtleterm.lua" in template
     assert "TurtleTerm command wrapper" in formula
     assert "TurtleTerm command wrapper" in template
 
     assert "brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/packaging/homebrew/Formula/turtle-term.rb" in install
     assert "Then launch TurtleTerm:" in install
+    assert "turtleterm.lua" in install
     assert "Windows packaging is postponed" in install
+
+    assert "turtleterm.lua" in packaging_readme
+    assert "Private terminal runtime binaries" in packaging_readme
 
     assert "WezTerm" in notices
     assert "Third-Party Notices" in notices
