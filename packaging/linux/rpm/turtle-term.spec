@@ -5,10 +5,29 @@ Summary:        TurtleTerm trusted terminal and agent workbench
 
 License:        MIT
 URL:            https://github.com/SourceOS-Linux/TurtleTerm
-Source0:        https://github.com/SourceOS-Linux/TurtleTerm/archive/refs/tags/%{version}.tar.gz
-BuildArch:      x86_64
-Maintainer: SourceOS Linux <maintainers@sourceos.local>
-Requires:       libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkbcommon0, zlib1g
+Source0:        https://github.com/SourceOS-Linux/TurtleTerm/archive/refs/tags/turtle-term-v%{version}.tar.gz
+ExclusiveArch:  x86_64 aarch64
+
+BuildRequires:  cargo
+BuildRequires:  cmake
+BuildRequires:  desktop-file-utils
+BuildRequires:  fontconfig-devel
+BuildRequires:  freetype-devel
+BuildRequires:  gcc
+BuildRequires:  libxkbcommon-devel
+BuildRequires:  openssl-devel
+BuildRequires:  pkgconf-pkg-config
+BuildRequires:  rust
+BuildRequires:  wayland-devel
+BuildRequires:  zlib-devel
+
+Requires:       fontconfig
+Requires:       freetype
+Requires:       libX11
+Requires:       libxcb
+Requires:       libxkbcommon
+Requires:       openssl-libs
+Requires:       zlib
 
 %description
 TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench
@@ -16,27 +35,35 @@ for trusted command execution, terminal receipts, agent delegation, and
 reproducible operator workflows.
 
 %prep
-%autosetup
+%autosetup -n TurtleTerm-turtle-term-v%{version}
 
 %build
-%{_builddir}/%{name}-%{version}/packaging/scripts/stage-linux-package.sh
+cargo build --release --locked -p wezterm
+cargo build --release --locked -p wezterm-gui
+cargo build --release --locked -p wezterm-mux-server
 
 %install
-mkdir -p %{buildroot}%{_prefix}/bin
-mkdir -p %{buildroot}%{_prefix}/share/applications
-mkdir -p %{buildroot}%{_prefix}/share/metainfo
-mkdir -p %{buildroot}%{_prefix}/share/icons/hicolor/scalable/apps
+TURTLE_TERM_STAGE_PREFIX=%{buildroot}%{_prefix} packaging/scripts/stage-linux-package.sh
 
-cp -R %{_builddir}/%{name}-%{version}/dist/* %{buildroot}%{_prefix}/
+%check
+desktop-file-validate %{buildroot}%{_datadir}/applications/ai.sourceos.TurtleTerm.desktop
 
 %files
-%{_prefix}/bin/turtleterm
-%{_prefix}/bin/turtleterm-mux-server
-%{_prefix}/share/applications/ai.sourceos.TurtleTerm.desktop
-%{_prefix}/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml
-%{_prefix}/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg
-%{_prefix}/share/turtle-term/*
+%license LICENSE.md THIRD_PARTY_NOTICES.md
+%{_bindir}/turtleterm
+%{_bindir}/turtleterm-mux-server
+%{_bindir}/turtle-term
+%{_bindir}/turtle-agentd
+%{_bindir}/turtle-agentctl
+%{_bindir}/turtle-tmux
+%{_bindir}/sourceos-term
+%{_sysconfdir}/turtle-term/turtleterm.lua
+%{_libexecdir}/turtle-term/
+%{_datadir}/applications/ai.sourceos.TurtleTerm.desktop
+%{_datadir}/metainfo/ai.sourceos.TurtleTerm.metainfo.xml
+%{_datadir}/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg
+%{_datadir}/turtle-term/
 
 %changelog
-* Fri May 05 2026 SourceOS Maintainers <maintainers@sourceos.local> - 0.1.0-1
-- Initial package
+* Tue May 05 2026 SourceOS Maintainers <maintainers@sourceos.local> - 0.1.0-1
+- Initial TurtleTerm Linux package scaffold
