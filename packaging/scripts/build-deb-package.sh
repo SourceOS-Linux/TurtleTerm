@@ -18,7 +18,7 @@ esac
 
 command -v dpkg-deb >/dev/null 2>&1 || { echo "dpkg-deb is required" >&2; exit 1; }
 
-rm -rf "$package_root" "$deb"
+rm -rf "$package_root" "$deb" "$deb.sha256" "$deb.manifest.json"
 mkdir -p "$debian_dir" "$out_dir"
 
 TURTLE_TERM_STAGE_PREFIX="$prefix" TURTLE_TERM_ETC_DIR="$etc_dir" \
@@ -64,5 +64,12 @@ find "$package_root/usr/bin" -type f -exec chmod 0755 {} +
 find "$package_root/usr/libexec/turtle-term" -type f -exec chmod 0755 {} +
 
 dpkg-deb --build --root-owner-group "$package_root" "$deb" >/dev/null
+sha256sum "$deb" > "$deb.sha256"
+python3 "$repo_root/packaging/scripts/write-native-package-manifest.py" \
+  --package "$deb" \
+  --kind deb \
+  --version "$version" \
+  --arch "$arch" \
+  --out "$deb.manifest.json"
 
 echo "$deb"
