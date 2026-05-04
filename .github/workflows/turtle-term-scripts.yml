@@ -46,11 +46,15 @@ jobs:
           bash -n packaging/scripts/bootstrap-homebrew-tap.sh
           bash -n packaging/scripts/stage-linux-package.sh
           bash -n packaging/scripts/stage-macos-app.sh
+          bash -n packaging/scripts/verify-linux-package-layout.sh
 
       - name: Validate Linux desktop metadata
         run: |
           desktop-file-validate assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop
           appstreamcli validate --no-net assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml
+
+      - name: Verify Linux package layout
+        run: bash packaging/scripts/verify-linux-package-layout.sh
 
       - name: Check Lua syntax
         run: |
