@@ -25,9 +25,11 @@ jobs:
           - os: ubuntu-24.04
             deb_arch: amd64
             rpm_arch: x86_64
+            arch_arch: x86_64
           - os: ubuntu-24.04-arm
             deb_arch: arm64
             rpm_arch: aarch64
+            arch_arch: aarch64
 
     steps:
       - name: Check out repository
@@ -68,7 +70,8 @@ jobs:
             pkg-config \
             python3 \
             rpm \
-            zlib1g-dev
+            zlib1g-dev \
+            zstd
 
       - name: Build TurtleTerm runtime binaries
         run: |
@@ -96,6 +99,13 @@ jobs:
           TURTLE_TERM_OUT_DIR: ${{ github.workspace }}/dist/native
         run: bash packaging/scripts/build-rpm-package.sh
 
+      - name: Build Arch package
+        env:
+          TURTLE_TERM_VERSION: ${{ steps.version.outputs.version }}
+          TURTLE_TERM_ARCH_ARCH: ${{ matrix.arch_arch }}
+          TURTLE_TERM_OUT_DIR: ${{ github.workspace }}/dist/native
+        run: bash packaging/scripts/build-arch-package.sh
+
       - name: Verify package artifacts exist
         run: |
           ls -lah dist/native
@@ -105,6 +115,9 @@ jobs:
           test -n "$(find dist/native -name 'turtle-term-*.rpm' -print -quit)"
           test -n "$(find dist/native -name 'turtle-term-*.rpm.sha256' -print -quit)"
           test -n "$(find dist/native -name 'turtle-term-*.rpm.manifest.json' -print -quit)"
+          test -n "$(find dist/native -name 'turtle-term-*.pkg.tar.zst' -print -quit)"
+          test -n "$(find dist/native -name 'turtle-term-*.pkg.tar.zst.sha256' -print -quit)"
+          test -n "$(find dist/native -name 'turtle-term-*.pkg.tar.zst.manifest.json' -print -quit)"
 
       - name: Upload native package artifacts
         uses: actions/upload-artifact@v4
@@ -117,6 +130,9 @@ jobs:
             dist/native/rpmbuild/RPMS/**/*.rpm
             dist/native/rpmbuild/RPMS/**/*.rpm.sha256
             dist/native/rpmbuild/RPMS/**/*.rpm.manifest.json
+            dist/native/turtle-term-*.pkg.tar.zst
+            dist/native/turtle-term-*.pkg.tar.zst.sha256
+            dist/native/turtle-term-*.pkg.tar.zst.manifest.json
 
       - name: Publish native packages to GitHub release
         if: startsWith(github.ref, 'refs/tags/turtle-term-v')
@@ -129,3 +145,6 @@ jobs:
             dist/native/rpmbuild/RPMS/**/*.rpm
             dist/native/rpmbuild/RPMS/**/*.rpm.sha256
             dist/native/rpmbuild/RPMS/**/*.rpm.manifest.json
+            dist/native/turtle-term-*.pkg.tar.zst
+            dist/native/turtle-term-*.pkg.tar.zst.sha256
+            dist/native/turtle-term-*.pkg.tar.zst.manifest.json
