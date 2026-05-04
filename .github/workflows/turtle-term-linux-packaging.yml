@@ -60,13 +60,18 @@ jobs:
       - name: Build and verify Debian package with stub runtime
         run: bash packaging/scripts/verify-deb-package.sh
 
-  validate-rpm-metadata:
-    name: Validate RPM metadata
+  validate-rpm-package:
+    name: Build and verify RPM package
     runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Install RPM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
 
       - name: Validate RPM spec shape
         run: |
@@ -75,6 +80,9 @@ jobs:
           grep -q '^ExclusiveArch:  x86_64 aarch64$' packaging/linux/rpm/turtle-term.spec
           grep -q 'TURTLE_TERM_STAGE_PREFIX=%{buildroot}%{_prefix}' packaging/linux/rpm/turtle-term.spec
           grep -q 'ai.sourceos.TurtleTerm.desktop' packaging/linux/rpm/turtle-term.spec
+
+      - name: Build and verify RPM package with stub runtime
+        run: bash packaging/scripts/verify-rpm-package.sh
 
   validate-arch-metadata:
     name: Validate Arch metadata
