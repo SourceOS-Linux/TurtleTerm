@@ -51,6 +51,7 @@ jobs:
           bash -n packaging/scripts/verify-deb-package.sh
           bash -n packaging/scripts/build-rpm-package.sh
           bash -n packaging/scripts/verify-rpm-package.sh
+          bash -n packaging/scripts/verify-arch-package-metadata.sh
 
       - name: Validate Linux desktop metadata
         run: |
