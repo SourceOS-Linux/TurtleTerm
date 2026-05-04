@@ -15,6 +15,7 @@ REQUIRED_DOCS = [
     "docs/sourceos/ACP_A2A_BRIDGE.md",
     "docs/sourceos/MCP_BRIDGE.md",
     "docs/sourceos/TMUX_BRIDGE.md",
+    "docs/sourceos/NEOVIM_INTEGRATION.md",
     "docs/sourceos/VSCODE_EXTENSION.md",
     "docs/sourceos/AGENT_REGISTRY_BRIDGE.md",
     "docs/sourceos/POLICY_FABRIC_BRIDGE.md",
@@ -26,6 +27,7 @@ REQUIRED_SKILLS = [
     "assets/sourceos/skills/turtle-terminal-inspector.json",
     "assets/sourceos/skills/turtle-terminal-executor.json",
     "assets/sourceos/skills/turtle-tmux-bridge.json",
+    "assets/sourceos/skills/turtle-neovim-context.json",
     "assets/sourceos/skills/turtle-vscode-context.json",
     "assets/sourceos/skills/turtle-acp-ingress.json",
     "assets/sourceos/skills/turtle-mcp-bridge.json",
@@ -49,6 +51,8 @@ FORBIDDEN_PLAN_PHRASES = [
 
 REQUIRED_PLAN_PHRASES = [
     "TurtleTerm is the trusted terminal/session execution layer",
+    "Neovim is a first-class TurtleTerm integration target",
+    "TurtleTerm plus Neovim should be enough",
     "ACP: editor/client-to-agent interface",
     "A2A: agent-to-agent delegation",
     "MCP: tool, context, prompt, and resource access",
@@ -56,6 +60,7 @@ REQUIRED_PLAN_PHRASES = [
     "Agent Registry",
     "AgentPlane",
     "tmux bridge",
+    "Neovim integration",
     "VS Code-compatible extension",
 ]
 
@@ -85,6 +90,12 @@ def main() -> int:
         assert phrase in plan, f"missing required plan phrase: {phrase}"
     for phrase in FORBIDDEN_PLAN_PHRASES:
         assert phrase not in lowered, f"forbidden phrase present: {phrase}"
+
+    neovim = read("docs/sourceos/NEOVIM_INTEGRATION.md")
+    assert "Neovim is a first-class TurtleTerm integration target" in neovim
+    assert "TurtleTerm plus Neovim should be sufficient" in neovim
+    assert "thin client over `turtle-agentd`" in neovim
+    assert "raw shell execution from plugin code" in neovim
 
     acp = read("docs/sourceos/ACP_A2A_BRIDGE.md")
     assert "ACP is the editor/client ingress" in acp
