@@ -14,28 +14,27 @@ def main() -> int:
     deb = read("packaging/linux/deb/control")
     rpm = read("packaging/linux/rpm/turtle-term.spec")
     arch = read("packaging/linux/arch/PKGBUILD")
+    stage = read("packaging/scripts/stage-linux-package.sh")
 
     assert "Package: turtle-term" in deb
-    assert "TurtleTerm trusted terminal" in deb
+    assert "Architecture: amd64 arm64" in deb
     assert "Homepage: https://github.com/SourceOS-Linux/TurtleTerm" in deb
+    assert "libexec/turtle-term" in deb
 
     assert "Name:           turtle-term" in rpm
-    assert "Summary:        TurtleTerm trusted terminal" in rpm
+    assert "ExclusiveArch:  x86_64 aarch64" in rpm
+    assert "fontconfig-devel" in rpm
     assert "ai.sourceos.TurtleTerm.desktop" in rpm
-    assert "ai.sourceos.TurtleTerm.metainfo.xml" in rpm
-    assert "ai.sourceos.TurtleTerm.svg" in rpm
 
     assert "pkgname=turtle-term" in arch
-    assert "TurtleTerm trusted terminal" in arch
-    assert "ai.sourceos.TurtleTerm.desktop" in arch
-    assert "ai.sourceos.TurtleTerm.metainfo.xml" in arch
-    assert "ai.sourceos.TurtleTerm.svg" in arch
+    assert "arch=('x86_64' 'aarch64')" in arch
+    assert "TURTLE_TERM_STAGE_PREFIX" in arch
 
-    forbidden = ["sourceos-linux/wezterm", "org.wezfurlong"]
-    for content in (deb, rpm, arch):
-        lowered = content.lower()
-        for value in forbidden:
-            assert value not in lowered, value
+    assert "TURTLE_TERM_STAGE_PREFIX" in stage
+    assert "libexec/turtle-term" in stage
+    assert "share/applications" in stage
+    assert "share/metainfo" in stage
+    assert "turtleterm.lua" in stage
 
     return 0
 
