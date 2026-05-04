@@ -15,6 +15,7 @@ def main() -> int:
     rpm = read("packaging/linux/rpm/turtle-term.spec")
     arch = read("packaging/linux/arch/PKGBUILD")
     stage = read("packaging/scripts/stage-linux-package.sh")
+    rpm_builder = read("packaging/scripts/build-rpm-package.sh")
 
     assert "Package: turtle-term" in deb
     assert "Architecture: amd64 arm64" in deb
@@ -35,6 +36,10 @@ def main() -> int:
     assert "share/applications" in stage
     assert "share/metainfo" in stage
     assert "turtleterm.lua" in stage
+
+    assert "%install" in rpm_builder
+    assert "TURTLE_TERM_STAGE_PREFIX=%{buildroot}/usr" in rpm_builder
+    assert "TURTLE_TERM_ETC_DIR=%{buildroot}/etc" in rpm_builder
 
     return 0
 
