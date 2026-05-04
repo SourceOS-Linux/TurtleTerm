@@ -18,6 +18,7 @@ TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_DEB_ARCH="amd
   "$repo_root/packaging/scripts/build-deb-package.sh" >/dev/null
 
 deb="$tmp/turtle-term_0.1.0_amd64.deb"
+extract="$tmp/extract"
 test -f "$deb"
 test -f "$deb.sha256"
 test -f "$deb.manifest.json"
@@ -49,6 +50,18 @@ dpkg-deb --contents "$deb" | grep -q '/usr/libexec/turtle-term/wezterm-gui$'
 
 if dpkg-deb --contents "$deb" | grep -q '/usr/bin/wezterm-gui$'; then
   echo 'private runtime leaked onto product PATH in deb' >&2
+  exit 1
+fi
+
+mkdir -p "$extract"
+dpkg-deb -x "$deb" "$extract"
+grep -q 'TURTLE_TERM_RUNTIME_DIR="/usr/libexec/turtle-term"' "$extract/usr/bin/turtleterm"
+grep -q 'TURTLETERM_CONFIG="/etc/turtle-term/turtleterm.lua"' "$extract/usr/bin/turtleterm"
+grep -q 'exec "/usr/libexec/turtle-term/turtleterm"' "$extract/usr/bin/turtleterm"
+grep -q 'TURTLE_TERM_RUNTIME_DIR="/usr/libexec/turtle-term"' "$extract/usr/bin/turtleterm-mux-server"
+grep -q 'exec "/usr/libexec/turtle-term/turtleterm-mux-server"' "$extract/usr/bin/turtleterm-mux-server"
+if grep -R "$tmp\|deb-root\|BUILDROOT\|arch-root" "$extract/usr/bin/turtleterm" "$extract/usr/bin/turtleterm-mux-server"; then
+  echo 'buildroot path leaked into Debian launch wrappers' >&2
   exit 1
 fi
 
