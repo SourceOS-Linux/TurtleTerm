@@ -1,0 +1,47 @@
+{
+  "id": "urn:srcos:skill:turtle-neovim-context",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-neovim-context",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/NEOVIM_INTEGRATION.md",
+  "description": "Collect Neovim editor, buffer, diagnostic, terminal-buffer, and tmux-adjacent context for TurtleTerm without directly executing commands.",
+  "activationRules": {
+    "commands": [
+      "neovim.context",
+      "neovim.terminal.summarize",
+      "neovim.receipts",
+      "neovim.propose"
+    ],
+    "filePatterns": [],
+    "intentTags": [
+      "neovim",
+      "terminal-native",
+      "editor-context",
+      "buffer-context"
+    ]
+  },
+  "requires": {
+    "binaries": [
+      "nvim",
+      "turtle-term",
+      "turtle-agentctl"
+    ],
+    "anyBins": [],
+    "tools": [
+      "turtle-agentd"
+    ]
+  },
+  "executionSurfaceRef": null,
+  "policyBindings": [
+    "urn:srcos:policy:turtle-neovim-context"
+  ],
+  "artifactOutputs": [
+    "editor-context",
+    "terminal-summary",
+    "receipt-reference"
+  ],
+  "reviewMode": true,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
