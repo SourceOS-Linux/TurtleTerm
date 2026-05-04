@@ -6,15 +6,15 @@ TurtleTerm is the trusted terminal/session execution layer for SourceOS.
 
 It does not replace editors, terminals, AgentPlane, Policy Fabric, Agent Registry, MCP, A2A, ACP, or BearBrowser. It connects them through a governed terminal/session fabric.
 
+Neovim is a first-class TurtleTerm integration target. TurtleTerm plus Neovim should be enough for users who do not want VS Code, JetBrains, or other heavyweight editor surfaces.
+
 ## Correct integration model
 
 ```text
+Neovim / tmux / TurtleTerm
 VS Code / VSCodium / Cursor-like forks
 Zed / ACP-compatible clients
 JetBrains IDEs
-Neovim
-tmux
-TurtleTerm / WezTerm
 BearBrowser
         ↓
 TurtleTerm local agent gateway
@@ -45,16 +45,16 @@ Every risky action becomes an ExecutionDecision: allow, deny, ask, defer, or rew
 ## First-class integration targets
 
 1. tmux bridge for terminal-native users.
-2. VS Code-compatible extension for mainstream editor users.
+2. Neovim integration for first-class terminal-native editing.
 3. ACP ingress that feeds A2A.
 4. MCP bridge for tools/resources.
 5. A2A gateway for registered-agent delegation.
 6. Agent Registry bridge.
 7. Policy Fabric bridge.
 8. AgentPlane bridge.
-9. Zed ACP validation.
-10. JetBrains plugin.
-11. Neovim plugin.
+9. VS Code-compatible extension for mainstream editor users.
+10. Zed ACP validation.
+11. JetBrains plugin.
 12. BearBrowser Stagehand/Playwright handoff.
 
 ## Development tracks
@@ -69,17 +69,23 @@ Every risky action becomes an ExecutionDecision: allow, deny, ask, defer, or rew
 - SessionReceipt mapping
 - AgentPlane bridge
 
-### Track B: user surfaces
+### Track B: terminal-native user surfaces
 
 - tmux bridge
-- VS Code extension
+- Neovim integration
+- TurtleTerm profile and launcher ergonomics
+- CloudFog shell surfaces
+
+### Track C: editor/protocol surfaces
+
 - ACP ingress
 - MCP bridge
 - A2A gateway
+- VS Code extension
+- Zed ACP validation
 - JetBrains plugin
-- Neovim plugin
 - BearBrowser handoff
 
 ## World-class v0 standard
 
-A user should be able to install TurtleTerm, attach it to an existing terminal/editor workflow, ask for session inspection or command proposals, and know exactly who acted, what policy applied, what ran, where it ran, what changed, and what receipt proves it.
+A user should be able to install TurtleTerm, use it with tmux and Neovim as a complete terminal-native development environment, ask for session inspection or command proposals, and know exactly who acted, what policy applied, what ran, where it ran, what changed, and what receipt proves it.
