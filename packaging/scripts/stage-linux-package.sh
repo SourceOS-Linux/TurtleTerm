@@ -3,10 +3,11 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 prefix="${TURTLE_TERM_STAGE_PREFIX:-$repo_root/dist/linux-prefix}"
+etc_dir="${TURTLE_TERM_ETC_DIR:-$prefix/etc}"
 
 mkdir -p \
   "$prefix/bin" \
-  "$prefix/etc/turtle-term" \
+  "$etc_dir/turtle-term" \
   "$prefix/libexec/turtle-term" \
   "$prefix/share/applications" \
   "$prefix/share/metainfo" \
@@ -32,7 +33,7 @@ chmod 0755 "$prefix/libexec/turtle-term/turtleterm" "$prefix/libexec/turtle-term
 cat > "$prefix/bin/turtleterm" <<EOF
 #!/usr/bin/env sh
 export TURTLE_TERM_RUNTIME_DIR="$prefix/libexec/turtle-term"
-export TURTLETERM_CONFIG="$prefix/etc/turtle-term/turtleterm.lua"
+export TURTLETERM_CONFIG="$etc_dir/turtle-term/turtleterm.lua"
 exec "$prefix/libexec/turtle-term/turtleterm" "\$@"
 EOF
 chmod 0755 "$prefix/bin/turtleterm"
@@ -44,7 +45,7 @@ exec "$prefix/libexec/turtle-term/turtleterm-mux-server" "\$@"
 EOF
 chmod 0755 "$prefix/bin/turtleterm-mux-server"
 
-cp "$repo_root/assets/sourceos/turtleterm.lua" "$prefix/etc/turtle-term/turtleterm.lua"
+cp "$repo_root/assets/sourceos/turtleterm.lua" "$etc_dir/turtle-term/turtleterm.lua"
 cp "$repo_root/assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop" "$prefix/share/applications/"
 cp "$repo_root/assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml" "$prefix/share/metainfo/"
 cp "$repo_root/assets/sourceos/brand/ai.sourceos.TurtleTerm.svg" "$prefix/share/icons/hicolor/scalable/apps/"
