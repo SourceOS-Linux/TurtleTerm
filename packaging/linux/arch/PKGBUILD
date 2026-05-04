@@ -1,0 +1,25 @@
+# Maintainer: SourceOS Linux <maintainers@sourceos.local>
+
+pkgname=turtle-term
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='TurtleTerm trusted terminal and agent workbench'
+arch=('x86_64' 'aarch64')
+url='https://github.com/SourceOS-Linux/TurtleTerm'
+license=('MIT')
+depends=('fontconfig' 'freetype2' 'libx11' 'libxcb' 'libxkbcommon' 'openssl' 'zlib')
+makedepends=('rust' 'cargo' 'cmake' 'pkgconf' 'python')
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/SourceOS-Linux/TurtleTerm/archive/refs/tags/turtle-term-v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "${srcdir}/TurtleTerm-turtle-term-v${pkgver}"
+  cargo build --release --locked -p wezterm
+  cargo build --release --locked -p wezterm-gui
+  cargo build --release --locked -p wezterm-mux-server
+}
+
+package() {
+  cd "${srcdir}/TurtleTerm-turtle-term-v${pkgver}"
+  TURTLE_TERM_STAGE_PREFIX="${pkgdir}/usr" packaging/scripts/stage-linux-package.sh
+}
