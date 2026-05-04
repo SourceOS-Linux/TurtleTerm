@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 prefix="${TURTLE_TERM_STAGE_PREFIX:-$repo_root/dist/linux-prefix}"
 etc_dir="${TURTLE_TERM_ETC_DIR:-$prefix/etc}"
+runtime_prefix="${TURTLE_TERM_RUNTIME_PREFIX:-$prefix}"
+runtime_etc_dir="${TURTLE_TERM_RUNTIME_ETC_DIR:-$etc_dir}"
 
 mkdir -p \
   "$prefix/bin" \
@@ -32,16 +34,16 @@ chmod 0755 "$prefix/libexec/turtle-term/turtleterm" "$prefix/libexec/turtle-term
 
 cat > "$prefix/bin/turtleterm" <<EOF
 #!/usr/bin/env sh
-export TURTLE_TERM_RUNTIME_DIR="$prefix/libexec/turtle-term"
-export TURTLETERM_CONFIG="$etc_dir/turtle-term/turtleterm.lua"
-exec "$prefix/libexec/turtle-term/turtleterm" "\$@"
+export TURTLE_TERM_RUNTIME_DIR="$runtime_prefix/libexec/turtle-term"
+export TURTLETERM_CONFIG="$runtime_etc_dir/turtle-term/turtleterm.lua"
+exec "$runtime_prefix/libexec/turtle-term/turtleterm" "\$@"
 EOF
 chmod 0755 "$prefix/bin/turtleterm"
 
 cat > "$prefix/bin/turtleterm-mux-server" <<EOF
 #!/usr/bin/env sh
-export TURTLE_TERM_RUNTIME_DIR="$prefix/libexec/turtle-term"
-exec "$prefix/libexec/turtle-term/turtleterm-mux-server" "\$@"
+export TURTLE_TERM_RUNTIME_DIR="$runtime_prefix/libexec/turtle-term"
+exec "$runtime_prefix/libexec/turtle-term/turtleterm-mux-server" "\$@"
 EOF
 chmod 0755 "$prefix/bin/turtleterm-mux-server"
 
