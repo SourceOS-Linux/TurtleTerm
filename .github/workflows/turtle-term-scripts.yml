@@ -7,6 +7,7 @@ on:
       - 'docs/sourceos/**'
       - 'integrations/neovim/**'
       - 'packaging/homebrew/**'
+      - 'packaging/linux/**'
       - 'packaging/scripts/**'
       - 'README.md'
       - '.github/workflows/turtle-term-scripts.yml'
@@ -18,6 +19,7 @@ on:
       - 'docs/sourceos/**'
       - 'integrations/neovim/**'
       - 'packaging/homebrew/**'
+      - 'packaging/linux/**'
       - 'packaging/scripts/**'
       - 'README.md'
       - '.github/workflows/turtle-term-scripts.yml'
@@ -68,6 +70,7 @@ jobs:
           python3 -m py_compile assets/sourceos/tests/test_turtle_product_identity.py
           python3 -m py_compile assets/sourceos/tests/test_turtle_linux_desktop_identity.py
           python3 -m py_compile assets/sourceos/tests/test_turtle_neovim_integration.py
+          python3 -m py_compile assets/sourceos/tests/test_turtle_linux_native_packaging.py
 
       - name: Run smoke test
         run: python3 assets/sourceos/tests/test_sourceos_term_smoke.py
@@ -80,6 +83,9 @@ jobs:
 
       - name: Run Linux desktop identity guard
         run: python3 assets/sourceos/tests/test_turtle_linux_desktop_identity.py
+
+      - name: Run Linux native packaging guard
+        run: python3 assets/sourceos/tests/test_turtle_linux_native_packaging.py
 
       - name: Run Neovim integration guard
         run: python3 assets/sourceos/tests/test_turtle_neovim_integration.py
