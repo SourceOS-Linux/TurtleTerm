@@ -19,6 +19,21 @@ TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_DEB_ARCH="amd
 
 deb="$tmp/turtle-term_0.1.0_amd64.deb"
 test -f "$deb"
+test -f "$deb.sha256"
+test -f "$deb.manifest.json"
+sha256sum -c "$deb.sha256" >/dev/null
+python3 - <<PY
+import json
+from pathlib import Path
+manifest = json.loads(Path('$deb.manifest.json').read_text())
+assert manifest['schema'] == 'sourceos.turtle-term.native-package.manifest.v0'
+assert manifest['product'] == 'TurtleTerm'
+assert manifest['kind'] == 'deb'
+assert manifest['version'] == '0.1.0'
+assert manifest['arch'] == 'amd64'
+assert manifest['package'] == 'turtle-term_0.1.0_amd64.deb'
+assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
+PY
 
 dpkg-deb --field "$deb" Package | grep -qx 'turtle-term'
 dpkg-deb --field "$deb" Version | grep -qx '0.1.0'
