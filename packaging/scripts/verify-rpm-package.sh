@@ -18,6 +18,20 @@ rpm="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_RPM_AR
   "$repo_root/packaging/scripts/build-rpm-package.sh")"
 
 test -f "$rpm"
+test -f "$rpm.sha256"
+test -f "$rpm.manifest.json"
+sha256sum -c "$rpm.sha256" >/dev/null
+python3 - <<PY
+import json
+from pathlib import Path
+manifest = json.loads(Path('$rpm.manifest.json').read_text())
+assert manifest['schema'] == 'sourceos.turtle-term.native-package.manifest.v0'
+assert manifest['product'] == 'TurtleTerm'
+assert manifest['kind'] == 'rpm'
+assert manifest['version'] == '0.1.0'
+assert manifest['package'].endswith('.rpm')
+assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
+PY
 
 rpm -qp --queryformat '%{NAME}\n' "$rpm" | grep -qx 'turtle-term'
 rpm -qp --queryformat '%{VERSION}\n' "$rpm" | grep -qx '0.1.0'
