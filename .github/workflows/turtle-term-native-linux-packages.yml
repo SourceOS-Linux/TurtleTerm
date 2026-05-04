@@ -13,6 +13,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 jobs:
   build-native-linux-packages:
@@ -119,6 +122,48 @@ jobs:
           test -n "$(find dist/native -name 'turtle-term-*.pkg.tar.zst.sha256' -print -quit)"
           test -n "$(find dist/native -name 'turtle-term-*.pkg.tar.zst.manifest.json' -print -quit)"
 
+      - name: Write native package index
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path('dist/native')
+          packages = []
+          for path in sorted(root.rglob('*.manifest.json')):
+              data = json.loads(path.read_text())
+              if data.get('schema') == 'sourceos.turtle-term.native-package.manifest.v0':
+                  packages.append(data)
+          if not packages:
+              raise SystemExit('no native package manifests found')
+          index = {
+              'schema': 'sourceos.turtle-term.native-package.index.v0',
+              'product': 'TurtleTerm',
+              'version': os.environ['PACKAGE_VERSION'],
+              'package_count': len(packages),
+              'packages': packages,
+          }
+          Path('dist/native/turtle-term-native-packages.index.json').write_text(json.dumps(index, indent=2, sort_keys=True) + '\n')
+          PY
+          sha256sum dist/native/turtle-term-native-packages.index.json > dist/native/turtle-term-native-packages.index.json.sha256
+
+      - name: Attest native Linux package artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/native/turtle-term_*.deb
+            dist/native/turtle-term_*.deb.sha256
+            dist/native/turtle-term_*.deb.manifest.json
+            dist/native/rpmbuild/RPMS/**/*.rpm
+            dist/native/rpmbuild/RPMS/**/*.rpm.sha256
+            dist/native/rpmbuild/RPMS/**/*.rpm.manifest.json
+            dist/native/turtle-term-*.pkg.tar.zst
+            dist/native/turtle-term-*.pkg.tar.zst.sha256
+            dist/native/turtle-term-*.pkg.tar.zst.manifest.json
+            dist/native/turtle-term-native-packages.index.json
+            dist/native/turtle-term-native-packages.index.json.sha256
+
       - name: Upload native package artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -133,6 +178,8 @@ jobs:
             dist/native/turtle-term-*.pkg.tar.zst
             dist/native/turtle-term-*.pkg.tar.zst.sha256
             dist/native/turtle-term-*.pkg.tar.zst.manifest.json
+            dist/native/turtle-term-native-packages.index.json
+            dist/native/turtle-term-native-packages.index.json.sha256
 
       - name: Publish native packages to GitHub release
         if: startsWith(github.ref, 'refs/tags/turtle-term-v')
@@ -148,3 +195,5 @@ jobs:
             dist/native/turtle-term-*.pkg.tar.zst
             dist/native/turtle-term-*.pkg.tar.zst.sha256
             dist/native/turtle-term-*.pkg.tar.zst.manifest.json
+            dist/native/turtle-term-native-packages.index.json
+            dist/native/turtle-term-native-packages.index.json.sha256
