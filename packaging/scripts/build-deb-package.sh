@@ -7,6 +7,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out_dir="${TURTLE_TERM_OUT_DIR:-$repo_root/dist}"
 package_root="$out_dir/deb-root"
 prefix="$package_root/usr"
+etc_dir="$package_root/etc"
 debian_dir="$package_root/DEBIAN"
 deb="$out_dir/turtle-term_${version}_${arch}.deb"
 
@@ -20,7 +21,8 @@ command -v dpkg-deb >/dev/null 2>&1 || { echo "dpkg-deb is required" >&2; exit 1
 rm -rf "$package_root" "$deb"
 mkdir -p "$debian_dir" "$out_dir"
 
-TURTLE_TERM_STAGE_PREFIX="$prefix" "$repo_root/packaging/scripts/stage-linux-package.sh" >/dev/null
+TURTLE_TERM_STAGE_PREFIX="$prefix" TURTLE_TERM_ETC_DIR="$etc_dir" \
+  "$repo_root/packaging/scripts/stage-linux-package.sh" >/dev/null
 
 cat > "$debian_dir/control" <<EOF
 Package: turtle-term
