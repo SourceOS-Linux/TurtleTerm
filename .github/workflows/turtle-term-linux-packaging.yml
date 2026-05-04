@@ -84,13 +84,21 @@ jobs:
       - name: Build and verify RPM package with stub runtime
         run: bash packaging/scripts/verify-rpm-package.sh
 
-  validate-arch-metadata:
-    name: Validate Arch metadata
+  validate-arch-package:
+    name: Build and verify Arch package
     runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install Arch package verifier dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
       - name: Validate PKGBUILD shape
         run: bash packaging/scripts/verify-arch-package-metadata.sh
+
+      - name: Build and verify Arch package with stub runtime
+        run: bash packaging/scripts/verify-arch-package.sh
