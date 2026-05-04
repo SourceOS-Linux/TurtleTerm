@@ -26,7 +26,7 @@ dpkg-deb --field "$deb" Architecture | grep -qx 'amd64'
 
 dpkg-deb --contents "$deb" | grep -q '/usr/bin/turtleterm$'
 dpkg-deb --contents "$deb" | grep -q '/usr/bin/turtle-agentctl$'
-dpkg-deb --contents "$deb" | grep -q '/usr/etc/turtle-term/turtleterm.lua$'
+dpkg-deb --contents "$deb" | grep -q '/etc/turtle-term/turtleterm.lua$'
 dpkg-deb --contents "$deb" | grep -q '/usr/share/applications/ai.sourceos.TurtleTerm.desktop$'
 dpkg-deb --contents "$deb" | grep -q '/usr/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml$'
 dpkg-deb --contents "$deb" | grep -q '/usr/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg$'
