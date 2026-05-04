@@ -37,8 +37,8 @@ jobs:
       - name: Validate staged package layout
         run: bash packaging/scripts/verify-linux-package-layout.sh
 
-  validate-debian-metadata:
-    name: Validate Debian metadata
+  validate-debian-package:
+    name: Build and verify Debian package
     runs-on: ubuntu-24.04
 
     steps:
@@ -48,7 +48,7 @@ jobs:
       - name: Install Debian packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y lintian
+          sudo apt-get install -y dpkg-dev lintian
 
       - name: Validate Debian control shape
         run: |
@@ -56,6 +56,9 @@ jobs:
           grep -q '^Package: turtle-term$' packaging/linux/deb/control
           grep -q '^Architecture: amd64 arm64$' packaging/linux/deb/control
           grep -q '^Homepage: https://github.com/SourceOS-Linux/TurtleTerm$' packaging/linux/deb/control
+
+      - name: Build and verify Debian package with stub runtime
+        run: bash packaging/scripts/verify-deb-package.sh
 
   validate-rpm-metadata:
     name: Validate RPM metadata
