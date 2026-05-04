@@ -5,6 +5,7 @@ on:
     paths:
       - 'assets/sourceos/**'
       - 'docs/sourceos/**'
+      - 'integrations/neovim/**'
       - 'packaging/homebrew/**'
       - 'packaging/scripts/**'
       - 'README.md'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'assets/sourceos/**'
       - 'docs/sourceos/**'
+      - 'integrations/neovim/**'
       - 'packaging/homebrew/**'
       - 'packaging/scripts/**'
       - 'README.md'
@@ -33,7 +35,7 @@ jobs:
       - name: Install metadata validators
         run: |
           sudo apt-get update
-          sudo apt-get install -y desktop-file-utils appstream
+          sudo apt-get install -y desktop-file-utils appstream lua5.4
 
       - name: Check shell syntax
         run: |
@@ -46,6 +48,11 @@ jobs:
         run: |
           desktop-file-validate assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop
           appstreamcli validate --no-net assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml
+
+      - name: Check Lua syntax
+        run: |
+          luac5.4 -p integrations/neovim/turtle.nvim/plugin/turtle.lua
+          luac5.4 -p integrations/neovim/turtle.nvim/lua/turtle.lua
 
       - name: Check Python syntax
         run: |
@@ -60,6 +67,7 @@ jobs:
           python3 -m py_compile assets/sourceos/tests/test_turtle_agentic_integration_plan.py
           python3 -m py_compile assets/sourceos/tests/test_turtle_product_identity.py
           python3 -m py_compile assets/sourceos/tests/test_turtle_linux_desktop_identity.py
+          python3 -m py_compile assets/sourceos/tests/test_turtle_neovim_integration.py
 
       - name: Run smoke test
         run: python3 assets/sourceos/tests/test_sourceos_term_smoke.py
@@ -72,6 +80,9 @@ jobs:
 
       - name: Run Linux desktop identity guard
         run: python3 assets/sourceos/tests/test_turtle_linux_desktop_identity.py
+
+      - name: Run Neovim integration guard
+        run: python3 assets/sourceos/tests/test_turtle_neovim_integration.py
 
       - name: Run package readiness guard
         run: python3 assets/sourceos/tests/test_turtle_term_release_readiness.py
