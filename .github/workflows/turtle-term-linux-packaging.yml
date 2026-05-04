@@ -93,8 +93,4 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate PKGBUILD shape
-        run: |
-          test -f packaging/linux/arch/PKGBUILD
-          grep -q '^pkgname=turtle-term$' packaging/linux/arch/PKGBUILD
-          grep -q "arch=('x86_64' 'aarch64')" packaging/linux/arch/PKGBUILD
-          grep -q 'TURTLE_TERM_STAGE_PREFIX' packaging/linux/arch/PKGBUILD
+        run: bash packaging/scripts/verify-arch-package-metadata.sh
