@@ -44,6 +44,7 @@ jobs:
           bash -n packaging/scripts/install-turtle-term.sh
           bash -n packaging/scripts/package-turtle-term.sh
           bash -n packaging/scripts/bootstrap-homebrew-tap.sh
+          bash -n packaging/scripts/stage-linux-package.sh
           bash -n packaging/scripts/stage-macos-app.sh
 
       - name: Validate Linux desktop metadata
