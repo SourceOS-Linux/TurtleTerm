@@ -63,4 +63,14 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 EOF
 
 rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec" >/dev/null
-find "$rpmbuild_root/RPMS" -name 'turtle-term-*.rpm' -print -quit
+rpm="$(find "$rpmbuild_root/RPMS" -name 'turtle-term-*.rpm' -print -quit)"
+test -n "$rpm"
+sha256sum "$rpm" > "$rpm.sha256"
+python3 "$repo_root/packaging/scripts/write-native-package-manifest.py" \
+  --package "$rpm" \
+  --kind rpm \
+  --version "$version" \
+  --arch "$arch" \
+  --out "$rpm.manifest.json"
+
+echo "$rpm"
