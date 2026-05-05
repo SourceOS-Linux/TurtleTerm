@@ -15,7 +15,7 @@ EOF
 done
 
 prefix="$tmp/prefix"
-TURTLE_TERM_STAGE_PREFIX="$prefix" "$repo_root/packaging/scripts/stage-linux-package.sh" >/dev/null
+TURTLE_TERM_STAGE_PREFIX="$prefix" bash "$repo_root/packaging/scripts/stage-linux-package.sh" >/dev/null
 
 required_paths=(
   "$prefix/bin/turtleterm"
