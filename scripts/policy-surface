@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "TurtleTerm policy surface"
+echo "filesystem: workspace_scoped_with_terminal_receipts"
+echo "network: no_external_egress_by_default"
+echo "execution: explicit_operator_or_policy_admitted_commands_only"
+echo "approval: required_for_agent_delegated_command_execution"
+echo "workspace_scope: declared_terminal_workspace_or_current_workdir"
+
+echo
+echo "blocking rule: update TRUST_SURFACE.yaml before adding persistent services, listeners, credential stores, browser/CDP/noVNC control, or expanded agent command execution"
