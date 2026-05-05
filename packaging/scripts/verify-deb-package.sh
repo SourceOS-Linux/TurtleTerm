@@ -15,7 +15,7 @@ EOF
 done
 
 TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_DEB_ARCH="amd64" \
-  "$repo_root/packaging/scripts/build-deb-package.sh" >/dev/null
+  bash "$repo_root/packaging/scripts/build-deb-package.sh" >/dev/null
 
 deb="$tmp/turtle-term_0.1.0_amd64.deb"
 extract="$tmp/extract"
