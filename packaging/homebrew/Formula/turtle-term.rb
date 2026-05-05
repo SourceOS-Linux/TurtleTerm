@@ -67,9 +67,22 @@ class TurtleTerm < Formula
     EOS
 
     profile_source = if File.exist?("assets/sourceos/turtleterm.lua")
-      "assets/sourceos/turtleterm.lua"
+      Pathname("assets/sourceos/turtleterm.lua")
+    elsif File.exist?("assets/sourceos/wezterm.lua")
+      Pathname("assets/sourceos/wezterm.lua")
     else
-      "assets/sourceos/wezterm.lua"
+      profile = buildpath/"turtleterm.lua"
+      profile.write <<~LUA
+        local wezterm = require 'wezterm'
+        local config = wezterm.config_builder()
+        config.set_environment_variables = {
+          SOURCEOS_TERMINAL_FRONTEND = 'turtle-term',
+          SOURCEOS_TERMINAL_PROFILE = 'turtleterm-homebrew-fallback',
+          TURTLETERM_PROFILE = 'turtleterm-homebrew-fallback',
+        }
+        return config
+      LUA
+      profile
     end
     etc.install profile_source => "turtle-term/turtleterm.lua"
     pkgshare.install "docs/sourceos"
