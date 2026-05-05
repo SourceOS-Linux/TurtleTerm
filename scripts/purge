@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${1:-}" != "--confirm" ]; then
+  echo "TurtleTerm purge is destructive. Re-run with --confirm to remove local state/config/cache/logs."
+  exit 2
+fi
+
+patterns='TurtleTerm|turtleterm|turtle-term|turtle-agentd|turtle-agentctl|turtle-tmux|sourceos-term'
+
+echo "Stopping TurtleTerm processes if present..."
+pkill -f "$patterns" 2>/dev/null || true
+
+if command -v launchctl >/dev/null 2>&1; then
+  launchctl list 2>/dev/null | awk '/turtle|TurtleTerm|sourceos-term/ {print $3}' | while read -r label; do
+    [ -n "$label" ] || continue
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  done
+fi
+
+find "$HOME/Library/LaunchAgents" /Library/LaunchAgents /Library/LaunchDaemons -type f 2>/dev/null \
+  | grep -Ei 'turtle|TurtleTerm|sourceos-term' \
+  | while read -r plist; do rm -f "$plist" 2>/dev/null || true; done
+
+rm -rf "$HOME/.local/state/turtleterm" "$HOME/.config/turtleterm" "$HOME/.cache/turtleterm" "$HOME/Library/Logs/TurtleTerm"
+
+echo "TurtleTerm local state/config/cache/logs purged"
