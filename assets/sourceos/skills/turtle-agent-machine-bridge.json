@@ -1,0 +1,55 @@
+{
+  "id": "urn:srcos:skill:turtle-agent-machine-bridge",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-agent-machine-bridge",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/AGENT_MACHINE_INTEGRATION.md",
+  "description": "Bridge TurtleTerm terminal/session requests to Agent Machine runtime surfaces, AgentPod render/evaluate flows, activation decisions, and runtime evidence without directly managing providers.",
+  "activationRules": {
+    "commands": [
+      "agent-machine.surfaces",
+      "agent-machine.probe",
+      "agent-machine.render",
+      "agent-machine.evaluate",
+      "agent-machine.receipts"
+    ],
+    "filePatterns": [
+      "*.agent-pod.json"
+    ],
+    "intentTags": [
+      "agent-machine",
+      "agentpod",
+      "runtime-surface",
+      "activation-decision",
+      "runtime-evidence"
+    ]
+  },
+  "requires": {
+    "binaries": [
+      "turtle-agentctl"
+    ],
+    "anyBins": [
+      "agent-machine"
+    ],
+    "tools": [
+      "policy-fabric",
+      "agent-registry",
+      "agentplane"
+    ]
+  },
+  "executionSurfaceRef": "urn:srcos:surface:turtle-agent-machine-default",
+  "policyBindings": [
+    "urn:srcos:policy:turtle-agent-machine-bridge"
+  ],
+  "artifactOutputs": [
+    "agent-machine-probe",
+    "agentpod-plan",
+    "activation-decision",
+    "runtime-evidence-reference",
+    "storage-receipt-reference"
+  ],
+  "reviewMode": true,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
