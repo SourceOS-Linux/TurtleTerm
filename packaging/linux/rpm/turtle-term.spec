@@ -43,7 +43,7 @@ cargo build --release --locked -p wezterm-gui
 cargo build --release --locked -p wezterm-mux-server
 
 %install
-TURTLE_TERM_STAGE_PREFIX=%{buildroot}%{_prefix} packaging/scripts/stage-linux-package.sh
+TURTLE_TERM_STAGE_PREFIX=%{buildroot}%{_prefix} bash packaging/scripts/stage-linux-package.sh
 
 %check
 desktop-file-validate %{buildroot}%{_datadir}/applications/ai.sourceos.TurtleTerm.desktop
