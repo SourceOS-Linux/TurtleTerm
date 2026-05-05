@@ -2,37 +2,114 @@
 
 ## Goal
 
-Publish TurtleTerm so users can install it easily on macOS and Linux.
+Publish TurtleTerm so Linux users can install, launch, verify, and audit it easily.
 
-The intended public path is:
+TurtleTerm is Linux-first. macOS remains a compatibility lane, but macOS signing, notarization, DMG/PKG packaging, and Gatekeeper validation are deferred.
+
+Primary Linux install lanes:
 
 ```bash
 brew install SourceOS-Linux/tap/turtle-term
 ```
 
-Windows packaging is postponed until the Homebrew lane is stable.
+```bash
+sudo dpkg -i turtle-term_<version>_<arch>.deb
+```
+
+```bash
+sudo rpm -i turtle-term-<version>-*.rpm
+```
+
+```bash
+sudo pacman -U turtle-term-<version>-1-<arch>.pkg.tar.zst
+```
+
+Windows packaging is postponed.
 
 ## Pre-release validation
 
-1. Confirm the repo README introduces TurtleTerm and preserves WezTerm attribution.
-2. Confirm `LICENSE.md` is present.
-3. Confirm the Homebrew formula is `packaging/homebrew/Formula/turtle-term.rb`.
-4. Confirm the stale `sourceos-wezterm.rb` formula is absent.
-5. Confirm the release workflow exists at `.github/workflows/turtle-term-release.yml`.
-6. Confirm the Homebrew validation workflow exists at `.github/workflows/turtle-term-homebrew.yml`.
+1. Confirm the repo README presents TurtleTerm as the product.
+2. Confirm `LICENSE.md` and `THIRD_PARTY_NOTICES.md` are present.
+3. Confirm stale `sourceos-wezterm.rb` formula is absent.
+4. Confirm the release workflow exists at `.github/workflows/turtle-term-release.yml`.
+5. Confirm the native Linux package workflow exists at `.github/workflows/turtle-term-native-linux-packages.yml`.
+6. Confirm the Linux packaging validation workflow exists at `.github/workflows/turtle-term-linux-packaging.yml`.
 7. Confirm script checks exist at `.github/workflows/turtle-term-scripts.yml`.
-8. Run the SourceOS wrapper smoke test locally or in CI:
+8. Run local product and package guards:
 
 ```bash
 python3 assets/sourceos/tests/test_sourceos_term_smoke.py
+python3 assets/sourceos/tests/test_turtle_product_identity.py
+python3 assets/sourceos/tests/test_turtle_linux_desktop_identity.py
+python3 assets/sourceos/tests/test_turtle_linux_native_packaging.py
+python3 assets/sourceos/tests/test_turtle_neovim_integration.py
+python3 assets/sourceos/tests/test_turtle_term_release_readiness.py
 ```
 
-9. Run local Homebrew install validation:
+9. Run Linux package layout validation:
+
+```bash
+bash packaging/scripts/verify-linux-package-layout.sh
+bash packaging/scripts/verify-deb-package.sh
+bash packaging/scripts/verify-rpm-package.sh
+bash packaging/scripts/verify-arch-package.sh
+```
+
+10. Run local Homebrew install validation where Homebrew is available:
 
 ```bash
 brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
 brew test turtle-term
+turtleterm --version || true
 turtle-term run -- echo turtle-term-ok
+turtle-agentctl --stdio ping
+```
+
+## Release artifact publication
+
+Tag the release from `main`:
+
+```bash
+git tag turtle-term-v0.1.0
+git push origin turtle-term-v0.1.0
+```
+
+The release workflows should publish:
+
+- Linux x86_64 tarball
+- Linux ARM64 tarball
+- macOS ARM64 tarball, unsigned compatibility artifact
+- macOS Intel tarball, unsigned compatibility artifact
+- Debian packages for amd64 and arm64
+- RPM packages for x86_64 and aarch64
+- Arch packages for x86_64 and aarch64
+- SHA-256 checksum files
+- Package manifest JSON files
+- Native package index JSON
+- SPDX SBOMs
+- GitHub artifact attestations
+
+Every tarball should have:
+
+```text
+*.tar.gz
+*.tar.gz.sha256
+*.tar.gz.manifest.json
+```
+
+Every native package should have:
+
+```text
+*.deb | *.rpm | *.pkg.tar.zst
+*.sha256
+*.manifest.json
+```
+
+The native package set should have:
+
+```text
+turtle-term-native-packages.index.json
+turtle-term-native-packages.index.json.sha256
 ```
 
 ## First public tap release
@@ -54,33 +131,8 @@ Validate public install:
 
 ```bash
 brew install --HEAD SourceOS-Linux/tap/turtle-term
+turtleterm --version || true
 turtle-term run -- echo turtle-term-ok
-```
-
-## Release artifact publication
-
-Tag the release from `main`:
-
-```bash
-git tag turtle-term-v0.1.0
-git push origin turtle-term-v0.1.0
-```
-
-The release workflow builds:
-
-- macOS ARM64 tarball
-- macOS Intel tarball
-- Linux x86_64 tarball
-- Linux ARM64 tarball
-- SHA-256 checksum files
-- Release manifest JSON files
-
-Artifacts are attached to the GitHub release for the tag. Every tarball should have:
-
-```text
-*.tar.gz
-*.tar.gz.sha256
-*.tar.gz.manifest.json
 ```
 
 ## Stable Homebrew formula promotion
@@ -93,38 +145,26 @@ python3 packaging/scripts/render-stable-homebrew-formula.py turtle-term-v0.1.0 <
 
 The workflow `.github/workflows/turtle-term-promote-homebrew-stable.yml` can compute the source archive SHA and sync the stable formula to the tap when `TURTLE_TERM_TAP_TOKEN` is configured.
 
-## Bottle milestone
-
-After HEAD formula CI is green on macOS and Linux, build Homebrew bottles in the tap.
-
-The staged tap workflow is:
-
-```text
-packaging/homebrew/.github/workflows/bottle-formula.yml
-```
-
-The goal is to move from source builds to fast installs:
-
-```bash
-brew install turtle-term
-```
-
 ## Acceptance criteria for v0 public availability
 
-1. `brew install --HEAD SourceOS-Linux/tap/turtle-term` works on macOS ARM64.
-2. `brew install --HEAD SourceOS-Linux/tap/turtle-term` works on macOS Intel.
-3. `brew install --HEAD SourceOS-Linux/tap/turtle-term` works on Linux x86_64.
-4. `brew install --HEAD SourceOS-Linux/tap/turtle-term` works on Linux ARM64.
-5. `turtle-term paths` works.
-6. `turtle-term run -- echo hello` emits events and receipts.
-7. `sourceos-term paths` still works.
-8. A `turtle-term-v0.1.0` release publishes tarballs, checksums, and manifests.
-9. README and formula both use TurtleTerm as the public product name.
+1. `turtleterm` launches TurtleTerm.
+2. `turtle-term run -- echo turtle-term-ok` emits events and receipts.
+3. `turtle-agentctl --stdio ping` works.
+4. Linux desktop metadata validates.
+5. AppStream metadata validates.
+6. Debian, RPM, and Arch packages build with private runtime under `/usr/libexec/turtle-term`.
+7. Native packages install the profile at `/etc/turtle-term/turtleterm.lua`.
+8. Native package wrappers do not contain buildroot paths.
+9. Native packages include checksums and manifests.
+10. Native package index is published and attested.
+11. Release tarballs include checksums, manifests, SBOMs, and attestations.
+12. README, formulae, metadata, and packages use TurtleTerm as the public product name.
 
 ## Post-v0 hardening
 
-1. Add stable release tarball URL and SHA-256 to the formula.
-2. Publish bottles.
+1. Publish Homebrew bottles.
+2. Add repository metadata for apt/yum/dnf/pacman distribution channels.
 3. Add upgrade/rollback docs.
-4. Add Chocolatey, WinGet, or Scoop planning for Windows.
-5. Add distro-native packaging for SourceOS Linux images.
+4. Add SourceOS image integration.
+5. Add Windows packaging plan.
+6. Revisit macOS signing/notarization after Linux distribution is stable.
