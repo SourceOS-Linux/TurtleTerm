@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+patterns='TurtleTerm|turtleterm|turtle-term|turtle-agentd|turtle-agentctl|turtle-tmux|sourceos-term'
+failed=0
+
+if pgrep -af "$patterns" >/dev/null 2>&1; then
+  echo "FAIL: TurtleTerm process still present"
+  pgrep -af "$patterns" || true
+  failed=1
+else
+  echo "OK: no TurtleTerm process"
+fi
+
+if command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -Ei "$patterns" >/dev/null; then
+  echo "FAIL: TurtleTerm launchctl entry still present"
+  failed=1
+else
+  echo "OK: no TurtleTerm launchctl entry"
+fi
+
+if find "$HOME/Library/LaunchAgents" /Library/LaunchAgents /Library/LaunchDaemons -type f 2>/dev/null | grep -Ei 'turtle|TurtleTerm|sourceos-term' >/dev/null; then
+  echo "FAIL: TurtleTerm launch plist still present"
+  failed=1
+else
+  echo "OK: no TurtleTerm launch plist"
+fi
+
+if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | grep -Ei "$patterns" >/dev/null; then
+  echo "FAIL: TurtleTerm listener still present"
+  failed=1
+else
+  echo "OK: no TurtleTerm listener"
+fi
+
+for p in "$HOME/.local/state/turtleterm" "$HOME/.config/turtleterm" "$HOME/.cache/turtleterm" "$HOME/Library/Logs/TurtleTerm"; do
+  if [ -e "$p" ]; then
+    echo "FAIL: residue exists: $p"
+    failed=1
+  else
+    echo "OK: missing: $p"
+  fi
+done
+
+exit "$failed"
