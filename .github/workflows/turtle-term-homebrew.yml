@@ -38,6 +38,8 @@ jobs:
 
       - name: Stage local Homebrew tap
         run: |
+          git config --global user.name "TurtleTerm CI"
+          git config --global user.email "turtleterm-ci@users.noreply.github.com"
           brew tap-new sourceos-linux/turtleterm-ci
           tap_root="$(brew --repository sourceos-linux/turtleterm-ci)"
           mkdir -p "$tap_root/Formula"
