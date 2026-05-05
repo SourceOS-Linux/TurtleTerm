@@ -15,7 +15,7 @@ EOF
 done
 
 TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_RPM_ARCH="$(uname -m)" bash "$repo_root/packaging/scripts/build-rpm-package.sh" >/dev/null
-rpm="$(find "$tmp" -maxdepth 1 -type f -name '*.rpm' | sort | head -n 1)"
+rpm="$(find "$tmp" -type f -name '*.rpm' | sort | head -n 1)"
 extract="$tmp/extract"
 
 test -n "$rpm"
