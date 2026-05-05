@@ -51,11 +51,16 @@ turtleterm
 ```bash
 turtle-term paths
 turtle-term run -- echo hello
+turtle-term office plan --title "Demo Report" --artifact-type document --format md
+turtle-term /office plan --office-action convert --input ./demo.docx --to pdf
+turtle-term office evidence inspect ./office-evidence.json
 turtle-agentctl --stdio ping
 turtle-tmux panes
 ```
 
 `turtle-term` is the command wrapper. `turtleterm` is the graphical launcher. `sourceos-term` remains available for SourceOS contract compatibility.
+
+The `office` / `/office` operator surface does not implement an office suite inside TurtleTerm. It produces SourceOS Office operator plans that point to `sourceosctl office`, records the receipt command to run through TurtleTerm, and summarizes `OfficeArtifactEvidence` runtime contract IDs when present.
 
 ## Product surfaces
 
@@ -65,6 +70,7 @@ turtle-tmux panes
 - TurtleTerm local agent gateway
 - TurtleTerm agent CLI
 - TurtleTerm tmux bridge
+- TurtleTerm Office operator flow planning
 - TurtleTerm skill manifests
 - TurtleTerm turtle icon
 - TurtleTerm release artifacts, manifests, SBOMs, and attestations
