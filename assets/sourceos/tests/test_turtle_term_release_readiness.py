@@ -34,12 +34,25 @@ REQUIRED_FILES = [
     "assets/sourceos/tests/test_turtle_term_branding.py",
     "assets/sourceos/tests/test_turtle_term_release_readiness.py",
     "assets/sourceos/tests/test_turtle_agentic_integration_plan.py",
+    "assets/sourceos/tests/test_turtle_linux_native_packaging.py",
     "packaging/homebrew/Formula/turtle-term.rb",
     "packaging/homebrew/templates/turtle-term.rb.template",
     "packaging/homebrew/README.md",
     "packaging/homebrew/TAP_HANDOFF.md",
+    "packaging/linux/README.md",
+    "packaging/linux/deb/control",
+    "packaging/linux/rpm/turtle-term.spec",
+    "packaging/linux/arch/PKGBUILD",
     "packaging/scripts/install-turtle-term.sh",
     "packaging/scripts/package-turtle-term.sh",
+    "packaging/scripts/stage-linux-package.sh",
+    "packaging/scripts/build-deb-package.sh",
+    "packaging/scripts/verify-deb-package.sh",
+    "packaging/scripts/build-rpm-package.sh",
+    "packaging/scripts/verify-rpm-package.sh",
+    "packaging/scripts/build-arch-package.sh",
+    "packaging/scripts/verify-arch-package.sh",
+    "packaging/scripts/write-native-package-manifest.py",
     "packaging/scripts/bootstrap-homebrew-tap.sh",
     "packaging/scripts/render-stable-homebrew-formula.py",
     "packaging/scripts/write-turtle-term-manifest.py",
@@ -47,6 +60,8 @@ REQUIRED_FILES = [
     ".github/workflows/turtle-term-release.yml",
     ".github/workflows/turtle-term-homebrew.yml",
     ".github/workflows/turtle-term-scripts.yml",
+    ".github/workflows/turtle-term-linux-packaging.yml",
+    ".github/workflows/turtle-term-native-linux-packages.yml",
     ".github/workflows/turtle-term-sync-homebrew-tap.yml",
     ".github/workflows/turtle-term-promote-homebrew-stable.yml",
 ]
@@ -84,6 +99,14 @@ REQUIRED_RELEASE_WORKFLOW_SNIPPETS = [
     "softprops/action-gh-release",
     "turtle-term-*.tar.gz.manifest.json",
     "anchore/sbom-action",
+    "actions/attest@v4",
+]
+
+REQUIRED_NATIVE_WORKFLOW_SNIPPETS = [
+    "turtle-term_*.deb",
+    "turtle-term-*.rpm",
+    "turtle-term-*.pkg.tar.zst",
+    "turtle-term-native-packages.index.json",
     "actions/attest@v4",
 ]
 
@@ -129,6 +152,7 @@ def main() -> int:
     assert_contains("README.md", REQUIRED_README_SNIPPETS)
     assert_contains("packaging/homebrew/Formula/turtle-term.rb", REQUIRED_FORMULA_SNIPPETS)
     assert_contains(".github/workflows/turtle-term-release.yml", REQUIRED_RELEASE_WORKFLOW_SNIPPETS)
+    assert_contains(".github/workflows/turtle-term-native-linux-packages.yml", REQUIRED_NATIVE_WORKFLOW_SNIPPETS)
     assert_contains("packaging/scripts/package-turtle-term.sh", REQUIRED_PACKAGE_SCRIPT_SNIPPETS)
     assert_contains("docs/sourceos/SUPPLY_CHAIN.md", REQUIRED_SUPPLY_CHAIN_SNIPPETS)
 
