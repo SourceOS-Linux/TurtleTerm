@@ -38,7 +38,7 @@ AgentPlane execution, evidence, and replay
 
 ## Invariant
 
-TurtleTerm must not grant agents ambient shell authority.
+TurtleTerm must never give agents unreviewed shell capability.
 
 Every risky action becomes an ExecutionDecision: allow, deny, ask, defer, or rewrite.
 
