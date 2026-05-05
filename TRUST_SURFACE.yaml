@@ -1,0 +1,114 @@
+schema_version: "1.0"
+component: TurtleTerm
+repo: SourceOS-Linux/TurtleTerm
+owner: SourceOS-Linux
+runtime_classes:
+  - desktop_app
+  - terminal_control
+  - launch_agent
+  - agent_orchestrator
+authority_summary: >-
+  TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench for trusted command execution,
+  terminal receipts, agent delegation, reproducible operator workflows, local agent gateway behavior, tmux bridge behavior,
+  and release artifacts. This first-pass trust surface makes terminal authority explicit before broader automation ships.
+
+entrypoints:
+  - type: graphical_launcher
+    path: turtleterm
+    purpose: Launch the TurtleTerm graphical terminal surface.
+  - type: cli_wrapper
+    path: turtle-term
+    purpose: Run TurtleTerm command wrapper workflows.
+  - type: agent_cli
+    path: turtle-agentctl
+    purpose: Interact with the TurtleTerm local agent gateway.
+  - type: tmux_bridge
+    path: turtle-tmux
+    purpose: Bridge TurtleTerm workflows into tmux panes.
+  - type: compatibility_cli
+    path: sourceos-term
+    purpose: Preserve SourceOS terminal contract compatibility.
+
+launch_services: []
+containers: []
+
+network:
+  plaintext_non_loopback_allowed: false
+  listeners:
+    - protocol: local_agent_gateway
+      bind: loopback_or_stdio_only_until_declared_otherwise
+      port: null
+      auth: required_before_non_stdio_or_non_loopback_use
+      purpose: Agent-addressable terminal gateway.
+  egress: []
+
+filesystem:
+  host_mounts: []
+  writable_paths:
+    - ~/.local/state/turtleterm/
+    - ~/.config/turtleterm/
+    - ~/.cache/turtleterm/
+    - ~/Library/Logs/TurtleTerm/
+  cache_paths:
+    - ~/.cache/turtleterm/
+  log_paths:
+    - ~/Library/Logs/TurtleTerm/
+    - ~/.local/state/turtleterm/logs/
+
+credentials:
+  expected_secrets: []
+  secret_locations: []
+  inherits_ssh_agent: false
+  redaction_required: true
+
+policy:
+  filesystem: workspace_scoped_with_terminal_receipts
+  network: no_external_egress_by_default
+  execution: explicit_operator_or_policy_admitted_commands_only
+  approval: required_for_agent_delegated_command_execution
+  workspace_scope: declared_terminal_workspace_or_current_workdir
+
+model_providers: []
+browser_surfaces: []
+update_channels:
+  - type: homebrew_formula
+    url_or_ref: SourceOS-Linux/tap/turtle-term
+    signature_required: true
+  - type: direct_install_script
+    url_or_ref: https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/packaging/scripts/install-turtle-term.sh
+    signature_required: true
+remote_config: []
+
+purge:
+  commands:
+    - brew uninstall turtle-term || true
+    - rm -rf ~/.local/state/turtleterm ~/.config/turtleterm ~/.cache/turtleterm ~/Library/Logs/TurtleTerm
+  removes:
+    - TurtleTerm Homebrew formula installation
+    - TurtleTerm state directory
+    - TurtleTerm config directory
+    - TurtleTerm cache directory
+    - TurtleTerm logs
+    - any future TurtleTerm LaunchAgent declared in this file
+
+prove_clean:
+  checks:
+    - no process matching TurtleTerm, turtleterm, turtle-term, turtle-agentctl, turtle-tmux, or sourceos-term
+    - no LaunchAgent, LaunchDaemon, systemd unit, or scheduled task matching TurtleTerm or turtleterm
+    - no listener owned by TurtleTerm
+    - no credential store owned by TurtleTerm
+    - no local state, config, cache, or log residue unless explicitly retained by user
+
+known_risks:
+  - Terminal control is command execution authority and must be policy-gated.
+  - Agent-addressable terminal gateways can become local RCE surfaces if unauthenticated.
+  - Receipts may contain commands, paths, environment fragments, or sensitive output.
+  - tmux bridge state may outlive a visible TurtleTerm UI session.
+  - Homebrew HEAD installs and direct install scripts require provenance and integrity controls.
+
+compensating_controls:
+  - Prefer stdio or loopback-only gateway transport.
+  - Require explicit approval for agent-delegated command execution.
+  - Redact secrets from terminal receipts, logs, traces, and status output.
+  - Preserve third-party license attribution while keeping TurtleTerm product surfaces distinct.
+  - Add prove-clean coverage before persistent launch services are introduced.
