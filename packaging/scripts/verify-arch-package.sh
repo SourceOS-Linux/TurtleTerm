@@ -15,7 +15,7 @@ EOF
 done
 
 TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_ARCH_ARCH="$(uname -m)" bash "$repo_root/packaging/scripts/build-arch-package.sh" >/dev/null
-pkg="$(find "$tmp" -maxdepth 1 -type f -name '*.pkg.tar.zst' | sort | head -n 1)"
+pkg="$(find "$tmp" -type f -name '*.pkg.tar.zst' | sort | head -n 1)"
 extract="$tmp/extract"
 
 test -n "$pkg"
