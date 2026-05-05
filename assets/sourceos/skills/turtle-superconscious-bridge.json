@@ -1,0 +1,50 @@
+{
+  "id": "urn:srcos:skill:turtle-superconscious-bridge",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-superconscious-bridge",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/SUPERCONSCIOUS_INTEGRATION.md",
+  "description": "Bridge TurtleTerm terminal, tmux, Neovim, cloudfog, policy, receipt, and AgentPlane references into Superconscious governed cognition runs without granting shell authority.",
+  "activationRules": {
+    "commands": [
+      "superconscious.observe",
+      "superconscious.plan",
+      "superconscious.propose",
+      "superconscious.trace",
+      "superconscious.replay"
+    ],
+    "filePatterns": [],
+    "intentTags": [
+      "superconscious",
+      "governed-cognition",
+      "safe-operational-trace",
+      "replay-plan"
+    ]
+  },
+  "requires": {
+    "binaries": [
+      "turtle-agentctl"
+    ],
+    "anyBins": [],
+    "tools": [
+      "superconscious",
+      "policy-fabric",
+      "agent-registry",
+      "agentplane"
+    ]
+  },
+  "executionSurfaceRef": null,
+  "policyBindings": [
+    "urn:srcos:policy:turtle-superconscious-bridge"
+  ],
+  "artifactOutputs": [
+    "safe-operational-trace",
+    "reasoning-run-reference",
+    "replay-plan-reference",
+    "agentplane-evidence-reference"
+  ],
+  "reviewMode": true,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
