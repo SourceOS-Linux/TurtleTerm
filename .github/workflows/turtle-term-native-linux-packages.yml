@@ -60,6 +60,7 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             cmake \
+            cpio \
             desktop-file-utils \
             dpkg-dev \
             fontconfig \
