@@ -20,6 +20,8 @@ REQUIRED_DOCS = [
     "docs/sourceos/AGENT_REGISTRY_BRIDGE.md",
     "docs/sourceos/POLICY_FABRIC_BRIDGE.md",
     "docs/sourceos/AGENTPLANE_BRIDGE.md",
+    "docs/sourceos/SUPERCONSCIOUS_INTEGRATION.md",
+    "docs/sourceos/AGENT_MACHINE_INTEGRATION.md",
     "docs/sourceos/BROWSER_HANDOFF.md",
 ]
 
@@ -35,6 +37,8 @@ REQUIRED_SKILLS = [
     "assets/sourceos/skills/turtle-policy-gate.json",
     "assets/sourceos/skills/turtle-agent-registry-client.json",
     "assets/sourceos/skills/turtle-agentplane-runner.json",
+    "assets/sourceos/skills/turtle-superconscious-bridge.json",
+    "assets/sourceos/skills/turtle-agent-machine-bridge.json",
     "assets/sourceos/skills/turtle-bearbrowser-handoff.json",
 ]
 
@@ -96,6 +100,16 @@ def main() -> int:
     assert "TurtleTerm plus Neovim should be sufficient" in neovim
     assert "thin client over `turtle-agentd`" in neovim
     assert "raw shell execution from plugin code" in neovim
+
+    superconscious = read("docs/sourceos/SUPERCONSCIOUS_INTEGRATION.md")
+    assert "Superconscious owns the governed cognition/control loop" in superconscious
+    assert "TurtleTerm owns terminal/session UX" in superconscious
+    assert "Superconscious must not gain ambient shell authority" in superconscious
+
+    agent_machine = read("docs/sourceos/AGENT_MACHINE_INTEGRATION.md")
+    assert "Agent Machine owns the machine-local runtime layer" in agent_machine
+    assert "TurtleTerm owns the operator terminal/session surface" in agent_machine
+    assert "TurtleTerm must not start runtime providers directly" in agent_machine
 
     acp = read("docs/sourceos/ACP_A2A_BRIDGE.md")
     assert "ACP is the editor/client ingress" in acp
