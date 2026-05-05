@@ -62,21 +62,24 @@ TURTLE_TERM_USE_BREW=never bash packaging/scripts/install-turtle-term.sh
 turtleterm --version || true
 turtle-term paths
 turtle-term run -- echo turtle-term-ok
+turtle-term office plan --title "Demo Report" --artifact-type document --format md
 turtle-agentctl --stdio ping
 ```
 
 ## Activate TurtleTerm profile
 
+TurtleTerm installs a product profile named `turtleterm.lua`. The compatibility symlink still targets the WezTerm config location because the underlying terminal runtime reads that path.
+
 Homebrew profile path:
 
 ```bash
-ln -sf "$(brew --prefix)/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
+ln -sf "$(brew --prefix)/etc/turtle-term/turtleterm.lua" ~/.wezterm.lua
 ```
 
 Direct install profile path:
 
 ```bash
-ln -sf "$HOME/.local/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
+ln -sf "$HOME/.local/etc/turtle-term/turtleterm.lua" ~/.wezterm.lua
 ```
 
 Then launch TurtleTerm:
