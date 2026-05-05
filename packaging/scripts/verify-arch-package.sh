@@ -15,7 +15,7 @@ EOF
 done
 
 pkg="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_ARCH_ARCH="$(uname -m)" \
-  "$repo_root/packaging/scripts/build-arch-package.sh")"
+  bash "$repo_root/packaging/scripts/build-arch-package.sh")"
 extract="$tmp/extract"
 
 test -f "$pkg"
@@ -44,7 +44,7 @@ tar --zstd -tf "$pkg" | grep -q '^./usr/share/icons/hicolor/scalable/apps/ai.sou
 tar --zstd -tf "$pkg" | grep -q '^./usr/libexec/turtle-term/wezterm-gui$'
 
 if tar --zstd -tf "$pkg" | grep -q '^./usr/bin/wezterm-gui$'; then
-  echo 'private runtime leaked onto product PATH in Arch package' >&2
+  echo 'private runtime leaked onto product PATH: wezterm-gui' >&2
   exit 1
 fi
 
