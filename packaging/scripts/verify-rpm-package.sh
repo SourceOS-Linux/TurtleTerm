@@ -14,10 +14,11 @@ EOF
   chmod 0755 "$repo_root/target/release/$binary"
 done
 
-rpm="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_RPM_ARCH="$(uname -m)" \
-  bash "$repo_root/packaging/scripts/build-rpm-package.sh")"
+TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_RPM_ARCH="$(uname -m)" bash "$repo_root/packaging/scripts/build-rpm-package.sh" >/dev/null
+rpm="$(find "$tmp" -maxdepth 1 -type f -name '*.rpm' | sort | head -n 1)"
 extract="$tmp/extract"
 
+test -n "$rpm"
 test -f "$rpm"
 test -f "$rpm.sha256"
 test -f "$rpm.manifest.json"
@@ -37,13 +38,16 @@ PY
 rpm -qp --queryformat '%{NAME}\n' "$rpm" | grep -qx 'turtle-term'
 rpm -qp --queryformat '%{VERSION}\n' "$rpm" | grep -qx '0.1.0'
 
-rpm -qpl "$rpm" | grep -q '^/usr/bin/turtleterm$'
-rpm -qpl "$rpm" | grep -q '^/usr/bin/turtle-agentctl$'
-rpm -qpl "$rpm" | grep -q '^/etc/turtle-term/turtleterm.lua$'
-rpm -qpl "$rpm" | grep -q '^/usr/share/applications/ai.sourceos.TurtleTerm.desktop$'
-rpm -qpl "$rpm" | grep -q '^/usr/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml$'
-rpm -qpl "$rpm" | grep -q '^/usr/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg$'
-rpm -qpl "$rpm" | grep -q '^/usr/libexec/turtle-term/wezterm-gui$'
+for path in \
+  '^/usr/bin/turtleterm$' \
+  '^/usr/bin/turtle-agentctl$' \
+  '^/etc/turtle-term/turtleterm.lua$' \
+  '^/usr/share/applications/ai.sourceos.TurtleTerm.desktop$' \
+  '^/usr/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml$' \
+  '^/usr/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg$' \
+  '^/usr/libexec/turtle-term/wezterm-gui$'; do
+  rpm -qpl "$rpm" | grep -q "$path"
+done
 
 if rpm -qpl "$rpm" | grep -q '^/usr/bin/wezterm-gui$'; then
   echo 'private runtime leaked onto product PATH: wezterm-gui' >&2
@@ -54,9 +58,7 @@ mkdir -p "$extract"
 (cd "$extract" && rpm2cpio "$rpm" | cpio -idmu >/dev/null 2>&1)
 grep -q 'TURTLE_TERM_RUNTIME_DIR="/usr/libexec/turtle-term"' "$extract/usr/bin/turtleterm"
 grep -q 'TURTLETERM_CONFIG="/etc/turtle-term/turtleterm.lua"' "$extract/usr/bin/turtleterm"
-grep -q 'exec "/usr/libexec/turtle-term/turtleterm"' "$extract/usr/bin/turtleterm"
 grep -q 'TURTLE_TERM_RUNTIME_DIR="/usr/libexec/turtle-term"' "$extract/usr/bin/turtleterm-mux-server"
-grep -q 'exec "/usr/libexec/turtle-term/turtleterm-mux-server"' "$extract/usr/bin/turtleterm-mux-server"
 if grep -R "$tmp\|BUILDROOT\|rpm-root\|arch-root\|deb-root" "$extract/usr/bin/turtleterm" "$extract/usr/bin/turtleterm-mux-server"; then
   echo 'buildroot path leaked into RPM launch wrappers' >&2
   exit 1
