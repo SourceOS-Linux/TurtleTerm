@@ -15,7 +15,7 @@ EOF
 done
 
 rpm="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_RPM_ARCH="$(uname -m)" \
-  "$repo_root/packaging/scripts/build-rpm-package.sh")"
+  bash "$repo_root/packaging/scripts/build-rpm-package.sh")"
 extract="$tmp/extract"
 
 test -f "$rpm"
