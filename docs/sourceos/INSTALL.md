@@ -70,13 +70,13 @@ turtle-agentctl --stdio ping
 Homebrew profile path:
 
 ```bash
-ln -sf "$(brew --prefix)/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
+ln -sf "$(brew --prefix)/etc/turtle-term/turtleterm.lua" ~/.wezterm.lua
 ```
 
 Direct install profile path:
 
 ```bash
-ln -sf "$HOME/.local/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
+ln -sf "$HOME/.local/etc/turtle-term/turtleterm.lua" ~/.wezterm.lua
 ```
 
 Then launch TurtleTerm:
