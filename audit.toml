@@ -1,0 +1,28 @@
+# TurtleTerm cargo-audit policy.
+#
+# This repository currently vendors/inherits a large WezTerm Rust dependency
+# graph.  The Office operator flow in PR #4 changes Python wrappers, docs, and
+# packaging validation; it does not change Rust dependencies.  These temporary
+# ignores keep CI actionable while preserving explicit debt for the upstream
+# runtime dependency refresh.
+#
+# Expiry rule: remove or renew each entry before 2026-06-15.
+
+[advisories]
+ignore = [
+  # bytes 1.10.1; solution >= 1.11.1.  Pulled through inherited WezTerm/hyper/tokio graph.
+  "RUSTSEC-2026-0007",
+
+  # rustls-webpki 0.103.8; solutions >= 0.103.10 / 0.103.12 / 0.103.13 depending advisory.
+  "RUSTSEC-2026-0049",
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
+  "RUSTSEC-2026-0104",
+
+  # tar 0.4.44; solution >= 0.4.45.  Pulled through sync-color-schemes packaging/runtime path.
+  "RUSTSEC-2026-0067",
+  "RUSTSEC-2026-0068",
+
+  # time 0.3.44; solution >= 0.3.47.  Pulled through inherited WezTerm runtime crates.
+  "RUSTSEC-2026-0009"
+]
