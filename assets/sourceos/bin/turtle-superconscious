@@ -2,15 +2,18 @@
 # TurtleTerm Superconscious bridge.
 set -eu
 
+bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+agentctl="$bin_dir/turtle-agentctl"
+
 cmd="${1:-observe}"
 case "$cmd" in
   observe)
     shift || true
-    exec turtle-agentctl --stdio superconscious-observe "$@"
+    exec "$agentctl" --stdio superconscious-observe "$@"
     ;;
   propose)
     shift || true
-    exec turtle-agentctl --stdio superconscious-propose "$@"
+    exec "$agentctl" --stdio superconscious-propose "$@"
     ;;
   *)
     echo "usage: turtle-superconscious [observe <text>|propose <prompt>]" >&2
