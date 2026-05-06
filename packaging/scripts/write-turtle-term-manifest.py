@@ -46,6 +46,9 @@ def main() -> int:
             "turtle-agentd",
             "turtle-agentctl",
             "turtle-tmux",
+            "turtle-cloudfog",
+            "turtle-superconscious",
+            "turtle-agent-machine",
             "sourceos-term"
         ],
         "private_runtime_path": "libexec/turtle-term",
@@ -57,7 +60,11 @@ def main() -> int:
             "turtleterm --version || true",
             "turtle-term paths",
             "turtle-term run -- echo turtle-term-ok",
-            "turtle-agentctl --stdio ping"
+            "turtle-agentctl --stdio ping",
+            "turtle-agentctl --stdio surfaces",
+            "turtle-cloudfog surfaces",
+            "turtle-superconscious observe hello",
+            "turtle-agent-machine surfaces"
         ],
     }
 
