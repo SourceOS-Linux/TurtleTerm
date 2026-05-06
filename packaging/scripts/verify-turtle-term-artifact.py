@@ -17,6 +17,9 @@ REQUIRED_PUBLIC_COMMANDS = {
     "turtle-agentd",
     "turtle-agentctl",
     "turtle-tmux",
+    "turtle-cloudfog",
+    "turtle-superconscious",
+    "turtle-agent-machine",
     "sourceos-term",
 }
 
