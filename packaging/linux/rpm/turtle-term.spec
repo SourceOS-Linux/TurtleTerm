@@ -56,6 +56,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/ai.sourceos.TurtleTer
 %{_bindir}/turtle-agentd
 %{_bindir}/turtle-agentctl
 %{_bindir}/turtle-tmux
+%{_bindir}/turtle-cloudfog
+%{_bindir}/turtle-superconscious
+%{_bindir}/turtle-agent-machine
 %{_bindir}/sourceos-term
 %{_sysconfdir}/turtle-term/turtleterm.lua
 %{_libexecdir}/turtle-term/
