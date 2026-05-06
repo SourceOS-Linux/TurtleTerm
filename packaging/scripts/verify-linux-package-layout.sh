@@ -24,6 +24,9 @@ required_paths=(
   "$prefix/bin/turtle-agentd"
   "$prefix/bin/turtle-agentctl"
   "$prefix/bin/turtle-tmux"
+  "$prefix/bin/turtle-cloudfog"
+  "$prefix/bin/turtle-superconscious"
+  "$prefix/bin/turtle-agent-machine"
   "$prefix/bin/sourceos-term"
   "$prefix/etc/turtle-term/turtleterm.lua"
   "$prefix/libexec/turtle-term/wezterm"
@@ -61,5 +64,9 @@ if command -v appstreamcli >/dev/null 2>&1; then
 fi
 
 "$prefix/bin/turtle-agentctl" --stdio ping >/dev/null
+"$prefix/bin/turtle-agentctl" --stdio surfaces >/dev/null
+"$prefix/bin/turtle-cloudfog" surfaces >/dev/null
+"$prefix/bin/turtle-superconscious" observe package-layout >/dev/null
+"$prefix/bin/turtle-agent-machine" surfaces >/dev/null
 
 echo "verified TurtleTerm Linux package layout at $prefix"
