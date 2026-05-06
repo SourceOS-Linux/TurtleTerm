@@ -77,6 +77,10 @@ def print_json(payload: dict[str, Any]) -> int:
     return 0
 
 
+def join_remainder(values: list[str]) -> str:
+    return " ".join(values).strip()
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="TurtleTerm agent gateway CLI v0")
     parser.add_argument("--stdio", action="store_true", help="bypass socket and invoke turtle-agentd --stdio")
@@ -84,6 +88,14 @@ def main(argv: list[str]) -> int:
 
     sub.add_parser("ping")
     sub.add_parser("sessions")
+    sub.add_parser("surfaces")
+
+    inspect_surface_p = sub.add_parser("inspect-surface")
+    inspect_surface_p.add_argument("surface_id")
+
+    surface_exec_p = sub.add_parser("request-surface-execution")
+    surface_exec_p.add_argument("surface_id")
+    surface_exec_p.add_argument("cmd", nargs=argparse.REMAINDER)
 
     inspect_p = sub.add_parser("inspect")
     inspect_p.add_argument("session_id", nargs="?")
@@ -103,24 +115,55 @@ def main(argv: list[str]) -> int:
     promote_p = sub.add_parser("promote-agentplane-bundle")
     promote_p.add_argument("session_id", nargs="?")
 
+    super_obs_p = sub.add_parser("superconscious-observe")
+    super_obs_p.add_argument("observation", nargs=argparse.REMAINDER)
+
+    super_prop_p = sub.add_parser("superconscious-propose")
+    super_prop_p.add_argument("prompt", nargs=argparse.REMAINDER)
+
+    sub.add_parser("agent-machine-surfaces")
+    sub.add_parser("agent-machine-probe")
+
+    sub.add_parser("cloudfog-surfaces")
+    cloudfog_inspect_p = sub.add_parser("cloudfog-inspect")
+    cloudfog_inspect_p.add_argument("surface_id", nargs="?", default="cloudfog/local-devshell")
+
     args = parser.parse_args(argv)
 
     if args.command == "ping":
         request = {"action": "ping"}
     elif args.command == "sessions":
         request = {"action": "sessions"}
+    elif args.command == "surfaces":
+        request = {"action": "surfaces"}
+    elif args.command == "inspect-surface":
+        request = {"action": "inspect_surface", "surface_id": args.surface_id}
+    elif args.command == "request-surface-execution":
+        request = {"action": "request_surface_execution", "surface_id": args.surface_id, "command": join_remainder(args.cmd)}
     elif args.command == "inspect":
         request = {"action": "inspect", "session_id": args.session_id}
     elif args.command == "summarize":
         request = {"action": "summarize", "session_id": args.session_id}
     elif args.command == "propose":
-        request = {"action": "propose_command", "command": " ".join(args.cmd).strip()}
+        request = {"action": "propose_command", "command": join_remainder(args.cmd)}
     elif args.command == "request-execution":
-        request = {"action": "request_execution", "command": " ".join(args.cmd).strip()}
+        request = {"action": "request_execution", "command": join_remainder(args.cmd)}
     elif args.command == "receipts":
         request = {"action": "receipts", "session_id": args.session_id}
     elif args.command == "promote-agentplane-bundle":
         request = {"action": "promote_agentplane_bundle", "session_id": args.session_id}
+    elif args.command == "superconscious-observe":
+        request = {"action": "superconscious_observe", "observation": {"text": join_remainder(args.observation)}}
+    elif args.command == "superconscious-propose":
+        request = {"action": "superconscious_propose", "prompt": join_remainder(args.prompt)}
+    elif args.command == "agent-machine-surfaces":
+        request = {"action": "agent_machine_surfaces"}
+    elif args.command == "agent-machine-probe":
+        request = {"action": "agent_machine_probe"}
+    elif args.command == "cloudfog-surfaces":
+        request = {"action": "cloudfog_surfaces"}
+    elif args.command == "cloudfog-inspect":
+        request = {"action": "cloudfog_inspect", "surface_id": args.surface_id}
     else:
         parser.print_help(sys.stderr)
         return 2
