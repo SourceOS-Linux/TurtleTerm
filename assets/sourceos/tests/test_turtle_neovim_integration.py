@@ -21,8 +21,16 @@ def main() -> int:
     assert "turtle.nvim" in readme
     assert "TurtlePing" in plugin
     assert "TurtleRequestExecution" in plugin
+    assert "TurtleSurfaces" in plugin
+    assert "TurtleCloudFogSurfaces" in plugin
+    assert "TurtleSuperconsciousObserve" in plugin
+    assert "TurtleAgentMachineSurfaces" in plugin
     assert "turtle-agentctl" in client
     assert "request-execution" in client
+    assert "request-surface-execution" in client
+    assert "cloudfog-surfaces" in client
+    assert "superconscious-observe" in client
+    assert "agent-machine-surfaces" in client
     assert "turtle-neovim-context" in skill
     assert "allowShellExecution" in skill
 
