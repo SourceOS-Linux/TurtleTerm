@@ -40,7 +40,7 @@ reproducible operator workflows.
 
 %install
 rm -rf %{buildroot}
-TURTLE_TERM_STAGE_PREFIX=%{buildroot}/usr TURTLE_TERM_ETC_DIR=%{buildroot}/etc TURTLE_TERM_RUNTIME_PREFIX=/usr TURTLE_TERM_RUNTIME_ETC_DIR=/etc $repo_root/packaging/scripts/stage-linux-package.sh >/dev/null
+TURTLE_TERM_STAGE_PREFIX=%{buildroot}/usr TURTLE_TERM_ETC_DIR=%{buildroot}/etc TURTLE_TERM_RUNTIME_PREFIX=/usr TURTLE_TERM_RUNTIME_ETC_DIR=/etc bash $repo_root/packaging/scripts/stage-linux-package.sh >/dev/null
 cp $repo_root/LICENSE.md %{buildroot}/LICENSE.md
 if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTICES.md %{buildroot}/THIRD_PARTY_NOTICES.md; fi
 
@@ -62,7 +62,8 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 /usr/share/turtle-term/
 EOF
 
-rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec" >/dev/null
+echo "building RPM with generated spec: $spec" >&2
+rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec"
 rpm="$(find "$rpmbuild_root/RPMS" -name 'turtle-term-*.rpm' -print -quit)"
 test -n "$rpm"
 sha256sum "$rpm" > "$rpm.sha256"
