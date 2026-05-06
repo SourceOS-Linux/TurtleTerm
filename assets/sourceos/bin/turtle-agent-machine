@@ -2,21 +2,24 @@
 # TurtleTerm Agent Machine bridge.
 set -eu
 
+bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+agentctl="$bin_dir/turtle-agentctl"
+
 cmd="${1:-surfaces}"
 case "$cmd" in
   surfaces)
     shift || true
-    exec turtle-agentctl --stdio agent-machine-surfaces "$@"
+    exec "$agentctl" --stdio agent-machine-surfaces "$@"
     ;;
   probe)
     shift || true
-    exec turtle-agentctl --stdio agent-machine-probe "$@"
+    exec "$agentctl" --stdio agent-machine-probe "$@"
     ;;
   request-execution)
     shift || true
     surface="${1:-agent-machine/local-agentpod}"
     shift || true
-    exec turtle-agentctl --stdio request-surface-execution "$surface" "$@"
+    exec "$agentctl" --stdio request-surface-execution "$surface" "$@"
     ;;
   *)
     echo "usage: turtle-agent-machine [surfaces|probe|request-execution <surface> -- <command>]" >&2
