@@ -26,7 +26,17 @@ cp "$repo_root/target/release/wezterm" "$stage/libexec/turtle-term/"
 cp "$repo_root/target/release/wezterm-gui" "$stage/libexec/turtle-term/"
 cp "$repo_root/target/release/wezterm-mux-server" "$stage/libexec/turtle-term/"
 
-for script in sourceos-term turtle-term turtle-agentd turtle-agentctl turtle-tmux turtleterm turtleterm-mux-server; do
+for script in \
+  sourceos-term \
+  turtle-term \
+  turtle-agentd \
+  turtle-agentctl \
+  turtle-tmux \
+  turtle-cloudfog \
+  turtle-superconscious \
+  turtle-agent-machine \
+  turtleterm \
+  turtleterm-mux-server; do
   cp "$repo_root/assets/sourceos/bin/$script" "$stage/bin/"
   chmod 0755 "$stage/bin/$script"
 done
@@ -59,6 +69,9 @@ This artifact includes:
 - TurtleTerm local agent gateway
 - TurtleTerm agent CLI
 - TurtleTerm tmux bridge
+- TurtleTerm CloudFog bridge
+- TurtleTerm Superconscious bridge
+- TurtleTerm Agent Machine bridge
 - TurtleTerm mux launcher
 - TurtleTerm profile
 - TurtleTerm Linux desktop metadata
