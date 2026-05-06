@@ -43,6 +43,9 @@ class TurtleTerm < Formula
       turtle-agentd
       turtle-agentctl
       turtle-tmux
+      turtle-cloudfog
+      turtle-superconscious
+      turtle-agent-machine
     ]
     turtle_scripts.each do |script|
       chmod 0755, "assets/sourceos/bin/#{script}"
@@ -112,6 +115,10 @@ class TurtleTerm < Formula
         turtle-term paths
         turtle-term run -- echo hello
         turtle-agentctl --stdio ping
+        turtle-agentctl --stdio surfaces
+        turtle-cloudfog surfaces
+        turtle-superconscious observe hello
+        turtle-agent-machine surfaces
     EOS
   end
 
@@ -136,5 +143,9 @@ class TurtleTerm < Formula
     assert_predicate events, :exist?
     assert_match "command.completed", events.read
     assert_match "turtle-agentd", shell_output("#{bin}/turtle-agentctl --stdio ping")
+    assert_match "surfaces", shell_output("#{bin}/turtle-agentctl --stdio surfaces")
+    assert_match "cloudfog_surfaces", shell_output("#{bin}/turtle-cloudfog surfaces")
+    assert_match "superconscious_observation", shell_output("#{bin}/turtle-superconscious observe hello")
+    assert_match "agent_machine_surfaces", shell_output("#{bin}/turtle-agent-machine surfaces")
   end
 end
