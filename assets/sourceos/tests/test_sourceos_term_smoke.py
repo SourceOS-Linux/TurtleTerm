@@ -20,6 +20,29 @@ def read_ndjson(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def run_json(wrapper: Path, args: list[str]) -> dict:
+    env = dict(os.environ)
+    env.update(
+        {
+            "SOURCEOS_WORKSPACE": "office-smoke-workspace",
+            "SOURCEOS_ACTOR_ID": "test:office-smoke",
+            "SOURCEOS_POLICY_BUNDLE_ID": "policy:office-smoke",
+            "SOURCEOS_EXECUTION_DOMAIN": "host",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, str(wrapper), *args],
+        cwd=str(REPO_ROOT),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
 def run_wrapper(wrapper: Path, session_id: str, workspace: str, expected_text: str) -> tuple[list[dict], dict]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -79,12 +102,115 @@ def run_wrapper(wrapper: Path, session_id: str, workspace: str, expected_text: s
         return event_rows, session
 
 
+def sample_office_evidence(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "kind": "OfficeArtifactEvidence",
+                "artifactId": "office-artifact-demo-report",
+                "workroomId": "workroom-demo",
+                "format": "md",
+                "operation": "generate",
+                "status": "requires-review",
+                "officeRuntimeContracts": {
+                    "schemas": {
+                        "officeDocumentRecord": "https://socioprophet.dev/schemas/office/office_document_record.schema.json",
+                        "officeSessionRecord": "https://socioprophet.dev/schemas/office/office_session_record.schema.json",
+                        "officeVersionRecord": "https://socioprophet.dev/schemas/office/office_version_record.schema.json",
+                        "officeWritebackRecord": "https://socioprophet.dev/schemas/office/office_writeback_record.schema.json",
+                    },
+                    "officeDocumentRecord": {
+                        "document_id": "office-artifact-demo-report",
+                        "version_head": "office-version-office-artifact-demo-report-0001",
+                    },
+                    "officeVersionRecord": {
+                        "version_id": "office-version-office-artifact-demo-report-0001",
+                        "content_hash": "sha256:" + "a" * 64,
+                    },
+                    "officeWritebackRecord": {
+                        "writeback_id": "office-writeback-office-artifact-demo-report-0001",
+                    },
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_office_operator_plan() -> None:
+    payload = run_json(
+        TURTLE_WRAPPER,
+        [
+            "office",
+            "plan",
+            "--title",
+            "Demo Report",
+            "--artifact-type",
+            "document",
+            "--format",
+            "md",
+            "--workroom-id",
+            "workroom-demo",
+        ],
+    )
+    assert payload["schema"] == "sourceos.turtleterm.office.operator_plan.v0"
+    assert payload["operation"] == "generate"
+    assert payload["command_argv"][:3] == ["sourceosctl", "office", "generate"]
+    assert "--dry-run" in payload["command_argv"]
+    assert payload["policy"]["closedProviderRuntimeAuthorityAllowed"] is False
+    assert "officeVersionRecord" in payload["expected_runtime_contracts"]
+    assert payload["receipt_command"][:3] == ["turtle-term", "run", "--"]
+
+
+def test_slash_office_operator_alias() -> None:
+    payload = run_json(
+        SOURCEOS_WRAPPER,
+        [
+            "/office",
+            "plan",
+            "--office-action",
+            "convert",
+            "--input",
+            "./demo.docx",
+            "--to",
+            "pdf",
+            "--title",
+            "Converted Report",
+        ],
+    )
+    assert payload["operation"] == "convert"
+    assert payload["command_argv"][:4] == ["sourceosctl", "office", "convert", "./demo.docx"]
+    assert "--to" in payload["command_argv"]
+    assert "officeWritebackRecord" in payload["expected_runtime_contracts"]
+
+
+def test_office_evidence_summary() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        evidence = Path(tmp) / "office-evidence.json"
+        sample_office_evidence(evidence)
+        payload = run_json(TURTLE_WRAPPER, ["office", "evidence", "inspect", str(evidence)])
+
+    assert payload["schema"] == "sourceos.turtleterm.office.evidence_summary.v0"
+    assert payload["artifact_id"] == "office-artifact-demo-report"
+    assert payload["workroom_id"] == "workroom-demo"
+    assert payload["office_document_id"] == "office-artifact-demo-report"
+    assert payload["office_version_id"] == "office-version-office-artifact-demo-report-0001"
+    assert payload["office_writeback_id"] == "office-writeback-office-artifact-demo-report-0001"
+    assert payload["content_hash"] == "sha256:" + "a" * 64
+
+
 def main() -> int:
     _, sourceos_session = run_wrapper(SOURCEOS_WRAPPER, "sourceos-term-test", "sourceos-test", "sourceos-smoke")
     assert sourceos_session["frontend"] == "sourceos-term"
 
     _, turtle_session = run_wrapper(TURTLE_WRAPPER, "turtle-term-test", "turtle-test", "turtle-smoke")
     assert turtle_session["frontend"] == "turtle-term"
+
+    test_office_operator_plan()
+    test_slash_office_operator_alias()
+    test_office_evidence_summary()
 
     return 0
 

@@ -36,11 +36,20 @@ jobs:
         if: runner.os == 'Linux'
         uses: Homebrew/actions/setup-homebrew@master
 
+      - name: Stage local Homebrew tap
+        run: |
+          git config --global user.name "TurtleTerm CI"
+          git config --global user.email "turtleterm-ci@users.noreply.github.com"
+          brew tap-new sourceos-linux/turtleterm-ci
+          tap_root="$(brew --repository sourceos-linux/turtleterm-ci)"
+          mkdir -p "$tap_root/Formula"
+          cp packaging/homebrew/Formula/turtle-term.rb "$tap_root/Formula/turtle-term.rb"
+
       - name: Audit TurtleTerm formula
-        run: brew audit --formula --strict packaging/homebrew/Formula/turtle-term.rb || true
+        run: brew audit --formula --strict sourceos-linux/turtleterm-ci/turtle-term || true
 
       - name: Install TurtleTerm formula from HEAD
-        run: brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
+        run: brew install --HEAD sourceos-linux/turtleterm-ci/turtle-term
 
       - name: Test TurtleTerm formula
         run: brew test turtle-term
