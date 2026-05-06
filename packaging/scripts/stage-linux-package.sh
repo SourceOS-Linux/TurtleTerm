@@ -23,7 +23,15 @@ cp "$repo_root/target/release/wezterm" "$prefix/libexec/turtle-term/"
 cp "$repo_root/target/release/wezterm-gui" "$prefix/libexec/turtle-term/"
 cp "$repo_root/target/release/wezterm-mux-server" "$prefix/libexec/turtle-term/"
 
-for script in sourceos-term turtle-term turtle-agentd turtle-agentctl turtle-tmux; do
+for script in \
+  sourceos-term \
+  turtle-term \
+  turtle-agentd \
+  turtle-agentctl \
+  turtle-tmux \
+  turtle-cloudfog \
+  turtle-superconscious \
+  turtle-agent-machine; do
   cp "$repo_root/assets/sourceos/bin/$script" "$prefix/bin/"
   chmod 0755 "$prefix/bin/$script"
 done
