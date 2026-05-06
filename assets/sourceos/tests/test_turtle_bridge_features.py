@@ -13,11 +13,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 BIN = ROOT / "assets" / "sourceos" / "bin"
+PYTHON_BINS = {"turtle-agentctl", "turtle-agentd", "turtle-term", "sourceos-term"}
+SHELL_BINS = {"turtle-cloudfog", "turtle-superconscious", "turtle-agent-machine"}
+
+
+def command_prefix(command: str) -> list[str]:
+    path = BIN / command
+    if command in PYTHON_BINS:
+        return [sys.executable, str(path)]
+    if command in SHELL_BINS:
+        return ["sh", str(path)]
+    return [str(path)]
 
 
 def run(args: list[str], env: dict[str, str]) -> dict:
     result = subprocess.run(
-        [sys.executable if args[0].endswith(".py") else str(BIN / args[0]), *args[1:]],
+        [*command_prefix(args[0]), *args[1:]],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
