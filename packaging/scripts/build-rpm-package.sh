@@ -53,6 +53,9 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 /usr/bin/turtle-agentd
 /usr/bin/turtle-agentctl
 /usr/bin/turtle-tmux
+/usr/bin/turtle-cloudfog
+/usr/bin/turtle-superconscious
+/usr/bin/turtle-agent-machine
 /usr/bin/sourceos-term
 /etc/turtle-term/turtleterm.lua
 /usr/libexec/turtle-term/
