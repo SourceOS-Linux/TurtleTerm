@@ -34,14 +34,18 @@ assert manifest['version'] == '0.1.0'
 assert manifest['arch'] == 'amd64'
 assert manifest['package'] == 'turtle-term_0.1.0_amd64.deb'
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
+for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine']:
+    assert command in manifest['public_commands'], command
 PY
 
 dpkg-deb --field "$deb" Package | grep -qx 'turtle-term'
 dpkg-deb --field "$deb" Version | grep -qx '0.1.0'
 dpkg-deb --field "$deb" Architecture | grep -qx 'amd64'
 
-dpkg-deb --contents "$deb" | grep -q '/usr/bin/turtleterm$'
-dpkg-deb --contents "$deb" | grep -q '/usr/bin/turtle-agentctl$'
+for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine; do
+  dpkg-deb --contents "$deb" | grep -q "/usr/bin/$command$"
+done
+
 dpkg-deb --contents "$deb" | grep -q '/etc/turtle-term/turtleterm.lua$'
 dpkg-deb --contents "$deb" | grep -q '/usr/share/applications/ai.sourceos.TurtleTerm.desktop$'
 dpkg-deb --contents "$deb" | grep -q '/usr/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml$'
@@ -64,5 +68,10 @@ if grep -R "$tmp\|deb-root\|BUILDROOT\|arch-root" "$extract/usr/bin/turtleterm" 
   echo 'buildroot path leaked into Debian launch wrappers' >&2
   exit 1
 fi
+
+"$extract/usr/bin/turtle-agentctl" --stdio surfaces >/dev/null
+"$extract/usr/bin/turtle-cloudfog" surfaces >/dev/null
+"$extract/usr/bin/turtle-superconscious" observe deb-package >/dev/null
+"$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null
 
 echo "verified $deb"
