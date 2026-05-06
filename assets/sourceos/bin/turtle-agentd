@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """TurtleTerm local agent gateway v0.
 
-This is the first executable scaffold for TurtleTerm's local agent gateway. It is
-intentionally conservative: it supports local JSON requests over stdin/stdout or
-a Unix socket, exposes read/inspect/propose flows, and records policy-required
-execution requests without executing commands.
+Conservative local JSON gateway for TurtleTerm. It supports local requests over
+stdin/stdout or a Unix socket, exposes read/inspect/propose flows, and records
+policy-required execution requests without executing commands.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ from typing import Any
 
 
 SCHEMA = "sourceos.turtle.agentd.response.v0"
-REQUEST_SCHEMA = "sourceos.turtle.agentd.request.v0"
 
 
 def utc_now() -> str:
@@ -64,7 +62,7 @@ def read_ndjson(path: Path, limit: int = 100) -> list[dict[str, Any]]:
 
 
 def decision_stub(action: str, reason: str, decision: str = "ask") -> dict[str, Any]:
-    payload = {
+    return {
         "id": f"urn:srcos:exec-decision:{uuid.uuid4().hex}",
         "type": "ExecutionDecision",
         "specVersion": "2.0.0",
@@ -73,7 +71,6 @@ def decision_stub(action: str, reason: str, decision: str = "ask") -> dict[str, 
         "issuedAt": utc_now(),
         "action": action,
     }
-    return payload
 
 
 def response(kind: str, data: dict[str, Any] | list[Any] | None = None, *, status: str = "ok") -> dict[str, Any]:
@@ -84,6 +81,80 @@ def response(kind: str, data: dict[str, Any] | list[Any] | None = None, *, statu
         "capturedAt": utc_now(),
         "data": data if data is not None else {},
     }
+
+
+def default_surfaces() -> list[dict[str, Any]]:
+    workspace = env("SOURCEOS_WORKSPACE", "default")
+    cwd = os.getcwd()
+    return [
+        {
+            "surface_id": "local/default",
+            "label": "Local Workspace",
+            "kind": "host",
+            "workspace_id": workspace,
+            "cwd": cwd,
+            "execution_domain": "host",
+            "policy_profile": "standard",
+            "agent_allowed": False,
+            "receipt_required": True,
+            "provider": "turtleterm",
+        },
+        {
+            "surface_id": "tmux/attached",
+            "label": "Attached tmux Session",
+            "kind": "tmux",
+            "workspace_id": workspace,
+            "cwd": cwd,
+            "execution_domain": "host",
+            "policy_profile": "standard",
+            "agent_allowed": False,
+            "receipt_required": True,
+            "provider": "turtle-tmux",
+        },
+        {
+            "surface_id": "neovim/context",
+            "label": "Neovim Context",
+            "kind": "editor-context",
+            "workspace_id": workspace,
+            "cwd": cwd,
+            "execution_domain": "host",
+            "policy_profile": "review-only",
+            "agent_allowed": False,
+            "receipt_required": True,
+            "provider": "turtle.nvim",
+        },
+        {
+            "surface_id": "cloudfog/local-devshell",
+            "label": "CloudFog Local Devshell",
+            "kind": "devshell",
+            "workspace_id": workspace,
+            "cwd": cwd,
+            "execution_domain": "devshell",
+            "policy_profile": "low-risk",
+            "agent_allowed": False,
+            "receipt_required": True,
+            "provider": "cloudfog-shell",
+        },
+        {
+            "surface_id": "agent-machine/local-agentpod",
+            "label": "Agent Machine Local AgentPod",
+            "kind": "agentpod",
+            "workspace_id": workspace,
+            "cwd": cwd,
+            "execution_domain": "agent-machine",
+            "policy_profile": "activation-required",
+            "agent_allowed": False,
+            "receipt_required": True,
+            "provider": "agent-machine",
+        },
+    ]
+
+
+def surface_by_id(surface_id: str | None) -> dict[str, Any] | None:
+    for surface in default_surfaces():
+        if surface["surface_id"] == surface_id:
+            return surface
+    return None
 
 
 def handle_request(request: dict[str, Any]) -> dict[str, Any]:
@@ -107,6 +178,31 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
                 "last_event_type": event.get("event_type", event.get("schema")),
             })
         return response("sessions", {"sessions": list(sessions.values()), "event_stream": str(event_stream_path())})
+
+    if action == "surfaces":
+        return response("surfaces", {"surfaces": default_surfaces()})
+
+    if action == "inspect_surface":
+        surface_id = request.get("surface_id")
+        surface = surface_by_id(surface_id)
+        if not surface:
+            return response("error", {"message": f"unknown surface: {surface_id}", "known_surfaces": [s["surface_id"] for s in default_surfaces()]}, status="error")
+        return response("surface_inspection", {"surface": surface, "decision": decision_stub("surface.inspect", "Surface inspection is review-only.", "allow")})
+
+    if action == "request_surface_execution":
+        surface_id = request.get("surface_id")
+        command = request.get("command")
+        surface = surface_by_id(surface_id)
+        if not surface:
+            return response("error", {"message": f"unknown surface: {surface_id}"}, status="error")
+        if not command:
+            return response("error", {"message": "command is required"}, status="error")
+        return response("surface_execution_request", {
+            "surface": surface,
+            "command": command,
+            "executionAllowed": False,
+            "decision": decision_stub("surface.execute_command", "Surface execution requires Policy Fabric approval; turtle-agentd v0 does not execute commands."),
+        })
 
     if action == "inspect":
         session_id = request.get("session_id")
@@ -147,6 +243,40 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             "executionAllowed": False,
             "decision": decision_stub("terminal.execute_command", "Execution requires Policy Fabric approval; turtle-agentd v0 does not execute commands."),
         })
+
+    if action == "superconscious_observe":
+        return response("superconscious_observation", {
+            "status": "recorded",
+            "observation": request.get("observation", {}),
+            "traceRef": f"urn:srcos:turtle:superconscious-observation:{uuid.uuid4().hex}",
+            "decision": decision_stub("superconscious.observe", "Observation handoff is review-only; no shell authority granted.", "allow"),
+        })
+
+    if action == "superconscious_propose":
+        return response("superconscious_proposal", {
+            "status": "deferred",
+            "prompt": request.get("prompt", ""),
+            "decision": decision_stub("superconscious.propose", "Superconscious proposal requires cognition loop adapter; execution remains gated.", "defer"),
+        })
+
+    if action == "agent_machine_surfaces":
+        return response("agent_machine_surfaces", {"surfaces": [s for s in default_surfaces() if s["provider"] == "agent-machine"]})
+
+    if action == "agent_machine_probe":
+        return response("agent_machine_probe", {
+            "status": "deferred",
+            "decision": decision_stub("agent-machine.probe", "Agent Machine probe adapter is specified but not implemented in turtle-agentd v0.", "defer"),
+        })
+
+    if action == "cloudfog_surfaces":
+        return response("cloudfog_surfaces", {"surfaces": [s for s in default_surfaces() if s["provider"] == "cloudfog-shell"]})
+
+    if action == "cloudfog_inspect":
+        surface_id = request.get("surface_id", "cloudfog/local-devshell")
+        surface = surface_by_id(surface_id)
+        if not surface or surface.get("provider") != "cloudfog-shell":
+            return response("error", {"message": f"unknown cloudfog surface: {surface_id}"}, status="error")
+        return response("cloudfog_surface_inspection", {"surface": surface, "decision": decision_stub("cloudfog.inspect", "CloudFog surface inspection is review-only.", "allow")})
 
     if action == "receipts":
         session_id = request.get("session_id")
@@ -193,7 +323,7 @@ def serve_socket(path: Path) -> int:
                 try:
                     request = json.loads(raw.decode("utf-8"))
                     result = handle_request(request)
-                except Exception as exc:  # noqa: BLE001 - defensive boundary
+                except Exception as exc:  # noqa: BLE001
                     result = response("error", {"message": str(exc)}, status="error")
                 conn.sendall((json.dumps(result, sort_keys=True) + "\n").encode("utf-8"))
     finally:
