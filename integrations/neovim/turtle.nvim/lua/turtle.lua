@@ -33,12 +33,61 @@ local function run_agentctl(title, ...)
   end)
 end
 
+local function join_args(values)
+  if type(values) == 'table' then
+    return table.concat(values, ' ')
+  end
+  return values
+end
+
 function M.ping()
   run_agentctl('TurtleTerm ping', 'ping')
 end
 
 function M.sessions()
   run_agentctl('TurtleTerm sessions', 'sessions')
+end
+
+function M.surfaces()
+  run_agentctl('TurtleTerm surfaces', 'surfaces')
+end
+
+function M.inspect_surface(surface_id)
+  run_agentctl('TurtleTerm inspect surface', 'inspect-surface', surface_id)
+end
+
+function M.request_surface_execution(values)
+  if values == nil or #values < 2 then
+    vim.notify('TurtleSurfaceRequestExecution requires <surface> <command>', vim.log.levels.ERROR)
+    return
+  end
+  local surface = values[1]
+  table.remove(values, 1)
+  run_agentctl('TurtleTerm request surface execution', 'request-surface-execution', surface, join_args(values))
+end
+
+function M.cloudfog_surfaces()
+  run_agentctl('TurtleTerm CloudFog surfaces', 'cloudfog-surfaces')
+end
+
+function M.cloudfog_inspect(surface_id)
+  run_agentctl('TurtleTerm CloudFog inspect', 'cloudfog-inspect', surface_id)
+end
+
+function M.superconscious_observe(text)
+  run_agentctl('TurtleTerm Superconscious observe', 'superconscious-observe', text)
+end
+
+function M.superconscious_propose(prompt)
+  run_agentctl('TurtleTerm Superconscious propose', 'superconscious-propose', prompt)
+end
+
+function M.agent_machine_surfaces()
+  run_agentctl('TurtleTerm Agent Machine surfaces', 'agent-machine-surfaces')
+end
+
+function M.agent_machine_probe()
+  run_agentctl('TurtleTerm Agent Machine probe', 'agent-machine-probe')
 end
 
 function M.inspect(session_id)
