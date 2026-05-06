@@ -62,7 +62,8 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 /usr/share/turtle-term/
 EOF
 
-rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec" >/dev/null
+echo "building RPM with generated spec: $spec" >&2
+rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec"
 rpm="$(find "$rpmbuild_root/RPMS" -name 'turtle-term-*.rpm' -print -quit)"
 test -n "$rpm"
 sha256sum "$rpm" > "$rpm.sha256"
