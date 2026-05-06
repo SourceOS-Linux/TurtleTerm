@@ -13,6 +13,42 @@ vim.api.nvim_create_user_command('TurtleSessions', function()
   turtle.sessions()
 end, {})
 
+vim.api.nvim_create_user_command('TurtleSurfaces', function()
+  turtle.surfaces()
+end, {})
+
+vim.api.nvim_create_user_command('TurtleInspectSurface', function(opts)
+  turtle.inspect_surface(opts.args)
+end, { nargs = 1 })
+
+vim.api.nvim_create_user_command('TurtleSurfaceRequestExecution', function(opts)
+  turtle.request_surface_execution(opts.fargs)
+end, { nargs = '+' })
+
+vim.api.nvim_create_user_command('TurtleCloudFogSurfaces', function()
+  turtle.cloudfog_surfaces()
+end, {})
+
+vim.api.nvim_create_user_command('TurtleCloudFogInspect', function(opts)
+  turtle.cloudfog_inspect(opts.args)
+end, { nargs = '?' })
+
+vim.api.nvim_create_user_command('TurtleSuperconsciousObserve', function(opts)
+  turtle.superconscious_observe(opts.args)
+end, { nargs = '*' })
+
+vim.api.nvim_create_user_command('TurtleSuperconsciousPropose', function(opts)
+  turtle.superconscious_propose(opts.args)
+end, { nargs = '*' })
+
+vim.api.nvim_create_user_command('TurtleAgentMachineSurfaces', function()
+  turtle.agent_machine_surfaces()
+end, {})
+
+vim.api.nvim_create_user_command('TurtleAgentMachineProbe', function()
+  turtle.agent_machine_probe()
+end, {})
+
 vim.api.nvim_create_user_command('TurtleInspect', function(opts)
   turtle.inspect(opts.args)
 end, { nargs = '?' })
