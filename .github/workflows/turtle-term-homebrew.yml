@@ -36,16 +36,24 @@ jobs:
         if: runner.os == 'Linux'
         uses: Homebrew/actions/setup-homebrew@master
 
+      - name: Prepare local TurtleTerm tap
+        run: |
+          brew tap-new sourceos-linux/turtleterm-ci
+          tap="$(brew --repo sourceos-linux/turtleterm-ci)"
+          mkdir -p "$tap/Formula"
+          cp packaging/homebrew/Formula/turtle-term.rb "$tap/Formula/turtle-term.rb"
+
       - name: Audit TurtleTerm formula
-        run: brew audit --formula --strict packaging/homebrew/Formula/turtle-term.rb || true
+        run: brew audit --formula --strict sourceos-linux/turtleterm-ci/turtle-term || true
 
       - name: Install TurtleTerm formula from HEAD
-        run: brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
+        run: brew install --HEAD sourceos-linux/turtleterm-ci/turtle-term
 
       - name: Test TurtleTerm formula
-        run: brew test turtle-term
+        run: brew test sourceos-linux/turtleterm-ci/turtle-term
 
       - name: Smoke test TurtleTerm CLI
         run: |
           turtle-term paths
           turtle-term run -- echo turtle-term-homebrew-ok
+          turtle-agent-status --json
