@@ -32,7 +32,7 @@ Requires:       zlib
 %description
 TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench
 for trusted command execution, terminal receipts, agent delegation, language intelligence,
-and reproducible operator workflows.
+session ergonomics, and reproducible operator workflows.
 
 %prep
 %autosetup -n TurtleTerm-turtle-term-v%{version}
@@ -60,6 +60,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/ai.sourceos.TurtleTer
 %{_bindir}/turtle-superconscious
 %{_bindir}/turtle-agent-machine
 %{_bindir}/turtle-language
+%{_bindir}/turtle-session
 %{_bindir}/sourceos-term
 %{_sysconfdir}/turtle-term/turtleterm.lua
 %{_libexecdir}/turtle-term/
