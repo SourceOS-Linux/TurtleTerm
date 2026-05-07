@@ -1,0 +1,57 @@
+{
+  "id": "urn:srcos:skill:turtle-session-ergonomics",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-session-ergonomics",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/TERMINAL_ERGONOMICS.md",
+  "description": "Expose TurtleTerm profiles, layouts, marks, search, and review-only replay plans for iTerm-class terminal ergonomics with SourceOS policy boundaries.",
+  "activationRules": {
+    "commands": [
+      "session.profiles",
+      "session.layout-export",
+      "session.marks",
+      "session.mark",
+      "session.search",
+      "session.replay-plan"
+    ],
+    "filePatterns": [],
+    "intentTags": [
+      "terminal-ergonomics",
+      "profiles",
+      "layouts",
+      "marks",
+      "search",
+      "replay-plan"
+    ]
+  },
+  "requires": {
+    "binaries": [
+      "turtle-session",
+      "turtle-agentctl"
+    ],
+    "anyBins": [
+      "tmux",
+      "nvim"
+    ],
+    "tools": [
+      "policy-fabric",
+      "agent-registry",
+      "agentplane"
+    ]
+  },
+  "executionSurfaceRef": null,
+  "policyBindings": [
+    "urn:srcos:policy:turtle-session-ergonomics"
+  ],
+  "artifactOutputs": [
+    "profile-catalog",
+    "layout-export",
+    "session-mark",
+    "session-search-result",
+    "replay-plan"
+  ],
+  "reviewMode": true,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
