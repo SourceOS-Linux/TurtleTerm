@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "v0.1",
+  "kind": "AgentHarnessTerminalReceipts",
+  "terminalSessionReceipt": {
+    "sessionId": "turtleterm-session-agent-harness-v0.1",
+    "actorRef": "github://mdheller",
+    "workspaceRef": "github://SocioProphet/sociosphere",
+    "shellProfile": "sourceos-local-dev",
+    "gatewayProfile": "turtle-agentd-local",
+    "policyAdmissionRef": "github://SocioProphet/policy-fabric/pull/60",
+    "agentplaneRunRef": "github://SocioProphet/agentplane/pull/107",
+    "muxPaneRefs": [],
+    "environmentProfileHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "commandReceipt": {
+    "commandId": "command-agent-harness-validate-runtime-contracts",
+    "terminalSessionRef": "turtleterm-session-agent-harness-v0.1",
+    "commandHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "workingDirectory": "~/dev/agentplane",
+    "environmentProfileHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "stdoutPointerRef": "artifact://sha256/3333333333333333333333333333333333333333333333333333333333333333",
+    "stderrPointerRef": "artifact://sha256/4444444444444444444444444444444444444444444444444444444444444444",
+    "exitCode": 0,
+    "policyDecisionRef": "github://SocioProphet/policy-fabric/pull/60",
+    "sideEffectClass": "none",
+    "replayEligible": true
+  },
+  "mutationReceipt": {
+    "mutationId": "mutation-none-agent-harness-v0.1",
+    "commandRef": "command-agent-harness-validate-runtime-contracts",
+    "mutationClass": "none",
+    "targetScope": "workspace-only",
+    "mode": "dry-run",
+    "policyDecisionRef": "github://SocioProphet/policy-fabric/pull/60",
+    "humanControlEventRef": "",
+    "rollbackRef": "",
+    "mutatedHost": false,
+    "deniedOperationRefs": []
+  },
+  "operatorApprovalReceipt": {
+    "approvalId": "operator-approval-agent-harness-baseline",
+    "actorRef": "github://mdheller",
+    "subjectRef": "github://SourceOS-Linux/TurtleTerm/pull/5",
+    "decision": "deferred",
+    "reason": "Baseline receipt fixture only; live terminal mutation approval is not requested.",
+    "policyGateRef": "github://SocioProphet/policy-fabric/pull/60",
+    "agentplaneRunRef": "github://SocioProphet/agentplane/pull/107",
+    "deliveryExcellenceEventRef": "github://SocioProphet/delivery-excellence-automation/pull/7"
+  }
+}
