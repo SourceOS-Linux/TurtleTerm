@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""TurtleTerm local SourceOS Agent Reliability status view.
+
+Reads local SourceOS evidence artifacts and summarizes:
+- blocking guardrail decisions;
+- stop-gate outcomes;
+- guarded invocation outcomes;
+- pending governance queue items.
+
+This tool is read-only. It does not modify policy, memory, git state, or queue
+artifacts.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+BLOCKING_DECISIONS = {"deny", "quarantine", "defer", "escalate"}
+NEEDS_REVIEW_QUEUE_STATUSES = {"pending"}
+
+
+def load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                rows.append({"schema": "invalid-json", "decision": "invalid", "decisionId": f"{path}:invalid-json"})
+                continue
+            if isinstance(data, dict):
+                rows.append(data)
+    except OSError:
+        return []
+    return rows
+
+
+def unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    out: list[Path] = []
+    for path in paths:
+        key = str(path.resolve())
+        if key not in seen:
+            seen.add(key)
+            out.append(path)
+    return out
+
+
+def discover_json_artifacts(root: Path, filenames: set[str]) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    paths: list[Path] = []
+    sourceos = root / ".sourceos"
+    if sourceos.exists():
+        for name in filenames:
+            paths.extend(sourceos.rglob(name))
+    for path in unique_paths(paths):
+        data = load_json(path)
+        if data is not None:
+            data["_path"] = str(path)
+            artifacts.append(data)
+    return artifacts
+
+
+def discover_governance_queues(root: Path) -> list[dict[str, Any]]:
+    queues: list[dict[str, Any]] = []
+    candidates: list[Path] = []
+    for base in [root / ".sourceos", root / "standards" / "agent-reliability"]:
+        if base.exists():
+            candidates.extend(base.rglob("*governance-queue*.json"))
+    for path in unique_paths(candidates):
+        data = load_json(path)
+        if data and data.get("kind") == "AgentReliabilityGovernanceQueue":
+            data["_path"] = str(path)
+            queues.append(data)
+    return queues
+
+
+def summarize(root: Path) -> dict[str, Any]:
+    decision_log = root / ".sourceos" / "logs" / "guardrail-decisions.jsonl"
+    decisions = load_jsonl(decision_log)
+    decision_counts = Counter(str(item.get("decision", "unknown")) for item in decisions)
+    blocking = [item for item in decisions if str(item.get("decision", "")).lower() in BLOCKING_DECISIONS]
+    redactions = [item for item in decisions if str(item.get("decision", "")).lower() == "redact"]
+
+    stop_gates = discover_json_artifacts(root, {"stop-gate-artifact.json"})
+    stop_gate_counts = Counter(str(item.get("result", "unknown")) for item in stop_gates if item.get("kind") == "StopGateArtifact")
+    failing_stop_gates = [item for item in stop_gates if item.get("kind") == "StopGateArtifact" and item.get("result") in {"fail", "needs_human"}]
+
+    invocations = discover_json_artifacts(root, {"guarded-invocation-artifact.json"})
+    invocation_counts = Counter(str(item.get("result", "unknown")) for item in invocations if item.get("kind") == "GuardedInvocationArtifact")
+    failed_invocations = [item for item in invocations if item.get("kind") == "GuardedInvocationArtifact" and item.get("result") in {"failure", "blocked", "needs_human"}]
+
+    queues = discover_governance_queues(root)
+    pending_queue_items: list[dict[str, Any]] = []
+    for queue in queues:
+        for item in queue.get("items", []):
+            if isinstance(item, dict) and item.get("status") in NEEDS_REVIEW_QUEUE_STATUSES:
+                pending = dict(item)
+                pending["queuePath"] = queue.get("_path")
+                pending_queue_items.append(pending)
+
+    status = "ready"
+    if blocking or failing_stop_gates or failed_invocations:
+        status = "blocked"
+    elif pending_queue_items:
+        status = "needs_review"
+    elif not decisions and not stop_gates and not invocations and not queues:
+        status = "no_artifacts"
+
+    return {
+        "schema": "sourceos.turtle.agent_status.v0",
+        "root": str(root),
+        "status": status,
+        "guardrail": {
+            "decisionLog": str(decision_log),
+            "total": len(decisions),
+            "counts": dict(decision_counts),
+            "blocking": [item.get("decisionId") or item.get("policyId") for item in blocking],
+            "redactions": [item.get("decisionId") or item.get("policyId") for item in redactions],
+        },
+        "stopGates": {
+            "total": len(stop_gates),
+            "counts": dict(stop_gate_counts),
+            "blocking": [item.get("gateId") or item.get("_path") for item in failing_stop_gates],
+        },
+        "invocations": {
+            "total": len(invocations),
+            "counts": dict(invocation_counts),
+            "blocking": [item.get("workcellArtifactRef") or item.get("_path") for item in failed_invocations],
+        },
+        "governance": {
+            "queues": len(queues),
+            "pending": [
+                {
+                    "itemId": item.get("itemId"),
+                    "itemType": item.get("itemType"),
+                    "priority": item.get("priority"),
+                    "title": item.get("title"),
+                    "queuePath": item.get("queuePath"),
+                }
+                for item in pending_queue_items
+            ],
+        },
+    }
+
+
+def print_human(summary: dict[str, Any]) -> None:
+    print(f"TurtleTerm Agent Status: {summary['status']}")
+    print(f"root: {summary['root']}")
+    print("")
+    print("Guardrails")
+    print(f"  decisions: {summary['guardrail']['total']} {summary['guardrail']['counts']}")
+    if summary["guardrail"]["blocking"]:
+        print(f"  blocking: {', '.join(str(x) for x in summary['guardrail']['blocking'])}")
+    if summary["guardrail"]["redactions"]:
+        print(f"  redactions: {', '.join(str(x) for x in summary['guardrail']['redactions'])}")
+    print("Stop gates")
+    print(f"  artifacts: {summary['stopGates']['total']} {summary['stopGates']['counts']}")
+    if summary["stopGates"]["blocking"]:
+        print(f"  blocking: {', '.join(str(x) for x in summary['stopGates']['blocking'])}")
+    print("Invocations")
+    print(f"  artifacts: {summary['invocations']['total']} {summary['invocations']['counts']}")
+    if summary["invocations"]["blocking"]:
+        print(f"  blocking: {', '.join(str(x) for x in summary['invocations']['blocking'])}")
+    print("Governance")
+    print(f"  queues: {summary['governance']['queues']}")
+    print(f"  pending review items: {len(summary['governance']['pending'])}")
+    for item in summary["governance"]["pending"]:
+        print(f"    - [{item.get('priority')}] {item.get('itemType')}: {item.get('title')} ({item.get('itemId')})")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Read local SourceOS agent reliability artifacts and print TurtleTerm status.")
+    parser.add_argument("--root", default=".", help="Workspace/repo root to inspect")
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of human-readable text")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    root = Path(args.root).resolve()
+    summary = summarize(root)
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        print_human(summary)
+    return 0 if summary["status"] in {"ready", "no_artifacts"} else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
