@@ -20,6 +20,7 @@ REQUIRED_PUBLIC_COMMANDS = {
     "turtle-cloudfog",
     "turtle-superconscious",
     "turtle-agent-machine",
+    "turtle-language",
     "sourceos-term",
 }
 
