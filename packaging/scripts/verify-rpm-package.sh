@@ -32,14 +32,14 @@ assert manifest['kind'] == 'rpm'
 assert manifest['version'] == '0.1.0'
 assert manifest['package'].endswith('.rpm')
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
-for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine']:
+for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language']:
     assert command in manifest['public_commands'], command
 PY
 
 rpm -qp --queryformat '%{NAME}\n' "$rpm" | grep -qx 'turtle-term'
 rpm -qp --queryformat '%{VERSION}\n' "$rpm" | grep -qx '0.1.0'
 
-for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine; do
+for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language; do
   rpm -qpl "$rpm" | grep -q "^/usr/bin/$command$"
 done
 
@@ -66,9 +66,13 @@ if grep -R "$tmp\|BUILDROOT\|rpm-root\|arch-root\|deb-root" "$extract/usr/bin/tu
   exit 1
 fi
 
+probe="$tmp/probe.py"
+printf 'def hello():\n    return "world"\n' > "$probe"
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agentctl" --stdio surfaces >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-cloudfog" surfaces >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-superconscious" observe rpm-package >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-language" diagnostics "$probe" >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-language" symbols "$probe" >/dev/null
 
 echo "verified $rpm"
