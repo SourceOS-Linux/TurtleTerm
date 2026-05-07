@@ -4,19 +4,21 @@ set -eu
 
 bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 agentctl="$bin_dir/turtle-agentctl"
-if [ ! -x "$agentctl" ]; then
-  agentctl="turtle-agentctl"
+if [ -f "$agentctl" ]; then
+  agentctl_prefix="python3 $agentctl"
+else
+  agentctl_prefix="turtle-agentctl"
 fi
 
 cmd="${1:-observe}"
 case "$cmd" in
   observe)
     shift || true
-    exec "$agentctl" --stdio superconscious-observe "$@"
+    exec $agentctl_prefix --stdio superconscious-observe "$@"
     ;;
   propose)
     shift || true
-    exec "$agentctl" --stdio superconscious-propose "$@"
+    exec $agentctl_prefix --stdio superconscious-propose "$@"
     ;;
   *)
     echo "usage: turtle-superconscious [observe <text>|propose <prompt>]" >&2
