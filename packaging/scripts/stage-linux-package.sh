@@ -31,7 +31,8 @@ for script in \
   turtle-tmux \
   turtle-cloudfog \
   turtle-superconscious \
-  turtle-agent-machine; do
+  turtle-agent-machine \
+  turtle-language; do
   cp "$repo_root/assets/sourceos/bin/$script" "$prefix/bin/"
   chmod 0755 "$prefix/bin/$script"
 done
