@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sourceos.dev/schemas/turtleterm/agent-harness-terminal-receipts.schema.json",
+  "title": "AgentHarnessTerminalReceipts",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "terminalSessionReceipt", "commandReceipt", "mutationReceipt", "operatorApprovalReceipt"],
+  "properties": {
+    "schemaVersion": { "const": "v0.1" },
+    "kind": { "const": "AgentHarnessTerminalReceipts" },
+    "terminalSessionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "actorRef", "workspaceRef", "shellProfile", "gatewayProfile", "policyAdmissionRef", "agentplaneRunRef", "environmentProfileHash"],
+      "properties": {
+        "sessionId": { "type": "string" },
+        "actorRef": { "type": "string" },
+        "workspaceRef": { "type": "string" },
+        "shellProfile": { "type": "string" },
+        "gatewayProfile": { "type": "string" },
+        "policyAdmissionRef": { "type": "string" },
+        "agentplaneRunRef": { "type": "string" },
+        "muxPaneRefs": { "type": "array", "items": { "type": "string" } },
+        "environmentProfileHash": { "type": "string" }
+      }
+    },
+    "commandReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "terminalSessionRef", "commandHash", "workingDirectory", "environmentProfileHash", "exitCode", "policyDecisionRef", "sideEffectClass", "replayEligible"],
+      "properties": {
+        "commandId": { "type": "string" },
+        "terminalSessionRef": { "type": "string" },
+        "commandHash": { "type": "string" },
+        "workingDirectory": { "type": "string" },
+        "environmentProfileHash": { "type": "string" },
+        "stdoutPointerRef": { "type": "string" },
+        "stderrPointerRef": { "type": "string" },
+        "exitCode": { "type": "integer" },
+        "policyDecisionRef": { "type": "string" },
+        "sideEffectClass": { "type": "string", "enum": ["none", "workspace-write", "host-mutation", "secret-access", "network-service", "deployment"] },
+        "replayEligible": { "type": "boolean" }
+      }
+    },
+    "mutationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutationId", "commandRef", "mutationClass", "targetScope", "mode", "policyDecisionRef", "mutatedHost"],
+      "properties": {
+        "mutationId": { "type": "string" },
+        "commandRef": { "type": "string" },
+        "mutationClass": { "type": "string" },
+        "targetScope": { "type": "string" },
+        "mode": { "type": "string", "enum": ["dry-run", "live"] },
+        "policyDecisionRef": { "type": "string" },
+        "humanControlEventRef": { "type": "string" },
+        "rollbackRef": { "type": "string" },
+        "mutatedHost": { "type": "boolean" },
+        "deniedOperationRefs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "operatorApprovalReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvalId", "actorRef", "subjectRef", "decision", "policyGateRef", "agentplaneRunRef", "deliveryExcellenceEventRef"],
+      "properties": {
+        "approvalId": { "type": "string" },
+        "actorRef": { "type": "string" },
+        "subjectRef": { "type": "string" },
+        "decision": { "type": "string", "enum": ["approved", "rejected", "deferred", "accepted-risk", "revoked"] },
+        "reason": { "type": "string" },
+        "policyGateRef": { "type": "string" },
+        "agentplaneRunRef": { "type": "string" },
+        "deliveryExcellenceEventRef": { "type": "string" }
+      }
+    }
+  }
+}
