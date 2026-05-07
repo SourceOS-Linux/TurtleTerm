@@ -15,7 +15,7 @@ EOF
 done
 
 pkg="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_ARCH_ARCH="$(uname -m)" \
-  "$repo_root/packaging/scripts/build-arch-package.sh")"
+  bash "$repo_root/packaging/scripts/build-arch-package.sh")"
 extract="$tmp/extract"
 
 test -f "$pkg"
@@ -32,12 +32,12 @@ assert manifest['kind'] == 'arch'
 assert manifest['version'] == '0.1.0'
 assert manifest['package'].endswith('.pkg.tar.zst')
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
-for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language']:
+for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language']:
     assert command in manifest['public_commands'], command
 PY
 
 tar --zstd -tf "$pkg" | grep -q '^./.PKGINFO$'
-for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language; do
+for command in turtleterm turtle-agentctl turtle-agent-status turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language; do
   tar --zstd -tf "$pkg" | grep -q "^./usr/bin/$command$"
 done
 
@@ -67,6 +67,7 @@ fi
 probe="$tmp/probe.py"
 printf 'def hello():\n    return "world"\n' > "$probe"
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agentctl" --stdio surfaces >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-status" --json >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-cloudfog" surfaces >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-superconscious" observe arch-package >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null
