@@ -15,8 +15,7 @@ local function notify_payload(title, payload)
   vim.notify(title .. '\n' .. text, vim.log.levels.INFO)
 end
 
-local function run_agentctl(title, ...)
-  local args = agentctl_args(...)
+local function run_command(title, args)
   vim.system(args, { text = true }, function(result)
     vim.schedule(function()
       if result.code ~= 0 then
@@ -33,11 +32,37 @@ local function run_agentctl(title, ...)
   end)
 end
 
+local function run_agentctl(title, ...)
+  run_command(title, agentctl_args(...))
+end
+
+local function run_language(title, ...)
+  local args = { 'turtle-language' }
+  for _, value in ipairs({ ... }) do
+    if value ~= nil and value ~= '' then
+      table.insert(args, value)
+    end
+  end
+  run_command(title, args)
+end
+
 local function join_args(values)
   if type(values) == 'table' then
     return table.concat(values, ' ')
   end
   return values
+end
+
+local function current_file_or(value)
+  if value ~= nil and value ~= '' then
+    return value
+  end
+  local name = vim.api.nvim_buf_get_name(0)
+  if name == nil or name == '' then
+    vim.notify('Current buffer has no file path', vim.log.levels.ERROR)
+    return nil
+  end
+  return name
 end
 
 function M.ping()
@@ -64,6 +89,52 @@ function M.request_surface_execution(values)
   local surface = values[1]
   table.remove(values, 1)
   run_agentctl('TurtleTerm request surface execution', 'request-surface-execution', surface, join_args(values))
+end
+
+function M.diagnostics(file)
+  file = current_file_or(file)
+  if file then
+    run_language('TurtleTerm diagnostics', 'diagnostics', file)
+  end
+end
+
+function M.symbols(file)
+  file = current_file_or(file)
+  if file then
+    run_language('TurtleTerm symbols', 'symbols', file)
+  end
+end
+
+function M.explain_selection()
+  local file = current_file_or('')
+  if not file then
+    return
+  end
+  local start_line = vim.fn.line("'<")
+  local end_line = vim.fn.line("'>")
+  if start_line == 0 or end_line == 0 then
+    start_line = vim.fn.line('.')
+    end_line = start_line
+  end
+  run_language('TurtleTerm explain selection', 'explain-selection', file, '--start', tostring(start_line), '--end', tostring(end_line))
+end
+
+function M.propose_patch(prompt)
+  local file = current_file_or('')
+  if not file then
+    return
+  end
+  if prompt == nil or prompt == '' then
+    prompt = 'propose safe patch'
+  end
+  run_language('TurtleTerm propose patch', 'propose-patch', file, '--prompt', prompt)
+end
+
+function M.index(root)
+  if root == nil or root == '' then
+    root = vim.fn.getcwd()
+  end
+  run_language('TurtleTerm index', 'index', root)
 end
 
 function M.cloudfog_surfaces()
