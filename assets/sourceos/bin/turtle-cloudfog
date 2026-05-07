@@ -2,21 +2,27 @@
 # TurtleTerm CloudFog surface bridge.
 set -eu
 
+bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+agentctl="$bin_dir/turtle-agentctl"
+if [ ! -x "$agentctl" ]; then
+  agentctl="turtle-agentctl"
+fi
+
 cmd="${1:-surfaces}"
 case "$cmd" in
   surfaces)
     shift || true
-    exec turtle-agentctl --stdio cloudfog-surfaces "$@"
+    exec "$agentctl" --stdio cloudfog-surfaces "$@"
     ;;
   inspect)
     shift || true
-    exec turtle-agentctl --stdio cloudfog-inspect "$@"
+    exec "$agentctl" --stdio cloudfog-inspect "$@"
     ;;
   request-execution)
     shift || true
     surface="${1:-cloudfog/local-devshell}"
     shift || true
-    exec turtle-agentctl --stdio request-surface-execution "$surface" "$@"
+    exec "$agentctl" --stdio request-surface-execution "$surface" "$@"
     ;;
   *)
     echo "usage: turtle-cloudfog [surfaces|inspect <surface>|request-execution <surface> -- <command>]" >&2
