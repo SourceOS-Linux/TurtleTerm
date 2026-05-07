@@ -52,10 +52,36 @@ turtleterm
 turtle-term paths
 turtle-term run -- echo hello
 turtle-agentctl --stdio ping
+turtle-agent-status --json
 turtle-tmux panes
 ```
 
 `turtle-term` is the command wrapper. `turtleterm` is the graphical launcher. `sourceos-term` remains available for SourceOS contract compatibility.
+
+## Agent reliability status
+
+`turtle-agent-status` is a read-only local operator view for SourceOS Agent Reliability evidence. It scans a workspace for local `.sourceos` artifacts and reports whether the agent lane is `ready`, `blocked`, `needs_review`, or has `no_artifacts`.
+
+It reads:
+
+- `.sourceos/logs/guardrail-decisions.jsonl`
+- `StopGateArtifact` files named `stop-gate-artifact.json`
+- `GuardedInvocationArtifact` files named `guarded-invocation-artifact.json`
+- SocioSphere `AgentReliabilityGovernanceQueue` files matching `*governance-queue*.json`
+
+Human-readable mode:
+
+```bash
+turtle-agent-status --root .
+```
+
+JSON mode:
+
+```bash
+turtle-agent-status --root . --json
+```
+
+The command is read-only. It does not modify policy, memory, git state, agent state, or governance queues.
 
 ## Product surfaces
 
@@ -64,6 +90,7 @@ turtle-tmux panes
 - TurtleTerm command wrapper
 - TurtleTerm local agent gateway
 - TurtleTerm agent CLI
+- TurtleTerm agent reliability status CLI
 - TurtleTerm tmux bridge
 - TurtleTerm skill manifests
 - TurtleTerm turtle icon
