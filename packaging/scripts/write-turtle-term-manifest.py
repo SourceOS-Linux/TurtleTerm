@@ -12,7 +12,7 @@ from pathlib import Path
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(1024 * 1024), b=""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -50,6 +50,7 @@ def main() -> int:
             "turtle-superconscious",
             "turtle-agent-machine",
             "turtle-language",
+            "turtle-session",
             "sourceos-term"
         ],
         "private_runtime_path": "libexec/turtle-term",
@@ -66,7 +67,8 @@ def main() -> int:
             "turtle-cloudfog surfaces",
             "turtle-superconscious observe hello",
             "turtle-agent-machine surfaces",
-            "turtle-language diagnostics README.md"
+            "turtle-language diagnostics README.md",
+            "turtle-session profiles"
         ],
     }
 
