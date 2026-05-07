@@ -32,14 +32,14 @@ assert manifest['kind'] == 'rpm'
 assert manifest['version'] == '0.1.0'
 assert manifest['package'].endswith('.rpm')
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
-for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language']:
+for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
     assert command in manifest['public_commands'], command
 PY
 
 rpm -qp --queryformat '%{NAME}\n' "$rpm" | grep -qx 'turtle-term'
 rpm -qp --queryformat '%{VERSION}\n' "$rpm" | grep -qx '0.1.0'
 
-for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language; do
+for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
   rpm -qpl "$rpm" | grep -q "^/usr/bin/$command$"
 done
 
@@ -74,5 +74,7 @@ PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-superconscious" observe r
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-language" diagnostics "$probe" >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-language" symbols "$probe" >/dev/null
+PATH="$extract/usr/bin:$PATH" TURTLE_SESSION_STATE="$tmp/session-state" "$extract/usr/bin/turtle-session" profiles >/dev/null
+PATH="$extract/usr/bin:$PATH" TURTLE_SESSION_STATE="$tmp/session-state" "$extract/usr/bin/turtle-session" replay-plan >/dev/null
 
 echo "verified $rpm"
