@@ -25,6 +25,26 @@ vim.api.nvim_create_user_command('TurtleSurfaceRequestExecution', function(opts)
   turtle.request_surface_execution(opts.fargs)
 end, { nargs = '+' })
 
+vim.api.nvim_create_user_command('TurtleDiagnostics', function(opts)
+  turtle.diagnostics(opts.args)
+end, { nargs = '?' })
+
+vim.api.nvim_create_user_command('TurtleSymbols', function(opts)
+  turtle.symbols(opts.args)
+end, { nargs = '?' })
+
+vim.api.nvim_create_user_command('TurtleExplainSelection', function()
+  turtle.explain_selection()
+end, { range = true })
+
+vim.api.nvim_create_user_command('TurtleProposePatch', function(opts)
+  turtle.propose_patch(opts.args)
+end, { nargs = '*' })
+
+vim.api.nvim_create_user_command('TurtleIndex', function(opts)
+  turtle.index(opts.args)
+end, { nargs = '?' })
+
 vim.api.nvim_create_user_command('TurtleCloudFogSurfaces', function()
   turtle.cloudfog_surfaces()
 end, {})
