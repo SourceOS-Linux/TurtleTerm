@@ -50,6 +50,7 @@ def main() -> int:
             "turtle-cloudfog",
             "turtle-superconscious",
             "turtle-agent-machine",
+            "turtle-language",
             "sourceos-term"
         ],
         "private_runtime_path": "libexec/turtle-term",
