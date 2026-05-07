@@ -51,6 +51,7 @@ def main() -> int:
             "turtle-superconscious",
             "turtle-agent-machine",
             "turtle-language",
+            "turtle-session",
             "sourceos-term"
         ],
         "private_runtime_path": "libexec/turtle-term",
