@@ -35,6 +35,7 @@ for script in \
   turtle-cloudfog \
   turtle-superconscious \
   turtle-agent-machine \
+  turtle-language \
   turtleterm \
   turtleterm-mux-server; do
   cp "$repo_root/assets/sourceos/bin/$script" "$stage/bin/"
@@ -60,7 +61,7 @@ fi
 cat > "$stage/README.md" <<'EOF'
 # TurtleTerm Release Artifact
 
-TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench for trusted command execution, terminal receipts, agent delegation, and reproducible operator workflows.
+TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench for trusted command execution, terminal receipts, agent delegation, language intelligence, and reproducible operator workflows.
 
 This artifact includes:
 
@@ -72,6 +73,7 @@ This artifact includes:
 - TurtleTerm CloudFog bridge
 - TurtleTerm Superconscious bridge
 - TurtleTerm Agent Machine bridge
+- TurtleTerm language intelligence CLI
 - TurtleTerm mux launcher
 - TurtleTerm profile
 - TurtleTerm Linux desktop metadata
