@@ -31,8 +31,8 @@ Requires:       zlib
 
 %description
 TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench
-for trusted command execution, terminal receipts, agent delegation, and
-reproducible operator workflows.
+for trusted command execution, terminal receipts, agent delegation, language intelligence,
+session ergonomics, and reproducible operator workflows.
 
 %prep
 
@@ -57,6 +57,7 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 /usr/bin/turtle-superconscious
 /usr/bin/turtle-agent-machine
 /usr/bin/turtle-language
+/usr/bin/turtle-session
 /usr/bin/sourceos-term
 /etc/turtle-term/turtleterm.lua
 /usr/libexec/turtle-term/
