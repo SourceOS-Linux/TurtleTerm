@@ -14,6 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SOURCEOS_WRAPPER = REPO_ROOT / "assets" / "sourceos" / "bin" / "sourceos-term"
 TURTLE_WRAPPER = REPO_ROOT / "assets" / "sourceos" / "bin" / "turtle-term"
+AGENT_STATUS = REPO_ROOT / "assets" / "sourceos" / "bin" / "turtle-agent-status"
 
 
 def read_ndjson(path: Path) -> list[dict]:
@@ -79,12 +80,95 @@ def run_wrapper(wrapper: Path, session_id: str, workspace: str, expected_text: s
         return event_rows, session
 
 
+def write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def run_agent_status(root: Path, expect_code: int) -> dict:
+    result = subprocess.run(
+        [sys.executable, str(AGENT_STATUS), "--root", str(root), "--json"],
+        cwd=str(REPO_ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode == expect_code, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_agent_status_no_artifacts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        summary = run_agent_status(Path(tmp), expect_code=0)
+        assert summary["schema"] == "sourceos.turtle.agent_status.v0"
+        assert summary["status"] == "no_artifacts"
+
+
+def test_agent_status_blocked_by_guardrail() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        decision_log = root / ".sourceos" / "logs" / "guardrail-decisions.jsonl"
+        decision_log.parent.mkdir(parents=True, exist_ok=True)
+        decision_log.write_text(
+            json.dumps({"schema": "sourceos.guardrail.decision.v0.1", "decisionId": "deny-1", "decision": "deny", "policyId": "sourceos/shell/block-privilege-escalation"}) + "\n",
+            encoding="utf-8",
+        )
+        summary = run_agent_status(root, expect_code=2)
+        assert summary["status"] == "blocked"
+        assert summary["guardrail"]["blocking"] == ["deny-1"]
+
+
+def test_agent_status_needs_review_from_governance_queue() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        queue = {
+            "apiVersion": "sociosphere.governance-queue/v1",
+            "kind": "AgentReliabilityGovernanceQueue",
+            "items": [
+                {
+                    "itemId": "review-1",
+                    "itemType": "memory-learning-review",
+                    "status": "pending",
+                    "priority": "medium",
+                    "title": "Review learning proposal",
+                }
+            ],
+        }
+        write_json(root / ".sourceos" / "governance" / "governance-queue.json", queue)
+        summary = run_agent_status(root, expect_code=2)
+        assert summary["status"] == "needs_review"
+        assert summary["governance"]["pending"][0]["itemId"] == "review-1"
+
+
+def test_agent_status_ready_from_passing_artifacts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root / ".sourceos" / "logs" / "stop-gate-artifact.json",
+            {"kind": "StopGateArtifact", "gateId": "sourceos.default.agent-completion", "result": "pass"},
+        )
+        write_json(
+            root / ".sourceos" / "logs" / "invocations" / "s1" / "guarded-invocation-artifact.json",
+            {"kind": "GuardedInvocationArtifact", "workcellArtifactRef": "workcell-1", "result": "success"},
+        )
+        summary = run_agent_status(root, expect_code=0)
+        assert summary["status"] == "ready"
+        assert summary["stopGates"]["counts"] == {"pass": 1}
+        assert summary["invocations"]["counts"] == {"success": 1}
+
+
 def main() -> int:
     _, sourceos_session = run_wrapper(SOURCEOS_WRAPPER, "sourceos-term-test", "sourceos-test", "sourceos-smoke")
     assert sourceos_session["frontend"] == "sourceos-term"
 
     _, turtle_session = run_wrapper(TURTLE_WRAPPER, "turtle-term-test", "turtle-test", "turtle-smoke")
     assert turtle_session["frontend"] == "turtle-term"
+
+    test_agent_status_no_artifacts()
+    test_agent_status_blocked_by_guardrail()
+    test_agent_status_needs_review_from_governance_queue()
+    test_agent_status_ready_from_passing_artifacts()
 
     return 0
 
