@@ -32,6 +32,7 @@ def main() -> int:
     assert "%{_bindir}/turtle-cloudfog" in rpm
     assert "%{_bindir}/turtle-superconscious" in rpm
     assert "%{_bindir}/turtle-agent-machine" in rpm
+    assert "%{_bindir}/turtle-language" in rpm
 
     assert "pkgname=turtle-term" in arch
     assert "arch=('x86_64' 'aarch64')" in arch
@@ -46,6 +47,7 @@ def main() -> int:
     assert "turtle-cloudfog" in stage
     assert "turtle-superconscious" in stage
     assert "turtle-agent-machine" in stage
+    assert "turtle-language" in stage
 
     for builder in (deb_builder, rpm_builder, arch_builder):
         assert "TURTLE_TERM_RUNTIME_PREFIX" in builder
@@ -56,6 +58,7 @@ def main() -> int:
     assert "turtle-cloudfog" in native_manifest
     assert "turtle-superconscious" in native_manifest
     assert "turtle-agent-machine" in native_manifest
+    assert "turtle-language" in native_manifest
 
     assert "%install" in rpm_builder
     assert "TURTLE_TERM_STAGE_PREFIX=%{buildroot}/usr" in rpm_builder
