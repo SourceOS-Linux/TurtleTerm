@@ -1,0 +1,70 @@
+{
+  "id": "urn:srcos:skill:turtle-language-context",
+  "type": "SkillManifest",
+  "specVersion": "2.0.0",
+  "name": "turtle-language-context",
+  "version": "0.1.0",
+  "entryDoc": "docs/sourceos/LANGUAGE_INTELLIGENCE.md",
+  "description": "Collect read-only diagnostics, symbols, selection context, index summaries, and patch proposal envelopes for TurtleTerm terminal-native workflows.",
+  "activationRules": {
+    "commands": [
+      "language.diagnostics",
+      "language.symbols",
+      "language.explain-selection",
+      "language.propose-patch",
+      "language.index"
+    ],
+    "filePatterns": [
+      "*.py",
+      "*.lua",
+      "*.js",
+      "*.ts",
+      "*.tsx",
+      "*.rs",
+      "*.go",
+      "*.sh",
+      "*.md",
+      "*.json",
+      "*.yaml",
+      "*.yml"
+    ],
+    "intentTags": [
+      "language-intelligence",
+      "tree-sitter",
+      "lsp",
+      "diagnostics",
+      "symbols",
+      "patch-proposal"
+    ]
+  },
+  "requires": {
+    "binaries": [
+      "turtle-language",
+      "turtle-agentctl"
+    ],
+    "anyBins": [
+      "nvim",
+      "tree-sitter",
+      "rg"
+    ],
+    "tools": [
+      "policy-fabric",
+      "agent-registry",
+      "superconscious"
+    ]
+  },
+  "executionSurfaceRef": null,
+  "policyBindings": [
+    "urn:srcos:policy:turtle-language-context"
+  ],
+  "artifactOutputs": [
+    "diagnostics-context",
+    "symbols-context",
+    "selection-explanation-context",
+    "patch-proposal-envelope",
+    "repository-index-summary"
+  ],
+  "reviewMode": true,
+  "allowShellExecution": false,
+  "protectedPaths": []
+}
