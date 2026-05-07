@@ -34,7 +34,7 @@ assert manifest['version'] == '0.1.0'
 assert manifest['arch'] == 'amd64'
 assert manifest['package'] == 'turtle-term_0.1.0_amd64.deb'
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
-for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language']:
+for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
     assert command in manifest['public_commands'], command
 PY
 
@@ -42,7 +42,7 @@ dpkg-deb --field "$deb" Package | grep -qx 'turtle-term'
 dpkg-deb --field "$deb" Version | grep -qx '0.1.0'
 dpkg-deb --field "$deb" Architecture | grep -qx 'amd64'
 
-for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language; do
+for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
   dpkg-deb --contents "$deb" | grep -q "/usr/bin/$command$"
 done
 
@@ -77,5 +77,7 @@ PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-superconscious" observe d
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-language" diagnostics "$probe" >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-language" symbols "$probe" >/dev/null
+PATH="$extract/usr/bin:$PATH" TURTLE_SESSION_STATE="$tmp/session-state" "$extract/usr/bin/turtle-session" profiles >/dev/null
+PATH="$extract/usr/bin:$PATH" TURTLE_SESSION_STATE="$tmp/session-state" "$extract/usr/bin/turtle-session" replay-plan >/dev/null
 
 echo "verified $deb"
