@@ -40,7 +40,7 @@ reproducible operator workflows.
 
 %install
 rm -rf %{buildroot}
-TURTLE_TERM_STAGE_PREFIX=%{buildroot}/usr TURTLE_TERM_ETC_DIR=%{buildroot}/etc TURTLE_TERM_RUNTIME_PREFIX=/usr TURTLE_TERM_RUNTIME_ETC_DIR=/etc $repo_root/packaging/scripts/stage-linux-package.sh >/dev/null
+TURTLE_TERM_STAGE_PREFIX=%{buildroot}/usr TURTLE_TERM_ETC_DIR=%{buildroot}/etc TURTLE_TERM_RUNTIME_PREFIX=/usr TURTLE_TERM_RUNTIME_ETC_DIR=/etc bash $repo_root/packaging/scripts/stage-linux-package.sh >/dev/null
 cp $repo_root/LICENSE.md %{buildroot}/LICENSE.md
 if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTICES.md %{buildroot}/THIRD_PARTY_NOTICES.md; fi
 
@@ -52,6 +52,7 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 /usr/bin/turtle-term
 /usr/bin/turtle-agentd
 /usr/bin/turtle-agentctl
+/usr/bin/turtle-agent-status
 /usr/bin/turtle-tmux
 /usr/bin/turtle-cloudfog
 /usr/bin/turtle-superconscious
