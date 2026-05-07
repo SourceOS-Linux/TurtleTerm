@@ -4,25 +4,22 @@ set -eu
 
 bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 agentctl="$bin_dir/turtle-agentctl"
-if [ ! -x "$agentctl" ]; then
-  agentctl="turtle-agentctl"
-fi
 
 cmd="${1:-surfaces}"
 case "$cmd" in
   surfaces)
     shift || true
-    exec "$agentctl" --stdio cloudfog-surfaces "$@"
+    exec python3 "$agentctl" --stdio cloudfog-surfaces "$@"
     ;;
   inspect)
     shift || true
-    exec "$agentctl" --stdio cloudfog-inspect "$@"
+    exec python3 "$agentctl" --stdio cloudfog-inspect "$@"
     ;;
   request-execution)
     shift || true
     surface="${1:-cloudfog/local-devshell}"
     shift || true
-    exec "$agentctl" --stdio request-surface-execution "$surface" "$@"
+    exec python3 "$agentctl" --stdio request-surface-execution "$surface" "$@"
     ;;
   *)
     echo "usage: turtle-cloudfog [surfaces|inspect <surface>|request-execution <surface> -- <command>]" >&2
