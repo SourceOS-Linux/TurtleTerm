@@ -18,6 +18,7 @@ REQUIRED_FILES = [
     "docs/sourceos/SESSION_CONTRACT.md",
     "docs/sourceos/SUPPLY_CHAIN.md",
     "docs/sourceos/UPSTREAM_SYNC.md",
+    "docs/sourceos/LANGUAGE_INTELLIGENCE.md",
     "assets/sourceos/brand/turtleterm-icon.svg",
     "assets/sourceos/brand/ai.sourceos.TurtleTerm.svg",
     "assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop",
@@ -32,9 +33,12 @@ REQUIRED_FILES = [
     "assets/sourceos/bin/turtle-cloudfog",
     "assets/sourceos/bin/turtle-superconscious",
     "assets/sourceos/bin/turtle-agent-machine",
+    "assets/sourceos/bin/turtle-language",
+    "assets/sourceos/skills/turtle-language-context.json",
     "assets/sourceos/turtleterm.lua",
     "assets/sourceos/tests/test_sourceos_term_smoke.py",
     "assets/sourceos/tests/test_turtle_bridge_features.py",
+    "assets/sourceos/tests/test_turtle_language_intelligence.py",
     "assets/sourceos/tests/test_turtle_term_branding.py",
     "assets/sourceos/tests/test_turtle_term_release_readiness.py",
     "assets/sourceos/tests/test_turtle_agentic_integration_plan.py",
@@ -91,6 +95,7 @@ REQUIRED_FORMULA_SNIPPETS = [
     "turtle-cloudfog",
     "turtle-superconscious",
     "turtle-agent-machine",
+    "turtle-language",
     "ai.sourceos.TurtleTerm.desktop",
     "ai.sourceos.TurtleTerm.metainfo.xml",
     "ai.sourceos.TurtleTerm.svg",
@@ -125,6 +130,7 @@ REQUIRED_PACKAGE_SCRIPT_SNIPPETS = [
     "turtle-cloudfog",
     "turtle-superconscious",
     "turtle-agent-machine",
+    "turtle-language",
     "share/applications",
     "share/metainfo",
     "share/icons/hicolor/scalable/apps",
@@ -178,6 +184,12 @@ def main() -> int:
     assert "Linux x86_64" in checklist
     assert "Linux ARM64" in checklist
     assert "manifest" in checklist.lower()
+
+    language = read("docs/sourceos/LANGUAGE_INTELLIGENCE.md")
+    assert "turtle-language" in language
+    assert "TurtleDiagnostics" in language
+    assert "Tree-sitter" in language
+    assert "LSP" in language
 
     return 0
 
