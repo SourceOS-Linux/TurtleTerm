@@ -1,0 +1,37 @@
+name: Agent Harness Terminal Receipts
+
+on:
+  pull_request:
+    paths:
+      - 'docs/sourceos/AGENT_HARNESS_TERMINAL_RECEIPTS.md'
+      - 'schemas/agent-harness-terminal-receipts.schema.json'
+      - 'examples/agent-harness-terminal-receipts.example.json'
+      - 'scripts/verify-agent-harness-terminal-receipts.py'
+      - '.github/workflows/agent-harness-terminal-receipts.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/sourceos/AGENT_HARNESS_TERMINAL_RECEIPTS.md'
+      - 'schemas/agent-harness-terminal-receipts.schema.json'
+      - 'examples/agent-harness-terminal-receipts.example.json'
+      - 'scripts/verify-agent-harness-terminal-receipts.py'
+      - '.github/workflows/agent-harness-terminal-receipts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-agent-harness-terminal-receipts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Validate TurtleTerm Agent Harness receipts
+        run: python3 scripts/verify-agent-harness-terminal-receipts.py
