@@ -69,9 +69,9 @@ if grep -R "$tmp\|deb-root\|BUILDROOT\|arch-root" "$extract/usr/bin/turtleterm" 
   exit 1
 fi
 
-"$extract/usr/bin/turtle-agentctl" --stdio surfaces >/dev/null
-"$extract/usr/bin/turtle-cloudfog" surfaces >/dev/null
-"$extract/usr/bin/turtle-superconscious" observe deb-package >/dev/null
-"$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agentctl" --stdio surfaces >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-cloudfog" surfaces >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-superconscious" observe deb-package >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null
 
 echo "verified $deb"
