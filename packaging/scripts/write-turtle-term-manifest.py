@@ -49,6 +49,7 @@ def main() -> int:
             "turtle-cloudfog",
             "turtle-superconscious",
             "turtle-agent-machine",
+            "turtle-language",
             "sourceos-term"
         ],
         "private_runtime_path": "libexec/turtle-term",
@@ -64,7 +65,8 @@ def main() -> int:
             "turtle-agentctl --stdio surfaces",
             "turtle-cloudfog surfaces",
             "turtle-superconscious observe hello",
-            "turtle-agent-machine surfaces"
+            "turtle-agent-machine surfaces",
+            "turtle-language diagnostics README.md"
         ],
     }
 
