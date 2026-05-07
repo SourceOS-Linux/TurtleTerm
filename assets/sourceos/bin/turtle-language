@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""TurtleTerm language-intelligence CLI v0.
+
+This is a conservative scaffold: it emits read-only language context and patch
+proposal envelopes. It does not mutate files or run language servers directly.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+
+SCHEMA = "sourceos.turtle.language.response.v0"
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def read_file(path: Path) -> str:
+    if not path.exists():
+        raise SystemExit(f"file not found: {path}")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def response(kind: str, data: dict[str, Any]) -> dict[str, Any]:
+    return {"schema": SCHEMA, "kind": kind, "data": data}
+
+
+def language_for(path: Path) -> str:
+    suffix = path.suffix.lower()
+    return {
+        ".py": "python",
+        ".lua": "lua",
+        ".js": "javascript",
+        ".jsx": "javascriptreact",
+        ".ts": "typescript",
+        ".tsx": "typescriptreact",
+        ".rs": "rust",
+        ".go": "go",
+        ".sh": "shell",
+        ".bash": "shell",
+        ".zsh": "shell",
+        ".md": "markdown",
+        ".json": "json",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+    }.get(suffix, suffix[1:] if suffix else "text")
+
+
+def python_symbols(path: Path, text: str) -> list[dict[str, Any]]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    symbols: list[dict[str, Any]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            symbols.append({"name": node.name, "kind": type(node).__name__, "line": node.lineno, "file": str(path)})
+    return sorted(symbols, key=lambda item: item["line"])
+
+
+def generic_symbols(path: Path, text: str) -> list[dict[str, Any]]:
+    symbols: list[dict[str, Any]] = []
+    for idx, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith(("def ", "class ", "function ", "fn ", "func ", "export function ")):
+            symbols.append({"name": stripped.split("(")[0][:120], "kind": "heuristic", "line": idx, "file": str(path)})
+    return symbols
+
+
+def diagnostics(path: Path) -> dict[str, Any]:
+    text = read_file(path)
+    lang = language_for(path)
+    items: list[dict[str, Any]] = []
+    if lang == "python":
+        try:
+            ast.parse(text)
+        except SyntaxError as exc:
+            items.append({"severity": "error", "message": exc.msg, "line": exc.lineno, "column": exc.offset})
+    return {"file": str(path), "language": lang, "content_sha256": sha256_text(text), "diagnostics": items, "mutationAllowed": False}
+
+
+def symbols(path: Path) -> dict[str, Any]:
+    text = read_file(path)
+    lang = language_for(path)
+    items = python_symbols(path, text) if lang == "python" else generic_symbols(path, text)
+    return {"file": str(path), "language": lang, "content_sha256": sha256_text(text), "symbols": items, "mutationAllowed": False}
+
+
+def explain_selection(path: Path, start: int, end: int) -> dict[str, Any]:
+    text = read_file(path)
+    lines = text.splitlines()
+    start = max(1, start)
+    end = min(len(lines), max(start, end))
+    selected = "\n".join(lines[start - 1:end])
+    return {
+        "file": str(path),
+        "language": language_for(path),
+        "range": {"start": start, "end": end},
+        "selection_sha256": sha256_text(selected),
+        "selection_preview": selected[:4000],
+        "explanation": "Read-only explanation scaffold. Route this packet to Superconscious or an approved model for explanation.",
+        "mutationAllowed": False,
+    }
+
+
+def propose_patch(path: Path, prompt: str) -> dict[str, Any]:
+    text = read_file(path)
+    return {
+        "file": str(path),
+        "language": language_for(path),
+        "content_sha256": sha256_text(text),
+        "prompt": prompt,
+        "proposal": {
+            "status": "deferred",
+            "reason": "Patch proposal requires approved model route and review. turtle-language v0 does not mutate files.",
+        },
+        "mutationAllowed": False,
+    }
+
+
+def index_root(root: Path) -> dict[str, Any]:
+    files: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and ".git" not in path.parts:
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                rel = path
+            files.append({"path": str(rel), "language": language_for(path), "size": path.stat().st_size})
+            if len(files) >= 500:
+                break
+    return {"root": str(root), "files": files, "truncated": len(files) >= 500, "mutationAllowed": False}
+
+
+def print_json(payload: dict[str, Any]) -> int:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="TurtleTerm language-intelligence CLI v0")
+    sub = parser.add_subparsers(dest="command")
+
+    diagnostics_p = sub.add_parser("diagnostics")
+    diagnostics_p.add_argument("file")
+
+    symbols_p = sub.add_parser("symbols")
+    symbols_p.add_argument("file")
+
+    explain_p = sub.add_parser("explain-selection")
+    explain_p.add_argument("file")
+    explain_p.add_argument("--start", type=int, required=True)
+    explain_p.add_argument("--end", type=int, required=True)
+
+    patch_p = sub.add_parser("propose-patch")
+    patch_p.add_argument("file")
+    patch_p.add_argument("--prompt", required=True)
+
+    index_p = sub.add_parser("index")
+    index_p.add_argument("root", nargs="?", default=os.getcwd())
+
+    args = parser.parse_args(argv)
+    if args.command == "diagnostics":
+        return print_json(response("diagnostics", diagnostics(Path(args.file))))
+    if args.command == "symbols":
+        return print_json(response("symbols", symbols(Path(args.file))))
+    if args.command == "explain-selection":
+        return print_json(response("explanation", explain_selection(Path(args.file), args.start, args.end)))
+    if args.command == "propose-patch":
+        return print_json(response("patch_proposal", propose_patch(Path(args.file), args.prompt)))
+    if args.command == "index":
+        return print_json(response("index", index_root(Path(args.root))))
+    parser.print_help(sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
