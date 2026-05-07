@@ -42,6 +42,7 @@ class TurtleTerm < Formula
       turtle-term
       turtle-agentd
       turtle-agentctl
+      turtle-agent-status
       turtle-tmux
       turtle-cloudfog
       turtle-superconscious
@@ -117,6 +118,7 @@ class TurtleTerm < Formula
         turtle-term run -- echo hello
         turtle-agentctl --stdio ping
         turtle-agentctl --stdio surfaces
+        turtle-agent-status --json
         turtle-cloudfog surfaces
         turtle-superconscious observe hello
         turtle-agent-machine surfaces
@@ -129,6 +131,7 @@ class TurtleTerm < Formula
     assert_match "TurtleTerm command wrapper", shell_output("#{bin}/turtle-term --help")
     assert_match "TurtleTerm local agent gateway", shell_output("#{bin}/turtle-agentd --help")
     assert_match "TurtleTerm agent gateway CLI", shell_output("#{bin}/turtle-agentctl --help")
+    assert_match "TurtleTerm local SourceOS Agent Reliability status view", shell_output("#{bin}/turtle-agent-status --help")
     assert_match "TurtleTerm tmux bridge", shell_output("#{bin}/turtle-tmux --help")
 
     events = testpath/"events.ndjson"
@@ -146,6 +149,7 @@ class TurtleTerm < Formula
     assert_match "command.completed", events.read
     assert_match "turtle-agentd", shell_output("#{bin}/turtle-agentctl --stdio ping")
     assert_match "surfaces", shell_output("#{bin}/turtle-agentctl --stdio surfaces")
+    assert_match "sourceos.turtle.agent_status.v0", shell_output("#{bin}/turtle-agent-status --json")
     assert_match "cloudfog_surfaces", shell_output("#{bin}/turtle-cloudfog surfaces")
     assert_match "superconscious_observation", shell_output("#{bin}/turtle-superconscious observe hello")
     assert_match "agent_machine_surfaces", shell_output("#{bin}/turtle-agent-machine surfaces")
