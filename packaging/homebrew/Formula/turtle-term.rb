@@ -47,6 +47,7 @@ class TurtleTerm < Formula
       turtle-superconscious
       turtle-agent-machine
       turtle-language
+      turtle-session
     ]
     turtle_scripts.each do |script|
       chmod 0755, "assets/sourceos/bin/#{script}"
@@ -121,6 +122,7 @@ class TurtleTerm < Formula
         turtle-superconscious observe hello
         turtle-agent-machine surfaces
         turtle-language diagnostics #{__FILE__}
+        turtle-session profiles
     EOS
   end
 
@@ -150,5 +152,6 @@ class TurtleTerm < Formula
     assert_match "superconscious_observation", shell_output("#{bin}/turtle-superconscious observe hello")
     assert_match "agent_machine_surfaces", shell_output("#{bin}/turtle-agent-machine surfaces")
     assert_match "diagnostics", shell_output("#{bin}/turtle-language diagnostics #{__FILE__}")
+    assert_match "profiles", shell_output("#{bin}/turtle-session profiles")
   end
 end
