@@ -27,6 +27,7 @@ required_paths=(
   "$prefix/bin/turtle-cloudfog"
   "$prefix/bin/turtle-superconscious"
   "$prefix/bin/turtle-agent-machine"
+  "$prefix/bin/turtle-language"
   "$prefix/bin/sourceos-term"
   "$prefix/etc/turtle-term/turtleterm.lua"
   "$prefix/libexec/turtle-term/wezterm"
@@ -63,10 +64,14 @@ if command -v appstreamcli >/dev/null 2>&1; then
   appstreamcli validate --no-net "$prefix/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml"
 fi
 
+probe="$tmp/probe.py"
+printf 'def hello():\n    return "world"\n' > "$probe"
 "$prefix/bin/turtle-agentctl" --stdio ping >/dev/null
 "$prefix/bin/turtle-agentctl" --stdio surfaces >/dev/null
 "$prefix/bin/turtle-cloudfog" surfaces >/dev/null
 "$prefix/bin/turtle-superconscious" observe package-layout >/dev/null
 "$prefix/bin/turtle-agent-machine" surfaces >/dev/null
+"$prefix/bin/turtle-language" diagnostics "$probe" >/dev/null
+"$prefix/bin/turtle-language" symbols "$probe" >/dev/null
 
 echo "verified TurtleTerm Linux package layout at $prefix"
