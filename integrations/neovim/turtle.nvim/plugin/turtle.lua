@@ -13,6 +13,30 @@ vim.api.nvim_create_user_command('TurtleSessions', function()
   turtle.sessions()
 end, {})
 
+vim.api.nvim_create_user_command('TurtleProfiles', function()
+  turtle.profiles()
+end, {})
+
+vim.api.nvim_create_user_command('TurtleLayoutExport', function()
+  turtle.layout_export()
+end, {})
+
+vim.api.nvim_create_user_command('TurtleMarks', function()
+  turtle.marks()
+end, {})
+
+vim.api.nvim_create_user_command('TurtleMark', function(opts)
+  turtle.mark(opts.args)
+end, { nargs = '*' })
+
+vim.api.nvim_create_user_command('TurtleSearch', function(opts)
+  turtle.search(opts.args)
+end, { nargs = '+' })
+
+vim.api.nvim_create_user_command('TurtleReplayPlan', function()
+  turtle.replay_plan()
+end, {})
+
 vim.api.nvim_create_user_command('TurtleSurfaces', function()
   turtle.surfaces()
 end, {})
