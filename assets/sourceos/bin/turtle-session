@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""TurtleTerm session ergonomics CLI v0."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+import uuid
+from pathlib import Path
+from typing import Any
+
+
+SCHEMA = "sourceos.turtle.session.response.v0"
+
+
+def now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def env(name: str, fallback: str = "") -> str:
+    value = os.environ.get(name)
+    return value if value else fallback
+
+
+def state_dir() -> Path:
+    return Path(env("TURTLE_SESSION_STATE", str(Path.home() / ".local" / "state" / "sourceos" / "turtle-term")))
+
+
+def marks_path() -> Path:
+    return state_dir() / "marks.ndjson"
+
+
+def events_path() -> Path:
+    return Path(env("SOURCEOS_TERMINAL_EVENTS", str(state_dir() / "events.ndjson")))
+
+
+def response(kind: str, data: dict[str, Any]) -> dict[str, Any]:
+    return {"schema": SCHEMA, "kind": kind, "capturedAt": now(), "data": data}
+
+
+def print_json(payload: dict[str, Any]) -> int:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def profiles() -> dict[str, Any]:
+    workspace = env("SOURCEOS_WORKSPACE", "default")
+    cwd = os.getcwd()
+    return {
+        "profiles": [
+            {"id": "local/default", "label": "Local Workspace", "kind": "host", "workspace_id": workspace, "cwd": cwd, "policy_profile": "standard"},
+            {"id": "tmux/attached", "label": "Attached tmux Session", "kind": "tmux", "workspace_id": workspace, "cwd": cwd, "policy_profile": "standard"},
+            {"id": "neovim/context", "label": "Neovim Context", "kind": "editor-context", "workspace_id": workspace, "cwd": cwd, "policy_profile": "review-only"},
+            {"id": "cloudfog/local-devshell", "label": "CloudFog Local Devshell", "kind": "devshell", "workspace_id": workspace, "cwd": cwd, "policy_profile": "low-risk"},
+            {"id": "agent-machine/local-agentpod", "label": "Agent Machine Local AgentPod", "kind": "agentpod", "workspace_id": workspace, "cwd": cwd, "policy_profile": "activation-required"}
+        ]
+    }
+
+
+def layout_export() -> dict[str, Any]:
+    return {
+        "layout": {
+            "id": f"urn:srcos:turtle-layout:{uuid.uuid4().hex}",
+            "workspace_id": env("SOURCEOS_WORKSPACE", "default"),
+            "tabs": [
+                {"title": "main", "profile": "local/default", "cwd": os.getcwd(), "panes": [{"role": "shell", "profile": "local/default"}]}
+            ],
+            "mutationAllowed": False,
+        }
+    }
+
+
+def append_mark(text: str) -> dict[str, Any]:
+    path = marks_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mark = {
+        "id": f"urn:srcos:turtle-mark:{uuid.uuid4().hex}",
+        "createdAt": now(),
+        "workspace_id": env("SOURCEOS_WORKSPACE", "default"),
+        "session_id": env("SOURCEOS_TERMINAL_SESSION_ID", ""),
+        "text": text,
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(mark, sort_keys=True) + "\n")
+    return {"mark": mark, "path": str(path)}
+
+
+def read_marks() -> dict[str, Any]:
+    path = marks_path()
+    rows = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines()[-200:]:
+            if line.strip():
+                rows.append(json.loads(line))
+    return {"marks": rows, "path": str(path)}
+
+
+def search_events(query: str) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    path = events_path()
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if query.lower() in line.lower():
+                try:
+                    results.append(json.loads(line))
+                except json.JSONDecodeError:
+                    results.append({"raw": line})
+    marks = [mark for mark in read_marks()["marks"] if query.lower() in json.dumps(mark).lower()]
+    return {"query": query, "event_results": results[-100:], "mark_results": marks[-100:], "mutationAllowed": False}
+
+
+def replay_plan() -> dict[str, Any]:
+    return {
+        "replay_plan": {
+            "id": f"urn:srcos:turtle-replay-plan:{uuid.uuid4().hex}",
+            "workspace_id": env("SOURCEOS_WORKSPACE", "default"),
+            "session_id": env("SOURCEOS_TERMINAL_SESSION_ID", ""),
+            "status": "review-required",
+            "reason": "TurtleTerm v0 emits replay plans only; it does not rerun shell history.",
+            "mutationAllowed": False,
+        }
+    }
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="TurtleTerm session ergonomics CLI v0")
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("profiles")
+    sub.add_parser("layout-export")
+    sub.add_parser("marks")
+    mark_p = sub.add_parser("mark")
+    mark_p.add_argument("text", nargs=argparse.REMAINDER)
+    search_p = sub.add_parser("search")
+    search_p.add_argument("query")
+    sub.add_parser("replay-plan")
+    args = parser.parse_args(argv)
+
+    if args.command == "profiles":
+        return print_json(response("profiles", profiles()))
+    if args.command == "layout-export":
+        return print_json(response("layout", layout_export()))
+    if args.command == "marks":
+        return print_json(response("marks", read_marks()))
+    if args.command == "mark":
+        text = " ".join(args.text).strip()
+        if not text:
+            text = "operator mark"
+        return print_json(response("mark", append_mark(text)))
+    if args.command == "search":
+        return print_json(response("search", search_events(args.query)))
+    if args.command == "replay-plan":
+        return print_json(response("replay_plan", replay_plan()))
+    parser.print_help(sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
