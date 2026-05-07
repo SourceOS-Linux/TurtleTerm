@@ -46,6 +46,16 @@ local function run_language(title, ...)
   run_command(title, args)
 end
 
+local function run_session(title, ...)
+  local args = { 'turtle-session' }
+  for _, value in ipairs({ ... }) do
+    if value ~= nil and value ~= '' then
+      table.insert(args, value)
+    end
+  end
+  run_command(title, args)
+end
+
 local function join_args(values)
   if type(values) == 'table' then
     return table.concat(values, ' ')
@@ -71,6 +81,37 @@ end
 
 function M.sessions()
   run_agentctl('TurtleTerm sessions', 'sessions')
+end
+
+function M.profiles()
+  run_session('TurtleTerm profiles', 'profiles')
+end
+
+function M.layout_export()
+  run_session('TurtleTerm layout export', 'layout-export')
+end
+
+function M.marks()
+  run_session('TurtleTerm marks', 'marks')
+end
+
+function M.mark(text)
+  if text == nil or text == '' then
+    text = 'operator mark'
+  end
+  run_session('TurtleTerm mark', 'mark', text)
+end
+
+function M.search(query)
+  if query == nil or query == '' then
+    vim.notify('TurtleSearch requires a query', vim.log.levels.ERROR)
+    return
+  end
+  run_session('TurtleTerm search', 'search', query)
+end
+
+function M.replay_plan()
+  run_session('TurtleTerm replay plan', 'replay-plan')
 end
 
 function M.surfaces()
