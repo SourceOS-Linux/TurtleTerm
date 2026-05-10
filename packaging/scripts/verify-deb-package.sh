@@ -15,7 +15,7 @@ EOF
 done
 
 TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_DEB_ARCH="amd64" \
-  "$repo_root/packaging/scripts/build-deb-package.sh" >/dev/null
+  bash "$repo_root/packaging/scripts/build-deb-package.sh" >/dev/null
 
 deb="$tmp/turtle-term_0.1.0_amd64.deb"
 extract="$tmp/extract"
@@ -34,7 +34,7 @@ assert manifest['version'] == '0.1.0'
 assert manifest['arch'] == 'amd64'
 assert manifest['package'] == 'turtle-term_0.1.0_amd64.deb'
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
-for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
+for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
     assert command in manifest['public_commands'], command
 PY
 
@@ -42,7 +42,7 @@ dpkg-deb --field "$deb" Package | grep -qx 'turtle-term'
 dpkg-deb --field "$deb" Version | grep -qx '0.1.0'
 dpkg-deb --field "$deb" Architecture | grep -qx 'amd64'
 
-for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
+for command in turtleterm turtle-agentctl turtle-agent-status turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
   dpkg-deb --contents "$deb" | grep -q "/usr/bin/$command$"
 done
 
@@ -72,6 +72,7 @@ fi
 probe="$tmp/probe.py"
 printf 'def hello():\n    return "world"\n' > "$probe"
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agentctl" --stdio surfaces >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-status" --json >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-cloudfog" surfaces >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-superconscious" observe deb-package >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null
