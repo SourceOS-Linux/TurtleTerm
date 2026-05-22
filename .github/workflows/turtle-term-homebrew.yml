@@ -38,6 +38,8 @@ jobs:
 
       - name: Register local Homebrew tap
         run: |
+          git config --global user.name "SourceOS CI"
+          git config --global user.email "sourceos-ci@sourceos.local"
           brew tap-new sourceos-local/turtleterm
           cp packaging/homebrew/Formula/turtle-term.rb "$(brew --repository sourceos-local/turtleterm)/Formula/turtle-term.rb"
 
