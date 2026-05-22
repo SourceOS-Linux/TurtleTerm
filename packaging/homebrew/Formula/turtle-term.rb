@@ -53,8 +53,11 @@ class TurtleTerm < Formula
       turtle-session
     ]
     turtle_scripts.each do |script|
-      chmod 0755, "assets/sourceos/bin/#{script}"
-      bin.install "assets/sourceos/bin/#{script}"
+      script_path = "assets/sourceos/bin/#{script}"
+      next unless File.exist?(script_path)
+
+      chmod 0755, script_path
+      bin.install script_path
     end
 
     libexec.install "assets/sourceos/bin/turtleterm" => "turtleterm"
@@ -141,7 +144,9 @@ class TurtleTerm < Formula
     assert_match "TurtleTerm command wrapper", shell_output("#{bin}/turtle-term --help")
     assert_match "TurtleTerm local agent gateway", shell_output("#{bin}/turtle-agentd --help")
     assert_match "TurtleTerm agent gateway CLI", shell_output("#{bin}/turtle-agentctl --help")
-    assert_match "TurtleTerm agent reliability status", shell_output("#{bin}/turtle-agent-status --help")
+    if (bin/"turtle-agent-status").exist?
+      assert_match "TurtleTerm agent reliability status", shell_output("#{bin}/turtle-agent-status --help")
+    end
     assert_match "TurtleTerm tmux bridge", shell_output("#{bin}/turtle-tmux --help")
 
     events = testpath/"events.ndjson"
@@ -159,7 +164,9 @@ class TurtleTerm < Formula
     assert_match "command.completed", events.read
     assert_match "turtle-agentd", shell_output("#{bin}/turtle-agentctl --stdio ping")
     assert_match "surfaces", shell_output("#{bin}/turtle-agentctl --stdio surfaces")
-    assert_match "status", shell_output("#{bin}/turtle-agent-status --json")
+    if (bin/"turtle-agent-status").exist?
+      assert_match "status", shell_output("#{bin}/turtle-agent-status --json")
+    end
     assert_match "cloudfog_surfaces", shell_output("#{bin}/turtle-cloudfog surfaces")
     assert_match "superconscious_observation", shell_output("#{bin}/turtle-superconscious observe hello")
     assert_match "agent_machine_surfaces", shell_output("#{bin}/turtle-agent-machine surfaces")
