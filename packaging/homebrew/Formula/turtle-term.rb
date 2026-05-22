@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
 class TurtleTerm < Formula
-  desc "TurtleTerm: SourceOS policy-aware agent terminal fabric"
+  desc "SourceOS policy-aware agent terminal fabric"
   homepage "https://github.com/SourceOS-Linux/TurtleTerm"
   license "MIT"
   head "https://github.com/SourceOS-Linux/TurtleTerm.git", branch: "main"
 
-  depends_on "rust" => :build
   depends_on "pkg-config" => :build
+  depends_on "rust" => :build
   depends_on "python@3.12"
 
   on_macos do
@@ -23,6 +23,7 @@ class TurtleTerm < Formula
     depends_on "libxkbcommon"
     depends_on "openssl@3"
     depends_on "wayland"
+    depends_on "xcb-util"
     depends_on "zlib"
   end
 
@@ -42,6 +43,7 @@ class TurtleTerm < Formula
       turtle-term
       turtle-agentd
       turtle-agentctl
+      turtle-agent-status
       turtle-tmux
       turtle-cloudfog
       turtle-superconscious
@@ -96,9 +98,15 @@ class TurtleTerm < Formula
     pkgshare.install "assets/sourceos/desktop" => "desktop" if Dir.exist?("assets/sourceos/desktop")
 
     if OS.linux?
-      (share/"applications").install "assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop" if File.exist?("assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop")
-      (share/"metainfo").install "assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml" if File.exist?("assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml")
-      (share/"icons/hicolor/scalable/apps").install "assets/sourceos/brand/ai.sourceos.TurtleTerm.svg" if File.exist?("assets/sourceos/brand/ai.sourceos.TurtleTerm.svg")
+      if File.exist?("assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop")
+        (share/"applications").install "assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop"
+      end
+      if File.exist?("assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml")
+        (share/"metainfo").install "assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml"
+      end
+      if File.exist?("assets/sourceos/brand/ai.sourceos.TurtleTerm.svg")
+        (share/"icons/hicolor/scalable/apps").install "assets/sourceos/brand/ai.sourceos.TurtleTerm.svg"
+      end
     end
   end
 
@@ -118,6 +126,7 @@ class TurtleTerm < Formula
         turtle-term run -- echo hello
         turtle-agentctl --stdio ping
         turtle-agentctl --stdio surfaces
+        turtle-agent-status --json
         turtle-cloudfog surfaces
         turtle-superconscious observe hello
         turtle-agent-machine surfaces
@@ -131,6 +140,7 @@ class TurtleTerm < Formula
     assert_match "TurtleTerm command wrapper", shell_output("#{bin}/turtle-term --help")
     assert_match "TurtleTerm local agent gateway", shell_output("#{bin}/turtle-agentd --help")
     assert_match "TurtleTerm agent gateway CLI", shell_output("#{bin}/turtle-agentctl --help")
+    assert_match "TurtleTerm agent reliability status", shell_output("#{bin}/turtle-agent-status --help")
     assert_match "TurtleTerm tmux bridge", shell_output("#{bin}/turtle-tmux --help")
 
     events = testpath/"events.ndjson"
@@ -144,10 +154,11 @@ class TurtleTerm < Formula
     ENV["SOURCEOS_EXECUTION_DOMAIN"] = "host"
 
     assert_match "hello", shell_output("#{bin}/turtle-term run -- echo hello")
-    assert_predicate events, :exist?
+    assert_path_exists events
     assert_match "command.completed", events.read
     assert_match "turtle-agentd", shell_output("#{bin}/turtle-agentctl --stdio ping")
     assert_match "surfaces", shell_output("#{bin}/turtle-agentctl --stdio surfaces")
+    assert_match "status", shell_output("#{bin}/turtle-agent-status --json")
     assert_match "cloudfog_surfaces", shell_output("#{bin}/turtle-cloudfog surfaces")
     assert_match "superconscious_observation", shell_output("#{bin}/turtle-superconscious observe hello")
     assert_match "agent_machine_surfaces", shell_output("#{bin}/turtle-agent-machine surfaces")
