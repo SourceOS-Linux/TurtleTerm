@@ -16,6 +16,7 @@ done
 
 rpm="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_RPM_ARCH="$(uname -m)" \
   "$repo_root/packaging/scripts/build-rpm-package.sh")"
+contents="$tmp/rpm-contents.txt"
 extract="$tmp/extract"
 
 test -f "$rpm"
@@ -32,24 +33,25 @@ assert manifest['kind'] == 'rpm'
 assert manifest['version'] == '0.1.0'
 assert manifest['package'].endswith('.rpm')
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
-for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
+for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
     assert command in manifest['public_commands'], command
 PY
 
 rpm -qp --queryformat '%{NAME}\n' "$rpm" | grep -qx 'turtle-term'
 rpm -qp --queryformat '%{VERSION}\n' "$rpm" | grep -qx '0.1.0'
+rpm -qpl "$rpm" > "$contents"
 
-for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
-  rpm -qpl "$rpm" | grep -q "^/usr/bin/$command$"
+for command in turtleterm turtle-agentctl turtle-agent-status turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
+  grep -q "^/usr/bin/$command$" "$contents"
 done
 
-rpm -qpl "$rpm" | grep -q '^/etc/turtle-term/turtleterm.lua$'
-rpm -qpl "$rpm" | grep -q '^/usr/share/applications/ai.sourceos.TurtleTerm.desktop$'
-rpm -qpl "$rpm" | grep -q '^/usr/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml$'
-rpm -qpl "$rpm" | grep -q '^/usr/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg$'
-rpm -qpl "$rpm" | grep -q '^/usr/libexec/turtle-term/wezterm-gui$'
+grep -q '^/etc/turtle-term/turtleterm.lua$' "$contents"
+grep -q '^/usr/share/applications/ai.sourceos.TurtleTerm.desktop$' "$contents"
+grep -q '^/usr/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml$' "$contents"
+grep -q '^/usr/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg$' "$contents"
+grep -q '^/usr/libexec/turtle-term/wezterm-gui$' "$contents"
 
-if rpm -qpl "$rpm" | grep -q '^/usr/bin/wezterm-gui$'; then
+if grep -q '^/usr/bin/wezterm-gui$' "$contents"; then
   echo 'private runtime leaked onto product PATH in rpm' >&2
   exit 1
 fi
@@ -69,6 +71,7 @@ fi
 probe="$tmp/probe.py"
 printf 'def hello():\n    return "world"\n' > "$probe"
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agentctl" --stdio surfaces >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-status" --json >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-cloudfog" surfaces >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-superconscious" observe rpm-package >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null
