@@ -44,7 +44,7 @@ def main() -> int:
 
     assert "class TurtleTerm < Formula" in formula
     assert "class TurtleTerm < Formula" in template
-    assert "desc \"TurtleTerm: SourceOS policy-aware agent terminal fabric\"" in formula
+    assert "desc \"SourceOS policy-aware agent terminal fabric\"" in formula
     assert "To launch TurtleTerm:" in formula
     assert "turtleterm" in formula
     assert "turtleterm.lua" in formula
