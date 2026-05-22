@@ -28,7 +28,7 @@ EOF
 done
 
 rpm="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_RPM_ARCH="$(uname -m)" \
-  "$repo_root/packaging/scripts/build-rpm-package.sh")"
+  "$repo_root/packaging/scripts/build-rpm-package.sh" | tail -n 1)"
 contents="$tmp/rpm-contents.txt"
 payload="$tmp/rpm-payload.cpio"
 extract="$tmp/extract"
