@@ -40,7 +40,7 @@ turtle-smoke:
 	bash -n packaging/scripts/install-turtle-term.sh
 	bash -n packaging/scripts/package-turtle-term.sh
 	bash -n packaging/scripts/bootstrap-homebrew-tap.sh
-	python3 -m py_compile packaging/scripts/render-stable-homebrew-formula.py assets/sourceos/bin/sourceos-term assets/sourceos/bin/turtle-term
+	python3 -m py_compile packaging/scripts/render-stable-homebrew-formula.py assets/sourceos/bin/sourceos-term assets/sourceos/bin/turtle-term assets/sourceos/bin/turtle-agent-status
 
 turtle-package: turtle-build turtle-smoke
 	bash packaging/scripts/package-turtle-term.sh "$${TURTLE_TERM_VERSION:-turtle-term-dev}" "$${TURTLE_TERM_TARGET:-$$(uname -s)-$$(uname -m)}"
