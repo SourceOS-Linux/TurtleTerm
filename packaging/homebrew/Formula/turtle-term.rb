@@ -95,7 +95,8 @@ class TurtleTerm < Formula
       LUA
       profile
     end
-    etc.install profile_source => "turtle-term/turtleterm.lua"
+    (etc/"turtle-term").mkpath
+    (etc/"turtle-term/turtleterm.lua").write profile_source.read
     pkgshare.install "docs/sourceos"
     pkgshare.install "assets/sourceos/skills" => "skills" if Dir.exist?("assets/sourceos/skills")
     pkgshare.install "assets/sourceos/brand" => "brand" if Dir.exist?("assets/sourceos/brand")
@@ -144,9 +145,7 @@ class TurtleTerm < Formula
     assert_match "TurtleTerm command wrapper", shell_output("#{bin}/turtle-term --help")
     assert_match "TurtleTerm local agent gateway", shell_output("#{bin}/turtle-agentd --help")
     assert_match "TurtleTerm agent gateway CLI", shell_output("#{bin}/turtle-agentctl --help")
-    if (bin/"turtle-agent-status").exist?
-      assert_match "TurtleTerm agent reliability status", shell_output("#{bin}/turtle-agent-status --help")
-    end
+    assert_match "TurtleTerm agent reliability status", shell_output("#{bin}/turtle-agent-status --help") if (bin/"turtle-agent-status").exist?
     assert_match "TurtleTerm tmux bridge", shell_output("#{bin}/turtle-tmux --help")
 
     events = testpath/"events.ndjson"
@@ -164,9 +163,7 @@ class TurtleTerm < Formula
     assert_match "command.completed", events.read
     assert_match "turtle-agentd", shell_output("#{bin}/turtle-agentctl --stdio ping")
     assert_match "surfaces", shell_output("#{bin}/turtle-agentctl --stdio surfaces")
-    if (bin/"turtle-agent-status").exist?
-      assert_match "status", shell_output("#{bin}/turtle-agent-status --json")
-    end
+    assert_match "status", shell_output("#{bin}/turtle-agent-status --json") if (bin/"turtle-agent-status").exist?
     assert_match "cloudfog_surfaces", shell_output("#{bin}/turtle-cloudfog surfaces")
     assert_match "superconscious_observation", shell_output("#{bin}/turtle-superconscious observe hello")
     assert_match "agent_machine_surfaces", shell_output("#{bin}/turtle-agent-machine surfaces")
