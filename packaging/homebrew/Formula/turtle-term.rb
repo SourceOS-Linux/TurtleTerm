@@ -24,6 +24,7 @@ class TurtleTerm < Formula
     depends_on "openssl@3"
     depends_on "wayland"
     depends_on "xcb-util"
+    depends_on "xcb-util-image"
     depends_on "zlib"
   end
 
