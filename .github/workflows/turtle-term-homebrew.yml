@@ -34,13 +34,18 @@ jobs:
 
       - name: Set up Homebrew on Linux
         if: runner.os == 'Linux'
-        uses: Homebrew/actions/setup-homebrew@master
+        uses: Homebrew/actions/setup-homebrew@main
+
+      - name: Register local Homebrew tap
+        run: |
+          brew tap-new sourceos-local/turtleterm
+          cp packaging/homebrew/Formula/turtle-term.rb "$(brew --repository sourceos-local/turtleterm)/Formula/turtle-term.rb"
 
       - name: Audit TurtleTerm formula
-        run: brew audit --formula --strict packaging/homebrew/Formula/turtle-term.rb || true
+        run: brew audit --formula --strict sourceos-local/turtleterm/turtle-term || true
 
       - name: Install TurtleTerm formula from HEAD
-        run: brew install --HEAD ./packaging/homebrew/Formula/turtle-term.rb
+        run: brew install --HEAD sourceos-local/turtleterm/turtle-term
 
       - name: Test TurtleTerm formula
         run: brew test turtle-term
