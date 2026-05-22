@@ -29,6 +29,7 @@ REQUIRED_FILES = [
     "assets/sourceos/bin/sourceos-term",
     "assets/sourceos/bin/turtle-agentd",
     "assets/sourceos/bin/turtle-agentctl",
+    "assets/sourceos/bin/turtle-agent-status",
     "assets/sourceos/bin/turtle-tmux",
     "assets/sourceos/bin/turtle-cloudfog",
     "assets/sourceos/bin/turtle-superconscious",
@@ -88,10 +89,11 @@ REQUIRED_README_SNIPPETS = [
 
 REQUIRED_FORMULA_SNIPPETS = [
     "class TurtleTerm < Formula",
-    "desc \"TurtleTerm: SourceOS policy-aware agent terminal fabric\"",
+    "desc \"SourceOS policy-aware agent terminal fabric\"",
     "libexec/\"turtle-term\"",
     "turtleterm",
     "turtleterm.lua",
+    "turtle-agent-status",
     "turtle-cloudfog",
     "turtle-superconscious",
     "turtle-agent-machine",
