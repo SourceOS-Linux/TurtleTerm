@@ -8,7 +8,6 @@ class TurtleTerm < Formula
 
   depends_on "pkg-config" => :build
   depends_on "rust" => :build
-  depends_on "python@3.12"
 
   on_macos do
     depends_on "cmake" => :build
@@ -22,6 +21,7 @@ class TurtleTerm < Formula
     depends_on "libxcb"
     depends_on "libxkbcommon"
     depends_on "openssl@3"
+    depends_on "python@3.12"
     depends_on "wayland"
     depends_on "xcb-util"
     depends_on "xcb-util-image"
@@ -145,7 +145,9 @@ class TurtleTerm < Formula
     assert_match "TurtleTerm command wrapper", shell_output("#{bin}/turtle-term --help")
     assert_match "TurtleTerm local agent gateway", shell_output("#{bin}/turtle-agentd --help")
     assert_match "TurtleTerm agent gateway CLI", shell_output("#{bin}/turtle-agentctl --help")
-    assert_match "TurtleTerm agent reliability status", shell_output("#{bin}/turtle-agent-status --help") if (bin/"turtle-agent-status").exist?
+    if (bin/"turtle-agent-status").exist?
+      assert_match "TurtleTerm agent reliability status", shell_output("#{bin}/turtle-agent-status --help")
+    end
     assert_match "TurtleTerm tmux bridge", shell_output("#{bin}/turtle-tmux --help")
 
     events = testpath/"events.ndjson"
