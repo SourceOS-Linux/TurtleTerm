@@ -28,6 +28,7 @@ for script in \
   turtle-term \
   turtle-agentd \
   turtle-agentctl \
+  turtle-agent-status \
   turtle-tmux \
   turtle-cloudfog \
   turtle-superconscious \

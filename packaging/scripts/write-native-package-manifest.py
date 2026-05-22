@@ -46,19 +46,20 @@ def main() -> int:
             "turtle-term",
             "turtle-agentd",
             "turtle-agentctl",
+            "turtle-agent-status",
             "turtle-tmux",
             "turtle-cloudfog",
             "turtle-superconscious",
             "turtle-agent-machine",
             "turtle-language",
             "turtle-session",
-            "sourceos-term"
+            "sourceos-term",
         ],
         "private_runtime_path": "libexec/turtle-term",
         "profile": "/etc/turtle-term/turtleterm.lua",
         "desktop_id": "ai.sourceos.TurtleTerm.desktop",
         "appstream_id": "ai.sourceos.TurtleTerm",
-        "icon": "ai.sourceos.TurtleTerm.svg"
+        "icon": "ai.sourceos.TurtleTerm.svg",
     }
 
     out = Path(args.out)

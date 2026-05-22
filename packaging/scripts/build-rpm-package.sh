@@ -52,6 +52,7 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 /usr/bin/turtle-term
 /usr/bin/turtle-agentd
 /usr/bin/turtle-agentctl
+/usr/bin/turtle-agent-status
 /usr/bin/turtle-tmux
 /usr/bin/turtle-cloudfog
 /usr/bin/turtle-superconscious
@@ -67,9 +68,13 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 /usr/share/turtle-term/
 EOF
 
-rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec" >/dev/null
+rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec" >&2
 rpm="$(find "$rpmbuild_root/RPMS" -name 'turtle-term-*.rpm' -print -quit)"
-test -n "$rpm"
+if [ -z "$rpm" ]; then
+  echo "no turtle-term RPM built under $rpmbuild_root/RPMS" >&2
+  find "$rpmbuild_root" -maxdepth 4 -type f -print >&2
+  exit 1
+fi
 sha256sum "$rpm" > "$rpm.sha256"
 python3 "$repo_root/packaging/scripts/write-native-package-manifest.py" \
   --package "$rpm" \

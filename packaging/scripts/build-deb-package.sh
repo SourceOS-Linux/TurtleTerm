@@ -9,6 +9,7 @@ package_root="$out_dir/deb-root"
 prefix="$package_root/usr"
 etc_dir="$package_root/etc"
 debian_dir="$package_root/DEBIAN"
+deb_build="$out_dir/deb-build"
 deb="$out_dir/turtle-term_${version}_${arch}.deb"
 
 case "$arch" in
@@ -16,10 +17,12 @@ case "$arch" in
   *) echo "unsupported Debian architecture: $arch" >&2; exit 2 ;;
 esac
 
-command -v dpkg-deb >/dev/null 2>&1 || { echo "dpkg-deb is required" >&2; exit 1; }
+command -v ar >/dev/null 2>&1 || { echo "ar is required" >&2; exit 1; }
+command -v tar >/dev/null 2>&1 || { echo "tar is required" >&2; exit 1; }
+command -v gzip >/dev/null 2>&1 || { echo "gzip is required" >&2; exit 1; }
 
-rm -rf "$package_root" "$deb" "$deb.sha256" "$deb.manifest.json"
-mkdir -p "$debian_dir" "$out_dir"
+rm -rf "$package_root" "$deb_build" "$deb" "$deb.sha256" "$deb.manifest.json"
+mkdir -p "$debian_dir" "$out_dir" "$deb_build"
 
 TURTLE_TERM_STAGE_PREFIX="$prefix" \
 TURTLE_TERM_ETC_DIR="$etc_dir" \
@@ -66,7 +69,20 @@ find "$package_root" -type d -exec chmod 0755 {} +
 find "$package_root/usr/bin" -type f -exec chmod 0755 {} +
 find "$package_root/usr/libexec/turtle-term" -type f -exec chmod 0755 {} +
 
-dpkg-deb --build --root-owner-group "$package_root" "$deb" >/dev/null
+printf '2.0\n' > "$deb_build/debian-binary"
+(
+  cd "$debian_dir"
+  tar --owner=0 --group=0 --numeric-owner -czf "$deb_build/control.tar.gz" .
+)
+(
+  cd "$package_root"
+  tar --owner=0 --group=0 --numeric-owner --exclude='./DEBIAN' -czf "$deb_build/data.tar.gz" .
+)
+(
+  cd "$deb_build"
+  ar rcs "$deb" debian-binary control.tar.gz data.tar.gz
+)
+
 sha256sum "$deb" > "$deb.sha256"
 python3 "$repo_root/packaging/scripts/write-native-package-manifest.py" \
   --package "$deb" \

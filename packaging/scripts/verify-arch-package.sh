@@ -15,7 +15,8 @@ EOF
 done
 
 pkg="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_ARCH_ARCH="$(uname -m)" \
-  "$repo_root/packaging/scripts/build-arch-package.sh")"
+  "$repo_root/packaging/scripts/build-arch-package.sh" | tail -n 1)"
+contents="$tmp/arch-contents.txt"
 extract="$tmp/extract"
 
 test -f "$pkg"
@@ -32,22 +33,23 @@ assert manifest['kind'] == 'arch'
 assert manifest['version'] == '0.1.0'
 assert manifest['package'].endswith('.pkg.tar.zst')
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
-for command in ['turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
+for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
     assert command in manifest['public_commands'], command
 PY
 
-tar --zstd -tf "$pkg" | grep -q '^./.PKGINFO$'
-for command in turtleterm turtle-agentctl turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
-  tar --zstd -tf "$pkg" | grep -q "^./usr/bin/$command$"
+tar --zstd -tf "$pkg" > "$contents"
+grep -q '^./.PKGINFO$' "$contents"
+for command in turtleterm turtle-agentctl turtle-agent-status turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
+  grep -q "^./usr/bin/$command$" "$contents"
 done
 
-tar --zstd -tf "$pkg" | grep -q '^./etc/turtle-term/turtleterm.lua$'
-tar --zstd -tf "$pkg" | grep -q '^./usr/share/applications/ai.sourceos.TurtleTerm.desktop$'
-tar --zstd -tf "$pkg" | grep -q '^./usr/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml$'
-tar --zstd -tf "$pkg" | grep -q '^./usr/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg$'
-tar --zstd -tf "$pkg" | grep -q '^./usr/libexec/turtle-term/wezterm-gui$'
+grep -q '^./etc/turtle-term/turtleterm.lua$' "$contents"
+grep -q '^./usr/share/applications/ai.sourceos.TurtleTerm.desktop$' "$contents"
+grep -q '^./usr/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml$' "$contents"
+grep -q '^./usr/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg$' "$contents"
+grep -q '^./usr/libexec/turtle-term/wezterm-gui$' "$contents"
 
-if tar --zstd -tf "$pkg" | grep -q '^./usr/bin/wezterm-gui$'; then
+if grep -q '^./usr/bin/wezterm-gui$' "$contents"; then
   echo 'private runtime leaked onto product PATH in Arch package' >&2
   exit 1
 fi
@@ -67,6 +69,7 @@ fi
 probe="$tmp/probe.py"
 printf 'def hello():\n    return "world"\n' > "$probe"
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agentctl" --stdio surfaces >/dev/null
+PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-status" --json >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-cloudfog" surfaces >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-superconscious" observe arch-package >/dev/null
 PATH="$extract/usr/bin:$PATH" "$extract/usr/bin/turtle-agent-machine" surfaces >/dev/null

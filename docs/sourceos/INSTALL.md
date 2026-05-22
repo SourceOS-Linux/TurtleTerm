@@ -10,6 +10,14 @@ brew install --HEAD https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/
 
 This is the current easiest no-checkout install path for macOS and Linux.
 
+Then launch TurtleTerm:
+
+```bash
+turtleterm
+```
+
+The installed profile is `turtleterm.lua`.
+
 ## Public tap path
 
 After the public tap exists:
@@ -70,21 +78,17 @@ turtle-agentctl --stdio ping
 Homebrew profile path:
 
 ```bash
-ln -sf "$(brew --prefix)/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
+ln -sf "$(brew --prefix)/etc/turtle-term/turtleterm.lua" ~/.wezterm.lua
 ```
 
 Direct install profile path:
 
 ```bash
-ln -sf "$HOME/.local/etc/turtle-term/wezterm.lua" ~/.wezterm.lua
+ln -sf "$HOME/.local/etc/turtle-term/turtleterm.lua" ~/.wezterm.lua
 ```
 
-Then launch TurtleTerm:
+The file name `turtleterm.lua` is the product-facing TurtleTerm profile. It may internally derive from upstream terminal profile conventions, but operator docs should use the TurtleTerm product surface name.
 
-```bash
-turtleterm
-```
+## Windows
 
-## Windows status
-
-Windows packaging is postponed until macOS and Linux distribution are stable. Candidate lanes are Chocolatey, WinGet, and Scoop.
+Windows packaging is postponed until the Linux/macOS release path is stable.
