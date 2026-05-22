@@ -66,7 +66,7 @@ find "$package_root" -type d -exec chmod 0755 {} +
 find "$package_root/usr/bin" -type f -exec chmod 0755 {} +
 find "$package_root/usr/libexec/turtle-term" -type f -exec chmod 0755 {} +
 
-dpkg-deb --build --root-owner-group "$package_root" "$deb" >/dev/null
+dpkg-deb -Zgzip --build --root-owner-group "$package_root" "$deb" >/dev/null
 sha256sum "$deb" > "$deb.sha256"
 python3 "$repo_root/packaging/scripts/write-native-package-manifest.py" \
   --package "$deb" \
