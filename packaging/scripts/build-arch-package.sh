@@ -23,7 +23,7 @@ TURTLE_TERM_STAGE_PREFIX="$pkgroot/usr" \
 TURTLE_TERM_ETC_DIR="$pkgroot/etc" \
 TURTLE_TERM_RUNTIME_PREFIX="/usr" \
 TURTLE_TERM_RUNTIME_ETC_DIR="/etc" \
-  "$repo_root/packaging/scripts/stage-linux-package.sh" >/dev/null
+  bash "$repo_root/packaging/scripts/stage-linux-package.sh" >/dev/null
 
 cat > "$pkgroot/.PKGINFO" <<EOF
 pkgname = turtle-term
