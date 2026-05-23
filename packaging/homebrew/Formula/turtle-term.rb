@@ -146,7 +146,7 @@ class TurtleTerm < Formula
     assert_match "TurtleTerm local agent gateway", shell_output("#{bin}/turtle-agentd --help")
     assert_match "TurtleTerm agent gateway CLI", shell_output("#{bin}/turtle-agentctl --help")
     if (bin/"turtle-agent-status").exist?
-      assert_match "TurtleTerm agent reliability status", shell_output("#{bin}/turtle-agent-status --help")
+      assert_match "SourceOS agent reliability artifacts", shell_output("#{bin}/turtle-agent-status --help")
     end
     assert_match "TurtleTerm tmux bridge", shell_output("#{bin}/turtle-tmux --help")
 
