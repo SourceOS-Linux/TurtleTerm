@@ -29,6 +29,15 @@ from typing import Any, Iterable
 SESSION_SCHEMA = "sourceos.terminal.session.v0"
 EVENT_SCHEMA = "sourceos.terminal.event.v0"
 RECEIPT_SCHEMA = "sourceos.terminal.receipt.v0"
+OFFICE_OPERATOR_PLAN_SCHEMA = "sourceos.turtleterm.office.operator_plan.v0"
+OFFICE_EVIDENCE_SUMMARY_SCHEMA = "sourceos.turtleterm.office.evidence_summary.v0"
+
+OFFICE_RUNTIME_CONTRACT_SCHEMAS = {
+    "officeDocumentRecord": "https://socioprophet.dev/schemas/office/office_document_record.schema.json",
+    "officeSessionRecord": "https://socioprophet.dev/schemas/office/office_session_record.schema.json",
+    "officeVersionRecord": "https://socioprophet.dev/schemas/office/office_version_record.schema.json",
+    "officeWritebackRecord": "https://socioprophet.dev/schemas/office/office_writeback_record.schema.json",
+}
 
 
 def env(name: str, fallback: str = "") -> str:
@@ -355,8 +364,152 @@ def parse_run_command(raw: list[str]) -> list[str]:
     return raw
 
 
+def office_policy() -> dict[str, Any]:
+    return {
+        "dryRunDefault": True,
+        "mutatingExecutionRequires": ["--execute", "--policy-ok"],
+        "closedProviderRuntimeAuthorityAllowed": False,
+        "memoryOrSemanticMutationInHotPathAllowed": False,
+        "recommendedReceiptPath": "turtle-term run -- sourceosctl office ...",
+    }
+
+
+def sourceosctl_office_plan_argv(args: argparse.Namespace) -> list[str]:
+    if args.office_action == "evidence-inspect":
+        return ["sourceosctl", "office", "evidence", "inspect", args.path]
+
+    if args.office_action == "convert":
+        command = [
+            "sourceosctl",
+            "office",
+            "convert",
+            args.input,
+            "--to",
+            args.to,
+            "--dry-run",
+            "--workroom-id",
+            args.workroom_id,
+            "--title",
+            args.title,
+            "--artifact-type",
+            args.artifact_type,
+            "--format",
+            args.format,
+            "--output-root",
+            args.output_root,
+        ]
+    elif args.office_action == "inspect":
+        command = ["sourceosctl", "office", "inspect", args.path]
+    else:
+        command = [
+            "sourceosctl",
+            "office",
+            "generate",
+            "--dry-run",
+            "--workroom-id",
+            args.workroom_id,
+            "--title",
+            args.title,
+            "--artifact-type",
+            args.artifact_type,
+            "--format",
+            args.format,
+            "--output-root",
+            args.output_root,
+        ]
+        if args.template:
+            command.extend(["--template", args.template])
+        if args.prompt_ref:
+            command.extend(["--prompt-ref", args.prompt_ref])
+        if args.data_ref:
+            command.extend(["--data-ref", args.data_ref])
+
+    if getattr(args, "evidence_out", None):
+        command.extend(["--evidence-out", args.evidence_out])
+    return command
+
+
+def office_plan(args: argparse.Namespace) -> int:
+    command = sourceosctl_office_plan_argv(args)
+    payload = {
+        "schema": OFFICE_OPERATOR_PLAN_SCHEMA,
+        "kind": "TurtleTermOfficeOperatorPlan",
+        "created_at": utc_now(),
+        "workspace_id": env("SOURCEOS_WORKSPACE", "sourceos"),
+        "actor_id": env("SOURCEOS_ACTOR_ID", f"human:{env('USER', 'local-user')}"),
+        "frontend": env("SOURCEOS_TERMINAL_FRONTEND", product_name()),
+        "operation": args.office_action,
+        "command": shlex.join(command),
+        "command_argv": command,
+        "receipt_command": ["turtle-term", "run", "--", *command],
+        "runtime_contract_schemas": OFFICE_RUNTIME_CONTRACT_SCHEMAS,
+        "expected_runtime_contracts": [
+            "officeDocumentRecord",
+            "officeSessionRecord",
+            "officeVersionRecord",
+            "officeWritebackRecord",
+        ] if args.office_action in {"generate", "convert"} else [],
+        "policy": office_policy(),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def office_evidence_summary(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    if not path.exists() or not path.is_file():
+        print(f"{product_name()}: office evidence not found: {path}", file=sys.stderr)
+        return 1
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"{product_name()}: invalid office evidence JSON: {exc}", file=sys.stderr)
+        return 1
+
+    runtime_contracts = payload.get("officeRuntimeContracts", {}) if isinstance(payload, dict) else {}
+    version = runtime_contracts.get("officeVersionRecord", {}) if isinstance(runtime_contracts, dict) else {}
+    writeback = runtime_contracts.get("officeWritebackRecord", {}) if isinstance(runtime_contracts, dict) else {}
+    document = runtime_contracts.get("officeDocumentRecord", {}) if isinstance(runtime_contracts, dict) else {}
+
+    summary = {
+        "schema": OFFICE_EVIDENCE_SUMMARY_SCHEMA,
+        "kind": "TurtleTermOfficeEvidenceSummary",
+        "path": str(path),
+        "evidence_kind": payload.get("kind") if isinstance(payload, dict) else None,
+        "artifact_id": payload.get("artifactId") if isinstance(payload, dict) else None,
+        "workroom_id": payload.get("workroomId") if isinstance(payload, dict) else None,
+        "format": payload.get("format") if isinstance(payload, dict) else None,
+        "operation": payload.get("operation") if isinstance(payload, dict) else None,
+        "status": payload.get("status") if isinstance(payload, dict) else None,
+        "runtime_contract_kinds": sorted(runtime_contracts.keys()) if isinstance(runtime_contracts, dict) else [],
+        "office_document_id": document.get("document_id") if isinstance(document, dict) else None,
+        "office_version_id": version.get("version_id") if isinstance(version, dict) else None,
+        "office_writeback_id": writeback.get("writeback_id") if isinstance(writeback, dict) else None,
+        "content_hash": version.get("content_hash") if isinstance(version, dict) else None,
+        "policy": office_policy(),
+    }
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def add_office_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--workroom-id", default="workroom-local-default", help="Professional Workroom id")
+    parser.add_argument("--title", default="Untitled Office Artifact", help="Office artifact title")
+    parser.add_argument("--artifact-type", default="document", help="Office artifact type")
+    parser.add_argument("--format", default="md", help="Office artifact format")
+    parser.add_argument("--output-root", default="~/Documents/SourceOS/agent-output", help="Host Office output root")
+    parser.add_argument("--evidence-out", default=None, help="Optional OfficeArtifactEvidence output path")
+
+
+def normalize_argv(argv: list[str]) -> list[str]:
+    if argv and argv[0] == "/office":
+        return ["office", *argv[1:]]
+    return argv
+
+
 def main(argv: list[str]) -> int:
-    if argv and argv[0] not in {"run", "paths", "-h", "--help"}:
+    argv = normalize_argv(argv)
+    if argv and argv[0] not in {"run", "paths", "office", "-h", "--help"}:
         return run_command(parse_run_command(argv))
 
     parser = argparse.ArgumentParser(description="TurtleTerm command wrapper v0")
@@ -367,6 +520,26 @@ def main(argv: list[str]) -> int:
 
     subparsers.add_parser("paths", help="print event and receipt paths")
 
+    office_parser = subparsers.add_parser("office", help="plan and inspect SourceOS Office operator flows")
+    office_sub = office_parser.add_subparsers(dest="office_command")
+
+    office_plan_parser = office_sub.add_parser("plan", help="render a sourceosctl office operator plan")
+    office_plan_parser.add_argument("--office-action", default="generate", choices=["generate", "convert", "inspect", "evidence-inspect"], help="Office action to plan")
+    add_office_common(office_plan_parser)
+    office_plan_parser.add_argument("--template", default=None, help="Optional SourceOS office template reference")
+    office_plan_parser.add_argument("--prompt-ref", default=None, help="Optional prompt/context reference")
+    office_plan_parser.add_argument("--data-ref", default=None, help="Optional structured data reference")
+    office_plan_parser.add_argument("--input", default="./input.docx", help="Input path for convert action")
+    office_plan_parser.add_argument("--to", default="pdf", help="Target format for convert action")
+    office_plan_parser.add_argument("--path", default="./office-evidence.json", help="Path for inspect/evidence-inspect actions")
+    office_plan_parser.set_defaults(func=office_plan)
+
+    evidence_parser = office_sub.add_parser("evidence", help="inspect SourceOS Office evidence")
+    evidence_sub = evidence_parser.add_subparsers(dest="office_evidence_command")
+    evidence_inspect = evidence_sub.add_parser("inspect", help="summarize OfficeArtifactEvidence runtime contract ids")
+    evidence_inspect.add_argument("path", help="Path to OfficeArtifactEvidence JSON")
+    evidence_inspect.set_defaults(func=office_evidence_summary)
+
     args = parser.parse_args(argv)
 
     if args.command_name == "paths":
@@ -374,6 +547,9 @@ def main(argv: list[str]) -> int:
 
     if args.command_name == "run":
         return run_command(parse_run_command(args.cmd))
+
+    if args.command_name == "office" and hasattr(args, "func"):
+        return args.func(args)
 
     parser.print_help(sys.stderr)
     return 2
