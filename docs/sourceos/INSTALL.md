@@ -70,6 +70,7 @@ TURTLE_TERM_USE_BREW=never bash packaging/scripts/install-turtle-term.sh
 turtleterm --version || true
 turtle-term paths
 turtle-term run -- echo turtle-term-ok
+turtle-term office plan --title "Demo Report" --artifact-type document --format md
 turtle-agentctl --stdio ping
 ```
 
