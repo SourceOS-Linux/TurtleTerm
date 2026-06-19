@@ -45,20 +45,8 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            pkg-config \
-            python3 \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libssl-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxcb1-dev \
-            libxkbcommon-dev \
-            zlib1g-dev
+          sudo apt-get update -q
+          CI=yes ./get-deps
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'

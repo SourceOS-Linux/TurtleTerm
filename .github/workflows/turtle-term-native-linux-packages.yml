@@ -56,26 +56,10 @@ jobs:
 
       - name: Install Linux build and package dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            cpio \
-            desktop-file-utils \
-            dpkg-dev \
-            fontconfig \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libssl-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxcb1-dev \
-            libxkbcommon-dev \
-            pkg-config \
-            python3 \
-            rpm \
-            zlib1g-dev \
-            zstd
+          sudo apt-get update -q
+          CI=yes ./get-deps
+          sudo apt-get install -y --no-install-recommends \
+            cpio desktop-file-utils dpkg-dev rpm zstd
 
       - name: Build TurtleTerm runtime binaries
         run: |
