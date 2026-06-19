@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""TurtleTerm MCP server.
+
+Exposes TurtleTerm terminal/session tools to MCP-compatible clients (Claude
+Code, Cursor, VS Code, etc.) over stdio JSON-RPC 2.0.
+
+Tools exposed (all read-only or proposal-only — no ambient shell authority):
+  terminal_sessions     List known terminal sessions from the event stream.
+  terminal_inspect      Return recent events for a session.
+  terminal_summarize    Summarize a session's completed commands.
+  terminal_propose      Propose a command (records but does not execute).
+  terminal_receipts     List receipt file paths for a session.
+  language_diagnostics  Diagnostics for a file via SynapseIQ LSP or fallback.
+  language_symbols      Symbol list for a file via SynapseIQ LSP or fallback.
+  noetica_status        Check Noetica reachability.
+  noetica_query         Send a query to Noetica /api/chat.
+
+Wiring to Claude Code (add to ~/.claude/settings.json mcpServers):
+  {
+    "turtleterm": {
+      "type": "stdio",
+      "command": "/path/to/turtle-mcp-server"
+    }
+  }
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+AGENTD = Path(__file__).parent.parent / "bin" / "turtle-agentd"
+LANGUAGE = Path(__file__).parent.parent / "bin" / "turtle-language"
+
+
+def _agentd(request: dict[str, Any]) -> dict[str, Any]:
+    """Call turtle-agentd --stdio and return parsed response."""
+    result = subprocess.run(
+        [sys.executable, str(AGENTD), "--stdio"],
+        input=json.dumps(request),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        return {"status": "error", "message": result.stderr.strip() or "agentd error"}
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"status": "error", "message": "agentd returned non-JSON"}
+
+
+def _language(args: list[str]) -> dict[str, Any]:
+    """Call turtle-language and return parsed response."""
+    result = subprocess.run(
+        [sys.executable, str(LANGUAGE), *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
+    )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"status": "error", "message": result.stderr.strip() or "language CLI error"}
+
+
+# ---------------------------------------------------------------------------
+# Tool registry
+# ---------------------------------------------------------------------------
+
+TOOLS = [
+    {
+        "name": "terminal_sessions",
+        "description": "List known TurtleTerm terminal sessions from the local event stream.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "terminal_inspect",
+        "description": "Return recent events for a specific terminal session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Session ID to inspect. Omit for all recent events."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "terminal_summarize",
+        "description": "Summarize completed commands and failures for a terminal session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Session ID. Omit for current session."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "terminal_propose",
+        "description": "Propose a shell command for execution. Records the proposal but does NOT execute. Requires policy approval to run.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The shell command to propose."},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "terminal_receipts",
+        "description": "List terminal command receipt file paths for a session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Session ID. Omit for all receipts."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "language_diagnostics",
+        "description": "Get diagnostics (errors, warnings) for a source file. Routes to SynapseIQ LSP when available, falls back to built-in heuristics.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Absolute or relative path to the file."},
+            },
+            "required": ["file"],
+        },
+    },
+    {
+        "name": "language_symbols",
+        "description": "List symbols (functions, classes, etc.) in a source file. Routes to SynapseIQ LSP when available.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Absolute or relative path to the file."},
+            },
+            "required": ["file"],
+        },
+    },
+    {
+        "name": "noetica_status",
+        "description": "Check whether the Noetica cognition loop is reachable.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "noetica_query",
+        "description": "Send a natural-language query to Noetica /api/chat in sourceos mode. Returns Noetica's reasoning response.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The query or observation to send to Noetica."},
+                "session_id": {"type": "string", "description": "Optional terminal session ID for context."},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "policy_status",
+        "description": "Check Policy Fabric reachability and current evaluation mode (report_only or enforcing).",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "policy_evaluate",
+        "description": "Evaluate a proposed terminal command against Policy Fabric. Returns allow/deny/ask decision without executing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The command to evaluate."},
+                "execution_domain": {"type": "string", "description": "Execution domain: host, container, ssh, distrobox, etc."},
+            },
+            "required": ["command"],
+        },
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Tool dispatch
+# ---------------------------------------------------------------------------
+
+def call_tool(name: str, arguments: dict[str, Any]) -> Any:
+    if name == "terminal_sessions":
+        return _agentd({"action": "sessions"})
+    if name == "terminal_inspect":
+        return _agentd({"action": "inspect", "session_id": arguments.get("session_id")})
+    if name == "terminal_summarize":
+        return _agentd({"action": "summarize", "session_id": arguments.get("session_id")})
+    if name == "terminal_propose":
+        cmd = arguments.get("command", "")
+        if not cmd:
+            return {"error": "command is required"}
+        return _agentd({"action": "propose_command", "command": cmd})
+    if name == "terminal_receipts":
+        return _agentd({"action": "receipts", "session_id": arguments.get("session_id")})
+    if name == "language_diagnostics":
+        return _language(["diagnostics", arguments["file"]])
+    if name == "language_symbols":
+        return _language(["symbols", arguments["file"]])
+    if name == "noetica_status":
+        return _agentd({"action": "noetica_status"})
+    if name == "noetica_query":
+        return _agentd({
+            "action": "noetica_query",
+            "text": arguments.get("text", ""),
+            "session_id": arguments.get("session_id"),
+        })
+    if name == "policy_status":
+        return _agentd({"action": "policy_status"})
+    if name == "policy_evaluate":
+        return _agentd({
+            "action": "request_execution",
+            "command": arguments.get("command", ""),
+        })
+    return {"error": f"unknown tool: {name}"}
+
+
+# ---------------------------------------------------------------------------
+# JSON-RPC 2.0 over stdio
+# ---------------------------------------------------------------------------
+
+def send(obj: dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
+    method = msg.get("method", "")
+    msg_id = msg.get("id")
+
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "turtleterm", "version": "0.1.0"},
+            },
+        }
+
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
+
+    if method == "tools/call":
+        params = msg.get("params", {})
+        name = params.get("name", "")
+        arguments = params.get("arguments", {})
+        try:
+            result = call_tool(name, arguments)
+        except Exception as exc:  # noqa: BLE001
+            result = {"error": str(exc)}
+        content = [{"type": "text", "text": json.dumps(result, indent=2, sort_keys=True)}]
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": content}}
+
+    if method == "notifications/initialized":
+        return None  # no response for notifications
+
+    if msg_id is not None:
+        return {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }
+    return None
+
+
+def main() -> None:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+            continue
+        resp = handle(msg)
+        if resp is not None:
+            send(resp)
+
+
+if __name__ == "__main__":
+    main()

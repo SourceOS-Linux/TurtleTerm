@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """TurtleTerm language-intelligence CLI v0.
 
-This is a conservative scaffold: it emits read-only language context and patch
-proposal envelopes. It does not mutate files or run language servers directly.
+Routes language intelligence requests to SynapseIQ LSP
+(SOURCEOS_SYNAPSEIQ_URL, default http://localhost:2087) when available,
+falling back to built-in heuristics. Never mutates files.
+
+SynapseIQ owns Tree-sitter grammars and the language server implementation.
+TurtleTerm is the terminal surface that bridges to it.
 """
 
 from __future__ import annotations
@@ -15,9 +19,56 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 
 SCHEMA = "sourceos.turtle.language.response.v0"
+
+
+# ---------------------------------------------------------------------------
+# SynapseIQ LSP bridge
+# ---------------------------------------------------------------------------
+
+def synapseiq_url() -> str:
+    return os.environ.get("SOURCEOS_SYNAPSEIQ_URL", "http://localhost:2087")
+
+
+def _synapseiq_post(path: str, payload: dict[str, Any], timeout: int = 4) -> dict[str, Any] | None:
+    url = synapseiq_url().rstrip("/") + path
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urlrequest.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urlerror.URLError, OSError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def synapseiq_diagnostics(file: str, text: str, language: str) -> dict[str, Any] | None:
+    return _synapseiq_post("/lsp/diagnostics", {"file": file, "text": text, "language": language})
+
+
+def synapseiq_symbols(file: str, text: str, language: str) -> dict[str, Any] | None:
+    return _synapseiq_post("/lsp/symbols", {"file": file, "text": text, "language": language})
+
+
+def synapseiq_hover(file: str, text: str, language: str, line: int, character: int) -> dict[str, Any] | None:
+    return _synapseiq_post("/lsp/hover", {"file": file, "text": text, "language": language, "line": line, "character": character})
+
+
+def synapseiq_status() -> dict[str, Any] | None:
+    try:
+        req = urlrequest.Request(synapseiq_url().rstrip("/") + "/health", method="GET")
+        with urlrequest.urlopen(req, timeout=2) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urlerror.URLError, OSError, TimeoutError, json.JSONDecodeError):
+        return None
 
 
 def sha256_text(text: str) -> str:
@@ -79,20 +130,46 @@ def generic_symbols(path: Path, text: str) -> list[dict[str, Any]]:
 def diagnostics(path: Path) -> dict[str, Any]:
     text = read_file(path)
     lang = language_for(path)
+    sha = sha256_text(text)
+    base = {"file": str(path), "language": lang, "content_sha256": sha, "mutationAllowed": False}
+
+    # Prefer SynapseIQ LSP when available.
+    synapse = synapseiq_diagnostics(str(path), text, lang)
+    if synapse is not None:
+        base["source"] = "synapseiq-lsp"
+        base["synapseiq_url"] = synapseiq_url()
+        base["diagnostics"] = synapse.get("diagnostics", [])
+        return base
+
+    # Built-in fallback: Python AST parse only.
     items: list[dict[str, Any]] = []
     if lang == "python":
         try:
             ast.parse(text)
         except SyntaxError as exc:
             items.append({"severity": "error", "message": exc.msg, "line": exc.lineno, "column": exc.offset})
-    return {"file": str(path), "language": lang, "content_sha256": sha256_text(text), "diagnostics": items, "mutationAllowed": False}
+    base["source"] = "builtin-heuristic"
+    base["diagnostics"] = items
+    return base
 
 
 def symbols(path: Path) -> dict[str, Any]:
     text = read_file(path)
     lang = language_for(path)
+    sha = sha256_text(text)
+    base = {"file": str(path), "language": lang, "content_sha256": sha, "mutationAllowed": False}
+
+    synapse = synapseiq_symbols(str(path), text, lang)
+    if synapse is not None:
+        base["source"] = "synapseiq-lsp"
+        base["synapseiq_url"] = synapseiq_url()
+        base["symbols"] = synapse.get("symbols", [])
+        return base
+
     items = python_symbols(path, text) if lang == "python" else generic_symbols(path, text)
-    return {"file": str(path), "language": lang, "content_sha256": sha256_text(text), "symbols": items, "mutationAllowed": False}
+    base["source"] = "builtin-heuristic"
+    base["symbols"] = items
+    return base
 
 
 def explain_selection(path: Path, start: int, end: int) -> dict[str, Any]:
@@ -168,6 +245,13 @@ def main(argv: list[str]) -> int:
     index_p = sub.add_parser("index")
     index_p.add_argument("root", nargs="?", default=os.getcwd())
 
+    hover_p = sub.add_parser("hover", help="hover info at a position (routes to SynapseIQ LSP)")
+    hover_p.add_argument("file")
+    hover_p.add_argument("--line", type=int, required=True)
+    hover_p.add_argument("--character", type=int, default=0)
+
+    sub.add_parser("synapseiq-status", help="check SynapseIQ LSP reachability")
+
     args = parser.parse_args(argv)
     if args.command == "diagnostics":
         return print_json(response("diagnostics", diagnostics(Path(args.file))))
@@ -179,6 +263,27 @@ def main(argv: list[str]) -> int:
         return print_json(response("patch_proposal", propose_patch(Path(args.file), args.prompt)))
     if args.command == "index":
         return print_json(response("index", index_root(Path(args.root))))
+    if args.command == "hover":
+        path = Path(args.file)
+        text = read_file(path)
+        lang = language_for(path)
+        synapse = synapseiq_hover(str(path), text, lang, args.line, args.character)
+        data = {"file": str(path), "language": lang, "line": args.line, "character": args.character, "mutationAllowed": False}
+        if synapse is not None:
+            data["source"] = "synapseiq-lsp"
+            data["hover"] = synapse
+        else:
+            data["source"] = "unavailable"
+            data["hover"] = None
+            data["note"] = f"SynapseIQ LSP not reachable at {synapseiq_url()}"
+        return print_json(response("hover", data))
+    if args.command == "synapseiq-status":
+        status = synapseiq_status()
+        return print_json(response("synapseiq_status", {
+            "url": synapseiq_url(),
+            "reachable": status is not None,
+            "status": status,
+        }))
     parser.print_help(sys.stderr)
     return 2
 

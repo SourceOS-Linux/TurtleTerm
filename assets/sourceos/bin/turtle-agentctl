@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""TurtleTerm agent gateway CLI v0."""
+"""TurtleTerm agent gateway CLI v0.
+
+New verbs (Track A + B):
+  ingest-event <json>   Feed a raw terminal event (shell hooks use this)
+  noetica-status        Check Noetica reachability and version
+  noetica-query <text>  Send a free-text query to Noetica /api/chat
+"""
 
 from __future__ import annotations
 
@@ -128,6 +134,18 @@ def main(argv: list[str]) -> int:
     cloudfog_inspect_p = sub.add_parser("cloudfog-inspect")
     cloudfog_inspect_p.add_argument("surface_id", nargs="?", default="cloudfog/local-devshell")
 
+    # Track A: shell event ingestion
+    ingest_p = sub.add_parser("ingest-event", help="feed a raw terminal event JSON to agentd")
+    ingest_p.add_argument("event_json", help="JSON string or '-' to read from stdin")
+
+    # Track B: Noetica wire
+    sub.add_parser("noetica-status", help="check Noetica reachability")
+    noetica_query_p = sub.add_parser("noetica-query", help="send a query to Noetica /api/chat")
+    noetica_query_p.add_argument("text", nargs=argparse.REMAINDER)
+
+    # Track D: Policy Fabric
+    sub.add_parser("policy-status", help="check Policy Fabric reachability and mode")
+
     args = parser.parse_args(argv)
 
     if args.command == "ping":
@@ -164,6 +182,21 @@ def main(argv: list[str]) -> int:
         request = {"action": "cloudfog_surfaces"}
     elif args.command == "cloudfog-inspect":
         request = {"action": "cloudfog_inspect", "surface_id": args.surface_id}
+    elif args.command == "ingest-event":
+        import sys as _sys
+        raw = _sys.stdin.read() if args.event_json == "-" else args.event_json
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(json.dumps({"status": "error", "message": str(exc)}))
+            return 2
+        request = {"action": "ingest_event", "event": event}
+    elif args.command == "noetica-status":
+        request = {"action": "noetica_status"}
+    elif args.command == "noetica-query":
+        request = {"action": "noetica_query", "text": join_remainder(args.text)}
+    elif args.command == "policy-status":
+        request = {"action": "policy_status"}
     else:
         parser.print_help(sys.stderr)
         return 2

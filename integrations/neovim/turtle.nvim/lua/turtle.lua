@@ -187,11 +187,48 @@ function M.cloudfog_inspect(surface_id)
 end
 
 function M.superconscious_observe(text)
-  run_agentctl('TurtleTerm Superconscious observe', 'superconscious-observe', text)
+  -- Include current file and cursor position as buffer context.
+  local file = vim.api.nvim_buf_get_name(0)
+  local line = vim.fn.line('.')
+  local col = vim.fn.col('.')
+  local ctx = ''
+  if file ~= nil and file ~= '' then
+    ctx = ' [file:' .. file .. ' line:' .. tostring(line) .. ' col:' .. tostring(col) .. ']'
+  end
+  local observation = (text ~= nil and text ~= '') and (text .. ctx) or ('buffer-context' .. ctx)
+  run_agentctl('TurtleTerm Superconscious observe', 'superconscious-observe', observation)
 end
 
 function M.superconscious_propose(prompt)
   run_agentctl('TurtleTerm Superconscious propose', 'superconscious-propose', prompt)
+end
+
+function M.noetica_status()
+  run_agentctl('TurtleTerm Noetica status', 'noetica-status')
+end
+
+function M.noetica_query(text)
+  if text == nil or text == '' then
+    vim.notify('TurtleNoeticaQuery requires a query', vim.log.levels.ERROR)
+    return
+  end
+  run_agentctl('TurtleTerm Noetica query', 'noetica-query', text)
+end
+
+function M.policy_status()
+  run_agentctl('TurtleTerm Policy status', 'policy-status')
+end
+
+function M.hover(file, line, character)
+  file = current_file_or(file)
+  if not file then return end
+  line = line or vim.fn.line('.')
+  character = character or vim.fn.col('.')
+  run_language('TurtleTerm hover', 'hover', file, '--line', tostring(line), '--character', tostring(character))
+end
+
+function M.synapseiq_status()
+  run_language('TurtleTerm SynapseIQ status', 'synapseiq-status')
 end
 
 function M.agent_machine_surfaces()

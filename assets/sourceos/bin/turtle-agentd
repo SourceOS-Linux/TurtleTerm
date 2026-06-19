@@ -1,26 +1,52 @@
 #!/usr/bin/env python3
 """TurtleTerm local agent gateway v0.
 
-Conservative local JSON gateway for TurtleTerm. It supports local requests over
-stdin/stdout or a Unix socket, exposes read/inspect/propose flows, and records
-policy-required execution requests without executing commands.
+Conservative local JSON gateway for TurtleTerm. Supports:
+- stdio (one request / one response)
+- Unix socket daemon mode
+- Shell-hook event ingestion + receipt writing
+- Git enrichment and execution domain detection
+- Secret redaction in receipts
+- Noetica cognition loop wire (POST /api/chat)
+- Policy Fabric evaluation (POST /v1/operations/action-decision)
+- SynapseIQ LSP status check
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
+import re
 import socket
+import subprocess
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 
 SCHEMA = "sourceos.turtle.agentd.response.v0"
 
+# Patterns that should never appear in receipts or logs.
+_SECRET_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"(sk-ant-[A-Za-z0-9\-_]{20,})", re.IGNORECASE),
+    re.compile(r"(sk-[A-Za-z0-9]{20,})", re.IGNORECASE),
+    re.compile(r"(ghp_[A-Za-z0-9]{36,})", re.IGNORECASE),
+    re.compile(r"(ghs_[A-Za-z0-9]{36,})", re.IGNORECASE),
+    re.compile(r"(AKIA[0-9A-Z]{16})", re.IGNORECASE),
+    re.compile(r"(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?-----END[^-]*-----)", re.DOTALL),
+    re.compile(r'(?:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*(["\']?)([^\s"\']{8,})\1', re.IGNORECASE),
+]
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -51,7 +77,7 @@ def read_ndjson(path: Path, limit: int = 100) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]:
         if not line.strip():
             continue
         try:
@@ -60,6 +86,238 @@ def read_ndjson(path: Path, limit: int = 100) -> list[dict[str, Any]]:
             continue
     return rows
 
+
+def redact_secrets(text: str) -> str:
+    """Replace known secret patterns with [REDACTED]."""
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text
+
+
+def compute_sha256(data: str | bytes) -> str:
+    if isinstance(data, str):
+        data = data.encode("utf-8", errors="replace")
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def git_info(cwd: str | None = None) -> dict[str, str | None]:
+    """Return {repo_root, git_branch} for cwd, or nulls if not a git repo."""
+    kwargs: dict[str, Any] = {
+        "text": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.DEVNULL,
+        "timeout": 3,
+    }
+    if cwd:
+        kwargs["cwd"] = cwd
+    try:
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            check=False,
+            **kwargs,
+        ).stdout.strip() or None
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            check=False,
+            **kwargs,
+        ).stdout.strip() or None
+        return {"repo_root": root, "git_branch": branch}
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {"repo_root": None, "git_branch": None}
+
+
+def detect_execution_domain() -> str:
+    """Infer execution domain from environment and filesystem markers."""
+    explicit = os.environ.get("SOURCEOS_EXECUTION_DOMAIN")
+    if explicit:
+        return explicit
+    if os.environ.get("DISTROBOX_HOST_HOME"):
+        return "distrobox"
+    if os.environ.get("TOOLBOX_PATH"):
+        return "toolbox"
+    if os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"):
+        return "ssh"
+    if Path("/.dockerenv").exists():
+        return "container"
+    if os.environ.get("CONTAINER_ID") or os.environ.get("container"):
+        return "container"
+    if Path("/run/secrets/kubernetes.io").exists():
+        return "container"
+    return "host"
+
+
+# ---------------------------------------------------------------------------
+# Event stream + receipt writers
+# ---------------------------------------------------------------------------
+
+def append_event(event: dict[str, Any]) -> None:
+    """Append a single event to the NDJSON event stream."""
+    path = event_stream_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def write_receipt(event: dict[str, Any]) -> str:
+    """Write a command receipt JSON file. Returns the receipt path."""
+    session_id = event.get("session_id", "unknown")
+    event_id = event.get("event_id", f"evt_{uuid.uuid4().hex}")
+    root = receipts_root() / session_id
+    root.mkdir(parents=True, exist_ok=True)
+    receipt_path = root / f"{event_id}.json"
+
+    receipt = {
+        "schema": "sourceos.terminal.receipt.v0",
+        "receipt_id": f"receipt_{uuid.uuid4().hex}",
+        "session_id": session_id,
+        "workspace_id": event.get("workspace_id", env("SOURCEOS_WORKSPACE", "default")),
+        "event_id": event_id,
+        "actor_id": event.get("actor_id", "human:local-user"),
+        "requested_by": event.get("actor_id", "human:local-user"),
+        "approved_by": "policy:auto-local",
+        "policy_bundle_id": event.get("policy_bundle_id", "unbound"),
+        "execution_domain": event.get("execution_domain", detect_execution_domain()),
+        "cwd": event.get("cwd", os.getcwd()),
+        "repo_root": event.get("repo_root"),
+        "git_branch": event.get("git_branch"),
+        "host": event.get("host", os.uname().nodename),
+        "user": event.get("user", os.environ.get("USER", "unknown")),
+        "container_id": event.get("container_id"),
+        "command": redact_secrets(event.get("command", "")),
+        "command_argv": event.get("command_argv"),
+        "exit_status": event.get("exit_status"),
+        "started_at": event.get("started_at"),
+        "completed_at": event.get("completed_at"),
+        "stdout_digest": event.get("stdout_digest", "sha256:uncaptured"),
+        "stderr_digest": event.get("stderr_digest", "sha256:uncaptured"),
+        "policy_decision_id": event.get("policy_decision_id"),
+        "artifacts": event.get("artifact_paths", []),
+        "replay": {
+            "kind": "terminal-event-pointer",
+            "uri": f"sourceos-terminal://{session_id}/events/{event_id}",
+        },
+    }
+
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
+    return str(receipt_path)
+
+
+# ---------------------------------------------------------------------------
+# Noetica wire
+# ---------------------------------------------------------------------------
+
+def noetica_url() -> str:
+    return env("SOURCEOS_NOETICA_URL", "http://localhost:8080")
+
+
+def _noetica_request(method: str, path: str, payload: dict[str, Any] | None = None, timeout: int = 3) -> dict[str, Any] | None:
+    url = noetica_url().rstrip("/") + path
+    try:
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        req = urlrequest.Request(
+            url,
+            data=body,
+            method=method,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return {"raw": raw[:500]}
+    except (urlerror.URLError, OSError, TimeoutError):
+        return None
+
+
+def noetica_post(path: str, payload: dict[str, Any], timeout: int = 3) -> dict[str, Any] | None:
+    return _noetica_request("POST", path, payload, timeout=timeout)
+
+
+def noetica_get(path: str, timeout: int = 3) -> dict[str, Any] | None:
+    return _noetica_request("GET", path, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Policy Fabric wire (Track D)
+# ---------------------------------------------------------------------------
+
+def policy_fabric_url() -> str:
+    return env("SOURCEOS_POLICY_FABRIC_URL", "http://localhost:8081")
+
+
+def policy_evaluate(
+    action_type: str,
+    command: str,
+    execution_domain: str = "host",
+    actor_id: str = "human:local-user",
+    risk_level: str | None = None,
+) -> dict[str, Any] | None:
+    """POST an execution request to Policy Fabric. Returns decision or None if unreachable."""
+    if risk_level is None:
+        # host is high-risk, isolated domains are lower
+        risk_level = "high" if execution_domain == "host" else "medium"
+
+    recommendation = {
+        "recommendation_id": f"urn:srcos:turtle:rec:{uuid.uuid4().hex}",
+        "action": {"type": action_type, "command": command},
+        "risk_level": risk_level,
+        "requested_outcome": "allow",
+        "subject": {"actor_id": actor_id, "execution_domain": execution_domain},
+        "policy_refs": ["policy://sourceos/terminal/v1"],
+        "requires_change_window": False,
+    }
+    result = _noetica_request(
+        "POST",
+        "/v1/operations/action-decision",
+        {"recommendation": recommendation, "mode": env("TURTLE_POLICY_MODE", "report_only")},
+        timeout=4,
+    )
+    # If policy fabric isn't on the Noetica URL, try the dedicated policy URL.
+    if result is None:
+        try:
+            url = policy_fabric_url().rstrip("/") + "/v1/operations/action-decision"
+            body = json.dumps({"recommendation": recommendation, "mode": env("TURTLE_POLICY_MODE", "report_only")}).encode()
+            req = urlrequest.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json", "Accept": "application/json"})
+            with urlrequest.urlopen(req, timeout=4) as resp:
+                result = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except (urlerror.URLError, OSError, TimeoutError, json.JSONDecodeError):
+            return None
+    return result
+
+
+def _policy_outcome_to_decision(pf_result: dict[str, Any] | None, action: str, command: str) -> tuple[str, str, str | None]:
+    """Map a Policy Fabric result to (decision, reason, decision_id)."""
+    if pf_result is None:
+        return "ask", "Policy Fabric unreachable; defaulting to manual review.", None
+    outcome = pf_result.get("decision", {}).get("outcome", "manual_review")
+    reason = pf_result.get("decision", {}).get("reason", "no reason provided")
+    decision_id = pf_result.get("decision_id")
+    if outcome == "allow":
+        return "allow", reason, decision_id
+    if outcome == "deny":
+        return "deny", reason, decision_id
+    return "ask", reason, decision_id
+
+
+def noetica_chat(text: str, session_id: str | None = None, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """POST a message to Noetica /api/chat in sourceos mode."""
+    payload: dict[str, Any] = {
+        "mode": "sourceos",
+        "session_id": session_id or env("SOURCEOS_TERMINAL_SESSION_ID") or str(uuid.uuid4()),
+        "messages": [{"role": "user", "content": text}],
+    }
+    if context:
+        # Embed terminal context as a system note in the message
+        ctx_text = json.dumps(context, sort_keys=True)
+        payload["system_prompt"] = f"Terminal context: {ctx_text}"
+    return noetica_post("/api/chat", payload, timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# Shared response / decision helpers
+# ---------------------------------------------------------------------------
 
 def decision_stub(action: str, reason: str, decision: str = "ask") -> dict[str, Any]:
     return {
@@ -82,6 +340,10 @@ def response(kind: str, data: dict[str, Any] | list[Any] | None = None, *, statu
         "data": data if data is not None else {},
     }
 
+
+# ---------------------------------------------------------------------------
+# Surfaces
+# ---------------------------------------------------------------------------
 
 def default_surfaces() -> list[dict[str, Any]]:
     workspace = env("SOURCEOS_WORKSPACE", "default")
@@ -157,11 +419,24 @@ def surface_by_id(surface_id: str | None) -> dict[str, Any] | None:
     return None
 
 
-def handle_request(request: dict[str, Any]) -> dict[str, Any]:
+# ---------------------------------------------------------------------------
+# Request handler
+# ---------------------------------------------------------------------------
+
+def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
     action = request.get("action")
 
+    # ------------------------------------------------------------------
+    # Core
+    # ------------------------------------------------------------------
     if action == "ping":
-        return response("pong", {"service": "turtle-agentd", "version": "0.1.0"})
+        noetica_reachable = noetica_get("/api/status", timeout=1) is not None
+        return response("pong", {
+            "service": "turtle-agentd",
+            "version": "0.1.0",
+            "noetica_url": noetica_url(),
+            "noetica_reachable": noetica_reachable,
+        })
 
     if action == "sessions":
         events = read_ndjson(event_stream_path(), limit=500)
@@ -175,6 +450,8 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
                 "workspace_id": event.get("workspace_id"),
                 "frontend": event.get("frontend"),
                 "execution_domain": event.get("execution_domain"),
+                "git_branch": event.get("git_branch"),
+                "repo_root": event.get("repo_root"),
                 "last_event_type": event.get("event_type", event.get("schema")),
             })
         return response("sessions", {"sessions": list(sessions.values()), "event_stream": str(event_stream_path())})
@@ -197,11 +474,26 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             return response("error", {"message": f"unknown surface: {surface_id}"}, status="error")
         if not command:
             return response("error", {"message": "command is required"}, status="error")
+        actor_id = request.get("actor_id", "human:local-user")
+        domain = surface.get("execution_domain", "host")
+        pf_result = policy_evaluate("surface.execute_command", command, domain, actor_id)
+        pf_decision, pf_reason, pf_decision_id = _policy_outcome_to_decision(pf_result, "surface.execute_command", command)
         return response("surface_execution_request", {
             "surface": surface,
             "command": command,
-            "executionAllowed": False,
-            "decision": decision_stub("surface.execute_command", "Surface execution requires Policy Fabric approval; turtle-agentd v0 does not execute commands."),
+            "executionAllowed": pf_decision == "allow",
+            "policy_decision": pf_decision,
+            "policy_decision_id": pf_decision_id,
+            "decision": {
+                "id": f"urn:srcos:exec-decision:{uuid.uuid4().hex}",
+                "type": "ExecutionDecision",
+                "specVersion": "2.0.0",
+                "decision": pf_decision,
+                "reason": pf_reason,
+                "issuedAt": utc_now(),
+                "action": "surface.execute_command",
+                "policyDecisionId": pf_decision_id,
+            },
         })
 
     if action == "inspect":
@@ -221,6 +513,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             "failed_commands": len(failures),
             "last_command": completed[-1].get("command") if completed else None,
             "last_exit_status": completed[-1].get("exit_status") if completed else None,
+            "last_git_branch": completed[-1].get("git_branch") if completed else None,
         }
         return response("summary", summary)
 
@@ -238,27 +531,159 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
         command = request.get("command")
         if not command:
             return response("error", {"message": "command is required"}, status="error")
+        domain = detect_execution_domain()
+        actor_id = request.get("actor_id", "human:local-user")
+        pf_result = policy_evaluate("terminal.execute_command", command, domain, actor_id)
+        pf_decision, pf_reason, pf_decision_id = _policy_outcome_to_decision(pf_result, "terminal.execute_command", command)
+        execution_allowed = pf_decision == "allow"
         return response("execution_request", {
             "command": command,
-            "executionAllowed": False,
-            "decision": decision_stub("terminal.execute_command", "Execution requires Policy Fabric approval; turtle-agentd v0 does not execute commands."),
+            "executionAllowed": execution_allowed,
+            "policy_decision": pf_decision,
+            "policy_decision_id": pf_decision_id,
+            "policy_result": pf_result,
+            "decision": {
+                "id": f"urn:srcos:exec-decision:{uuid.uuid4().hex}",
+                "type": "ExecutionDecision",
+                "specVersion": "2.0.0",
+                "decision": pf_decision,
+                "reason": pf_reason,
+                "issuedAt": utc_now(),
+                "action": "terminal.execute_command",
+                "policyDecisionId": pf_decision_id,
+            },
+        })
+
+    if action == "policy_status":
+        pf_result = None
+        reachable = False
+        try:
+            url = policy_fabric_url().rstrip("/") + "/healthz"
+            req = urlrequest.Request(url, method="GET")
+            with urlrequest.urlopen(req, timeout=3) as resp:
+                pf_result = json.loads(resp.read().decode("utf-8", errors="replace"))
+                reachable = True
+        except (urlerror.URLError, OSError, TimeoutError, json.JSONDecodeError):
+            pass
+        return response("policy_status", {
+            "url": policy_fabric_url(),
+            "reachable": reachable,
+            "mode": env("TURTLE_POLICY_MODE", "report_only"),
+            "status": pf_result,
+        })
+
+    # ------------------------------------------------------------------
+    # Track A: shell event ingestion + receipt writing
+    # ------------------------------------------------------------------
+    if action == "ingest_event":
+        event = request.get("event", {})
+        if not event:
+            return response("error", {"message": "event is required"}, status="error")
+
+        # Ensure event has required fields.
+        now = utc_now()
+        event.setdefault("event_id", f"evt_{uuid.uuid4().hex}")
+        event.setdefault("schema", "sourceos.terminal.event.v0")
+        event.setdefault("session_id", env("SOURCEOS_TERMINAL_SESSION_ID", f"term-{uuid.uuid4().hex}"))
+        event.setdefault("workspace_id", env("SOURCEOS_WORKSPACE", "default"))
+        event.setdefault("actor_id", "human:local-user")
+        event.setdefault("frontend", env("SOURCEOS_TERMINAL_FRONTEND", "turtle-term"))
+        event.setdefault("host", os.uname().nodename)
+        event.setdefault("user", os.environ.get("USER", "unknown"))
+        event.setdefault("capturedAt", now)
+
+        # Enrich: execution domain.
+        if not event.get("execution_domain"):
+            event["execution_domain"] = detect_execution_domain()
+
+        # Enrich: git metadata.
+        if not event.get("repo_root"):
+            git = git_info(event.get("cwd"))
+            event.setdefault("repo_root", git["repo_root"])
+            event.setdefault("git_branch", git["git_branch"])
+
+        # Redact secrets from command string before persisting.
+        if event.get("command"):
+            event["command"] = redact_secrets(event["command"])
+
+        receipt_path: str | None = None
+        append_event(event)
+
+        # Write receipt for completed commands.
+        if event.get("event_type") == "command.completed":
+            receipt_path = write_receipt(event)
+
+        return response("event_ingested", {
+            "event_id": event["event_id"],
+            "session_id": event["session_id"],
+            "event_type": event.get("event_type"),
+            "receipt_path": receipt_path,
+        })
+
+    # ------------------------------------------------------------------
+    # Track B: Noetica cognition wire
+    # ------------------------------------------------------------------
+    if action == "noetica_status":
+        noetica_resp = noetica_get("/api/status", timeout=3)
+        reachable = noetica_resp is not None
+        return response("noetica_status", {
+            "url": noetica_url(),
+            "reachable": reachable,
+            "status": noetica_resp,
+        })
+
+    if action == "noetica_query":
+        text = request.get("text", "")
+        if not text:
+            return response("error", {"message": "text is required"}, status="error")
+        session_id = request.get("session_id") or env("SOURCEOS_TERMINAL_SESSION_ID")
+        context = request.get("context")
+        noetica_resp = noetica_chat(text, session_id=session_id, context=context)
+        return response("noetica_query_result", {
+            "text": text,
+            "noetica_response": noetica_resp,
+            "reachable": noetica_resp is not None,
         })
 
     if action == "superconscious_observe":
+        observation = request.get("observation", {})
+        trace_ref = f"urn:srcos:turtle:superconscious-observation:{uuid.uuid4().hex}"
+
+        # Wire to Noetica: translate observation into a chat message.
+        obs_text = observation.get("text") or json.dumps(observation, sort_keys=True)
+        noetica_resp = noetica_chat(
+            f"[terminal-observation] {obs_text}",
+            session_id=env("SOURCEOS_TERMINAL_SESSION_ID"),
+            context={"source": "turtleterm", "type": "observation"},
+        )
+
         return response("superconscious_observation", {
             "status": "recorded",
-            "observation": request.get("observation", {}),
-            "traceRef": f"urn:srcos:turtle:superconscious-observation:{uuid.uuid4().hex}",
+            "observation": observation,
+            "traceRef": trace_ref,
+            "noetica_response": noetica_resp,
             "decision": decision_stub("superconscious.observe", "Observation handoff is review-only; no shell authority granted.", "allow"),
         })
 
     if action == "superconscious_propose":
+        prompt = request.get("prompt", "")
+
+        noetica_resp = noetica_chat(
+            f"[terminal-proposal-request] {prompt}",
+            session_id=env("SOURCEOS_TERMINAL_SESSION_ID"),
+            context={"source": "turtleterm", "type": "proposal_request"},
+        )
+
         return response("superconscious_proposal", {
-            "status": "deferred",
-            "prompt": request.get("prompt", ""),
-            "decision": decision_stub("superconscious.propose", "Superconscious proposal requires cognition loop adapter; execution remains gated.", "defer"),
+            "status": "proposed" if noetica_resp else "deferred",
+            "prompt": prompt,
+            "noetica_response": noetica_resp,
+            "decision": decision_stub("superconscious.propose", "Superconscious proposal routed to Noetica cognition loop.", "defer"),
         })
 
+    # ------------------------------------------------------------------
+    # Agent Machine
+    # ------------------------------------------------------------------
     if action == "agent_machine_surfaces":
         return response("agent_machine_surfaces", {"surfaces": [s for s in default_surfaces() if s["provider"] == "agent-machine"]})
 
@@ -268,6 +693,9 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             "decision": decision_stub("agent-machine.probe", "Agent Machine probe adapter is specified but not implemented in turtle-agentd v0.", "defer"),
         })
 
+    # ------------------------------------------------------------------
+    # CloudFog
+    # ------------------------------------------------------------------
     if action == "cloudfog_surfaces":
         return response("cloudfog_surfaces", {"surfaces": [s for s in default_surfaces() if s["provider"] == "cloudfog-shell"]})
 
@@ -278,14 +706,17 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             return response("error", {"message": f"unknown cloudfog surface: {surface_id}"}, status="error")
         return response("cloudfog_surface_inspection", {"surface": surface, "decision": decision_stub("cloudfog.inspect", "CloudFog surface inspection is review-only.", "allow")})
 
+    # ------------------------------------------------------------------
+    # Receipts + AgentPlane
+    # ------------------------------------------------------------------
     if action == "receipts":
         session_id = request.get("session_id")
         root = receipts_root()
-        paths = []
+        paths: list[str] = []
         if session_id:
-            paths = sorted(str(path) for path in (root / session_id).glob("*.json")) if (root / session_id).exists() else []
+            paths = sorted(str(p) for p in (root / session_id).glob("*.json")) if (root / session_id).exists() else []
         else:
-            paths = sorted(str(path) for path in root.glob("*/*.json")) if root.exists() else []
+            paths = sorted(str(p) for p in root.glob("*/*.json")) if root.exists() else []
         return response("receipts", {"session_id": session_id, "receipts": paths[-100:]})
 
     if action == "promote_agentplane_bundle":
@@ -296,6 +727,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
 
     return response("error", {"message": f"unknown action: {action}"}, status="error")
 
+
+# ---------------------------------------------------------------------------
+# Server modes
+# ---------------------------------------------------------------------------
 
 def serve_stdio() -> int:
     try:
@@ -319,10 +754,10 @@ def serve_socket(path: Path) -> int:
         while True:
             conn, _ = server.accept()
             with conn:
-                raw = conn.recv(1024 * 1024)
+                raw = conn.recv(4 * 1024 * 1024)
                 try:
-                    request = json.loads(raw.decode("utf-8"))
-                    result = handle_request(request)
+                    req = json.loads(raw.decode("utf-8"))
+                    result = handle_request(req)
                 except Exception as exc:  # noqa: BLE001
                     result = response("error", {"message": str(exc)}, status="error")
                 conn.sendall((json.dumps(result, sort_keys=True) + "\n").encode("utf-8"))

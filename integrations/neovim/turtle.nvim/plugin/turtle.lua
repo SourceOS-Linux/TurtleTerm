@@ -112,3 +112,26 @@ end, { nargs = '+' })
 vim.api.nvim_create_user_command('TurtleReceipts', function(opts)
   turtle.receipts(opts.args)
 end, { nargs = '?' })
+
+-- Track B: Noetica
+vim.api.nvim_create_user_command('TurtleNoeticaStatus', function()
+  turtle.noetica_status()
+end, {})
+
+vim.api.nvim_create_user_command('TurtleNoeticaQuery', function(opts)
+  turtle.noetica_query(opts.args)
+end, { nargs = '+' })
+
+-- Track D: Policy
+vim.api.nvim_create_user_command('TurtlePolicyStatus', function()
+  turtle.policy_status()
+end, {})
+
+-- Track E: SynapseIQ hover + status
+vim.api.nvim_create_user_command('TurtleHover', function()
+  turtle.hover()
+end, {})
+
+vim.api.nvim_create_user_command('TurtleSynapseIQStatus', function()
+  turtle.synapseiq_status()
+end, {})
