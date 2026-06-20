@@ -349,10 +349,61 @@ def noetica_chat(text: str, session_id: str | None = None, context: dict[str, An
         "messages": [{"role": "user", "content": text}],
     }
     if context:
-        # Embed terminal context as a system note in the message
         ctx_text = json.dumps(context, sort_keys=True)
         payload["system_prompt"] = f"Terminal context: {ctx_text}"
     return noetica_post("/api/chat", payload, timeout=5)
+
+
+def _claude_chat(text: str, system: str | None = None, model: str | None = None, timeout: int = 15) -> dict[str, Any] | None:
+    """Call Anthropic Messages API directly. Returns None if ANTHROPIC_API_KEY is unset or call fails."""
+    api_key = env("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    base = env("ANTHROPIC_API_URL", "https://api.anthropic.com")
+    model = model or env("TURTLE_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    payload: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": text}],
+    }
+    if system:
+        payload["system"] = system
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urlrequest.Request(
+            base.rstrip("/") + "/v1/messages",
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                data = json.loads(raw)
+                blocks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
+                return {"response": "\n".join(blocks), "model": data.get("model"), "source": "claude"}
+            except json.JSONDecodeError:
+                return {"raw": raw[:500], "source": "claude"}
+    except (urlerror.URLError, OSError, TimeoutError):
+        return None
+
+
+def smart_chat(
+    text: str,
+    system: str | None = None,
+    session_id: str | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Claude API when ANTHROPIC_API_KEY is set, else Noetica, else None."""
+    result = _claude_chat(text, system=system)
+    if result is not None:
+        return result
+    return noetica_chat(text, session_id=session_id, context=context)
 
 
 # ---------------------------------------------------------------------------
@@ -787,26 +838,35 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         context = request.get("context") or {}
         cwd = context.get("cwd") or os.getcwd()
         git = git_info(cwd)
-        prompt = (
+        system_prompt = (
             "You are a terminal intelligence assistant. Explain what the following terminal output "
             "or selected text means, in 2-4 concise sentences. Identify errors, key data, or "
-            "actionable next steps if relevant.\n\nSelected text:\n```\n" + text + "\n```"
+            "actionable next steps if relevant. Be direct and technical."
         )
+        ctx_suffix = ""
         if git.get("git_branch"):
-            prompt += f"\n\nContext: git branch `{git['git_branch']}`, cwd `{cwd}`"
-        noetica_resp = noetica_chat(prompt, session_id=env("SOURCEOS_TERMINAL_SESSION_ID"), context=context)
+            ctx_suffix = f"\n\nContext: git branch `{git['git_branch']}`, cwd `{cwd}`"
+        user_prompt = f"Selected text:\n```\n{text}\n```{ctx_suffix}"
+        ai_resp = smart_chat(
+            user_prompt,
+            system=system_prompt,
+            session_id=env("SOURCEOS_TERMINAL_SESSION_ID"),
+            context=context,
+        )
         explanation = None
-        if noetica_resp:
+        if ai_resp:
             explanation = (
-                noetica_resp.get("response")
-                or noetica_resp.get("message")
-                or noetica_resp.get("content")
-                or noetica_resp.get("raw")
+                ai_resp.get("response")
+                or ai_resp.get("message")
+                or ai_resp.get("content")
+                or ai_resp.get("raw")
             )
+        source = (ai_resp or {}).get("source", "unknown") if ai_resp else "none"
         return response("explain_selection", {
             "text": text[:200],
-            "explanation": explanation or "(Noetica unreachable — start dev-backend.sh on :8080)",
-            "noetica_response": noetica_resp,
+            "explanation": explanation or "(no AI backend reachable — set ANTHROPIC_API_KEY or start Noetica on :8080)",
+            "source": source,
+            "ai_response": ai_resp,
         })
 
     if action == "nl_to_shell":
@@ -817,30 +877,43 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         cwd = context.get("cwd") or os.getcwd()
         git = git_info(cwd)
         shell = context.get("shell") or os.environ.get("SHELL", "zsh").split("/")[-1]
-        prompt = (
-            f"Convert the following natural-language request into a single {shell} command. "
-            "Output ONLY the command, no explanation, no markdown fences.\n\n"
-            f"Request: {text}"
+        system_prompt = (
+            f"You are a {shell} shell command generator. The user describes what they want to do. "
+            f"Output ONLY a single {shell} command, no explanation, no markdown fences, no commentary. "
+            "If the task requires multiple steps, chain them with && or use a subshell. "
+            "Never output multiple lines unless using a heredoc."
         )
+        ctx_suffix = ""
         if git.get("git_branch"):
-            prompt += f"\nContext: git branch `{git['git_branch']}`, cwd `{cwd}`"
-        noetica_resp = noetica_chat(prompt, session_id=env("SOURCEOS_TERMINAL_SESSION_ID"), context=context)
+            ctx_suffix = f"\n\nContext: git branch `{git['git_branch']}`, cwd `{cwd}`"
+        user_prompt = f"Request: {text}{ctx_suffix}"
+        ai_resp = smart_chat(
+            user_prompt,
+            system=system_prompt,
+            session_id=env("SOURCEOS_TERMINAL_SESSION_ID"),
+            context=context,
+        )
         command = None
-        if noetica_resp:
+        if ai_resp:
             raw = (
-                noetica_resp.get("response")
-                or noetica_resp.get("message")
-                or noetica_resp.get("content")
-                or noetica_resp.get("raw")
+                ai_resp.get("response")
+                or ai_resp.get("message")
+                or ai_resp.get("content")
+                or ai_resp.get("raw")
                 or ""
             )
-            # Strip any accidental markdown fences
             command = raw.strip().strip("`").strip()
+            # Remove leading shell name prefix if model echoed it
+            for prefix in (f"{shell}: ", f"$ ", f"% "):
+                if command.startswith(prefix):
+                    command = command[len(prefix):]
+        source = (ai_resp or {}).get("source", "unknown") if ai_resp else "none"
         return response("nl_to_shell", {
             "request": text,
             "command": command or "",
-            "noetica_response": noetica_resp,
-            "reachable": noetica_resp is not None,
+            "source": source,
+            "ai_response": ai_resp,
+            "reachable": ai_resp is not None,
         })
 
     if action == "atlas_context":
