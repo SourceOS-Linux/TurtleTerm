@@ -150,6 +150,18 @@ def main(argv: list[str]) -> int:
     bearbrowser_p = sub.add_parser("bearbrowser-handoff", help="delegate a browser task to BearBrowser via A2A")
     bearbrowser_p.add_argument("task", nargs=argparse.REMAINDER, help="task description")
 
+    # AI-powered terminal intelligence
+    explain_p = sub.add_parser("explain-selection", help="explain selected terminal text via Noetica")
+    explain_p.add_argument("text", nargs=argparse.REMAINDER, help="text to explain (or '-' to read from stdin)")
+
+    nl_p = sub.add_parser("nl-to-shell", help="convert natural language to a shell command via Noetica")
+    nl_p.add_argument("text", nargs=argparse.REMAINDER, help="natural language request")
+
+    atlas_ctx_p = sub.add_parser("atlas-context", help="read .atlas/ knowledge base from cwd or parent dirs")
+    atlas_ctx_p.add_argument("cwd", nargs="?", help="directory to start search from (default: cwd)")
+
+    sub.add_parser("atlas-register", help="register TurtleTerm with Atlas via ACP")
+
     args = parser.parse_args(argv)
 
     if args.command == "ping":
@@ -207,6 +219,26 @@ def main(argv: list[str]) -> int:
             print(json.dumps({"status": "error", "message": "bearbrowser-handoff requires a task description"}))
             return 2
         request = {"action": "bearbrowser_handoff", "task": task}
+    elif args.command == "explain-selection":
+        raw = join_remainder(args.text)
+        if raw == "-":
+            raw = sys.stdin.read()
+        if not raw:
+            raw = sys.stdin.read()
+        if not raw:
+            print(json.dumps({"status": "error", "message": "provide text to explain"}))
+            return 2
+        request = {"action": "explain_selection", "text": raw, "context": {"cwd": os.getcwd()}}
+    elif args.command == "nl-to-shell":
+        text = join_remainder(args.text)
+        if not text:
+            print(json.dumps({"status": "error", "message": "provide a natural-language request"}))
+            return 2
+        request = {"action": "nl_to_shell", "text": text, "context": {"cwd": os.getcwd()}}
+    elif args.command == "atlas-context":
+        request = {"action": "atlas_context", "cwd": getattr(args, "cwd", None) or os.getcwd()}
+    elif args.command == "atlas-register":
+        request = {"action": "atlas_acp_register"}
     else:
         parser.print_help(sys.stderr)
         return 2

@@ -777,6 +777,129 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         })
 
     # ------------------------------------------------------------------
+    # AI-powered terminal intelligence
+    # ------------------------------------------------------------------
+
+    if action == "explain_selection":
+        text = request.get("text", "").strip()
+        if not text:
+            return response("error", {"message": "text is required"}, status="error")
+        context = request.get("context") or {}
+        cwd = context.get("cwd") or os.getcwd()
+        git = git_info(cwd)
+        prompt = (
+            "You are a terminal intelligence assistant. Explain what the following terminal output "
+            "or selected text means, in 2-4 concise sentences. Identify errors, key data, or "
+            "actionable next steps if relevant.\n\nSelected text:\n```\n" + text + "\n```"
+        )
+        if git.get("git_branch"):
+            prompt += f"\n\nContext: git branch `{git['git_branch']}`, cwd `{cwd}`"
+        noetica_resp = noetica_chat(prompt, session_id=env("SOURCEOS_TERMINAL_SESSION_ID"), context=context)
+        explanation = None
+        if noetica_resp:
+            explanation = (
+                noetica_resp.get("response")
+                or noetica_resp.get("message")
+                or noetica_resp.get("content")
+                or noetica_resp.get("raw")
+            )
+        return response("explain_selection", {
+            "text": text[:200],
+            "explanation": explanation or "(Noetica unreachable — start dev-backend.sh on :8080)",
+            "noetica_response": noetica_resp,
+        })
+
+    if action == "nl_to_shell":
+        text = request.get("text", "").strip()
+        if not text:
+            return response("error", {"message": "text is required"}, status="error")
+        context = request.get("context") or {}
+        cwd = context.get("cwd") or os.getcwd()
+        git = git_info(cwd)
+        shell = context.get("shell") or os.environ.get("SHELL", "zsh").split("/")[-1]
+        prompt = (
+            f"Convert the following natural-language request into a single {shell} command. "
+            "Output ONLY the command, no explanation, no markdown fences.\n\n"
+            f"Request: {text}"
+        )
+        if git.get("git_branch"):
+            prompt += f"\nContext: git branch `{git['git_branch']}`, cwd `{cwd}`"
+        noetica_resp = noetica_chat(prompt, session_id=env("SOURCEOS_TERMINAL_SESSION_ID"), context=context)
+        command = None
+        if noetica_resp:
+            raw = (
+                noetica_resp.get("response")
+                or noetica_resp.get("message")
+                or noetica_resp.get("content")
+                or noetica_resp.get("raw")
+                or ""
+            )
+            # Strip any accidental markdown fences
+            command = raw.strip().strip("`").strip()
+        return response("nl_to_shell", {
+            "request": text,
+            "command": command or "",
+            "noetica_response": noetica_resp,
+            "reachable": noetica_resp is not None,
+        })
+
+    if action == "atlas_context":
+        cwd = request.get("cwd") or os.getcwd()
+        # Walk up from cwd looking for .atlas/ directory
+        atlas_dir: Path | None = None
+        p = Path(cwd)
+        for _ in range(8):
+            candidate = p / ".atlas"
+            if candidate.is_dir():
+                atlas_dir = candidate
+                break
+            if p.parent == p:
+                break
+            p = p.parent
+        if atlas_dir is None:
+            return response("atlas_context", {
+                "found": False,
+                "atlas_dir": None,
+                "entries": [],
+                "note": "No .atlas/ directory found in cwd or parent directories.",
+            })
+        entries: list[dict[str, Any]] = []
+        for md_file in sorted(atlas_dir.rglob("*.md"))[:20]:
+            try:
+                content = md_file.read_text(encoding="utf-8", errors="replace")[:2000]
+                entries.append({"path": str(md_file.relative_to(atlas_dir)), "content": content})
+            except OSError:
+                continue
+        return response("atlas_context", {
+            "found": True,
+            "atlas_dir": str(atlas_dir),
+            "entries": entries,
+            "entry_count": len(entries),
+        })
+
+    if action == "atlas_acp_register":
+        atlas_url = env("ATLAS_ACP_URL", "http://localhost:3000/acp/")
+        registration = {
+            "agent": {
+                "id": "turtleterm",
+                "name": "TurtleTerm",
+                "description": "TurtleTerm terminal intelligence agent (SourceOS)",
+                "version": "0.1.1",
+                "capabilities": ["terminal", "shell", "explain_selection", "nl_to_shell"],
+                "endpoint": env("TURTLETERM_ACP_ENDPOINT", ""),
+            }
+        }
+        result = _http_post(atlas_url.rstrip("/") + "/register", registration, timeout=5)
+        reachable = result is not None
+        return response("atlas_acp_register", {
+            "atlas_url": atlas_url,
+            "reachable": reachable,
+            "registration": registration["agent"],
+            "atlas_response": result,
+            "status": "registered" if reachable else "atlas_unreachable",
+        })
+
+    # ------------------------------------------------------------------
     # BearBrowser A2A handoff
     # ------------------------------------------------------------------
     if action == "bearbrowser_handoff":

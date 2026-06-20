@@ -198,6 +198,47 @@ TOOLS = [
             "required": ["task"],
         },
     },
+    {
+        "name": "explain_selection",
+        "description": "Explain selected terminal text or command output using Noetica AI. Identifies errors, key data, and actionable next steps.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The selected terminal text or output to explain."},
+                "cwd": {"type": "string", "description": "Current working directory for git context (optional)."},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "nl_to_shell",
+        "description": "Convert a natural-language request into a shell command using Noetica AI. Returns the command only, ready to paste.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Natural-language description of what you want to do."},
+                "shell": {"type": "string", "description": "Shell to target: zsh, bash, fish (default: zsh)."},
+                "cwd": {"type": "string", "description": "Current working directory for context (optional)."},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "atlas_context",
+        "description": "Read the .atlas/ knowledge base from the current project. Atlas stores context as markdown files in .atlas/. Returns all entries found walking up from cwd.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Directory to start searching from (default: cwd)."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "atlas_acp_register",
+        "description": "Register TurtleTerm as an ACP agent with a local Atlas instance. Atlas uses the Agent Client Protocol (ACP) for tool integrations.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 
@@ -245,6 +286,28 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             "action": "bearbrowser_handoff",
             "task": arguments.get("task", ""),
         })
+    if name == "explain_selection":
+        return _agentd({
+            "action": "explain_selection",
+            "text": arguments.get("text", ""),
+            "context": {"cwd": arguments.get("cwd", "")},
+        })
+    if name == "nl_to_shell":
+        return _agentd({
+            "action": "nl_to_shell",
+            "text": arguments.get("text", ""),
+            "context": {
+                "cwd": arguments.get("cwd", ""),
+                "shell": arguments.get("shell", "zsh"),
+            },
+        })
+    if name == "atlas_context":
+        return _agentd({
+            "action": "atlas_context",
+            "cwd": arguments.get("cwd", ""),
+        })
+    if name == "atlas_acp_register":
+        return _agentd({"action": "atlas_acp_register"})
     return {"error": f"unknown tool: {name}"}
 
 
