@@ -39,28 +39,64 @@ end
 config.default_prog = nil
 config.automatically_reload_config = true
 config.check_for_updates = false
-config.color_scheme = env('TURTLETERM_COLOR_SCHEME', env('SOURCEOS_TERMINAL_COLOR_SCHEME', 'Builtin Solarized Dark'))
-config.font = wezterm.font_with_fallback({
-  'JetBrains Mono',
-  'Symbols Nerd Font Mono',
-  'Noto Color Emoji',
-})
-config.font_size = tonumber(env('TURTLETERM_FONT_SIZE', env('SOURCEOS_TERMINAL_FONT_SIZE', '12.5')))
 
-config.window_padding = {
-  left = 8,
-  right = 8,
-  top = 6,
-  bottom = 6,
+-- iTerm2 default color palette
+local iterm2_colors = {
+  foreground = '#c7c7c7',
+  background = '#000000',
+  cursor_bg = '#ffffff',
+  cursor_fg = '#000000',
+  cursor_border = '#ffffff',
+  selection_bg = '#4d4d4d',
+  selection_fg = '#ffffff',
+  ansi = {
+    '#000000', '#c91b00', '#00c200', '#c7c400',
+    '#0225c7', '#ca30c7', '#00c5c7', '#c7c7c7',
+  },
+  brights = {
+    '#686868', '#ff6e67', '#5ffa68', '#fffc67',
+    '#6871ff', '#ff77ff', '#60fdff', '#ffffff',
+  },
 }
 
-config.use_fancy_tab_bar = false
-config.hide_tab_bar_if_only_one_tab = false
+if env('TURTLETERM_COLOR_SCHEME', '') ~= '' then
+  config.color_scheme = env('TURTLETERM_COLOR_SCHEME', '')
+elseif env('SOURCEOS_TERMINAL_COLOR_SCHEME', '') ~= '' then
+  config.color_scheme = env('SOURCEOS_TERMINAL_COLOR_SCHEME', '')
+else
+  config.colors = iterm2_colors
+end
+
+config.font = wezterm.font_with_fallback({
+  'Menlo',
+  'Monaco',
+  'Courier New',
+  'Symbols Nerd Font Mono',
+})
+config.font_size = tonumber(env('TURTLETERM_FONT_SIZE', env('SOURCEOS_TERMINAL_FONT_SIZE', '13.0')))
+
+config.window_padding = {
+  left = 5,
+  right = 5,
+  top = 5,
+  bottom = 5,
+}
+
+config.use_fancy_tab_bar = true
+config.hide_tab_bar_if_only_one_tab = true
 config.tab_bar_at_bottom = false
-config.window_decorations = 'RESIZE'
+config.window_decorations = 'TITLE | RESIZE'
 config.audible_bell = 'Disabled'
 config.enable_scroll_bar = false
 config.scrollback_lines = 20000
+
+config.default_cursor_style = 'BlinkingBlock'
+config.cursor_blink_rate = 600
+config.cursor_blink_ease_in = 'Constant'
+config.cursor_blink_ease_out = 'Constant'
+
+config.window_background_opacity = 1.0
+config.macos_window_background_blur = 0
 
 config.unix_domains = {
   {
@@ -187,7 +223,134 @@ if turtle_shell_init_dir then
   end
 end
 
+-- ============================================================
+-- Hyperlink rules
+-- ============================================================
+
+config.hyperlink_rules = wezterm.default_hyperlink_rules()
+-- file:// with line numbers (e.g. from compiler errors)
+table.insert(config.hyperlink_rules, {
+  regex = [[\bfile://([^\s"'<>]+)(?::(\d+)(?::(\d+))?)?\b]],
+  format = "$0",
+})
+-- Rust/Go/Python "at path:line:col" patterns
+table.insert(config.hyperlink_rules, {
+  regex = [[(?:at |in )([A-Za-z0-9_./-]+\.[A-Za-z0-9]+):(\d+)(?::(\d+))?]],
+  format = "file://$1",
+})
+
+-- ============================================================
+-- Mouse bindings
+-- ============================================================
+
+config.mouse_bindings = {
+  -- CMD+click to open hyperlinks (WezTerm default is ALT+click)
+  {
+    event = { Up = { streak = 1, button = 'Left' } },
+    mods = 'CMD',
+    action = act.OpenLinkAtMouseCursor,
+  },
+}
+
+-- ============================================================
+-- Agent action helpers (called from key bindings)
+-- ============================================================
+
+local function agentctl(args)
+  return wezterm.action_callback(function(window, pane)
+    local ok, stdout, _ = wezterm.run_child_process(args)
+    if ok and stdout and stdout ~= '' then
+      return stdout
+    end
+    return nil
+  end)
+end
+
+local function turtle_explain_selection()
+  return wezterm.action_callback(function(window, pane)
+    local sel = window:get_selection_text_for_pane(pane)
+    if not sel or sel == '' then
+      window:toast_notification('TurtleTerm', 'No text selected — select output first, then CTRL+SHIFT+E.', nil, 4000)
+      return
+    end
+    window:toast_notification('TurtleTerm', 'Asking Noetica to explain…', nil, 2000)
+    local ok, stdout, _ = wezterm.run_child_process({
+      'turtle-agentctl', 'explain-selection', sel,
+    })
+    if ok and stdout and stdout ~= '' then
+      local data = {}
+      pcall(function() data = wezterm.json_parse(stdout) end)
+      local explanation = (data.data and data.data.explanation) or stdout:sub(1, 300)
+      window:toast_notification('TurtleTerm Explain', explanation, nil, 12000)
+    else
+      window:toast_notification('TurtleTerm', 'Noetica unreachable — start dev-backend.sh on :8080', nil, 6000)
+    end
+  end)
+end
+
+local function turtle_nl_to_shell()
+  return act.PromptInputLine {
+    description = '🐢 NL→Shell: describe what you want to do',
+    initial_value = '',
+    action = wezterm.action_callback(function(window, pane, line)
+      if not line or line == '' then return end
+      window:toast_notification('TurtleTerm', 'Generating command…', nil, 2000)
+      local ok, stdout, _ = wezterm.run_child_process({
+        'turtle-agentctl', 'nl-to-shell', line,
+      })
+      if ok and stdout and stdout ~= '' then
+        local data = {}
+        pcall(function() data = wezterm.json_parse(stdout) end)
+        local cmd = (data.data and data.data.command) or ''
+        if cmd ~= '' then
+          pane:send_text(cmd)
+          window:toast_notification('TurtleTerm NL→Shell', cmd, nil, 6000)
+        else
+          window:toast_notification('TurtleTerm', 'Noetica returned empty — start dev-backend.sh on :8080', nil, 6000)
+        end
+      else
+        window:toast_notification('TurtleTerm', 'Noetica unreachable — start dev-backend.sh on :8080', nil, 6000)
+      end
+    end),
+  }
+end
+
+local function turtle_atlas_context()
+  return wezterm.action_callback(function(window, pane)
+    local cwd = ''
+    if pane and pane.current_working_dir then
+      cwd = tostring(pane.current_working_dir):gsub('file://[^/]*', '')
+    end
+    local ok, stdout, _ = wezterm.run_child_process({
+      'turtle-agentctl', 'atlas-context', cwd,
+    })
+    if ok and stdout and stdout ~= '' then
+      local data = {}
+      pcall(function() data = wezterm.json_parse(stdout) end)
+      local found = data.data and data.data.found
+      if not found then
+        window:toast_notification('TurtleTerm Atlas', 'No .atlas/ directory found in this project.', nil, 4000)
+      else
+        local count = (data.data and data.data.entry_count) or 0
+        local atlas_dir = (data.data and data.data.atlas_dir) or ''
+        window:toast_notification('TurtleTerm Atlas', string.format('%d entries at %s', count, atlas_dir), nil, 5000)
+      end
+    else
+      window:toast_notification('TurtleTerm', 'atlas-context failed', nil, 4000)
+    end
+  end)
+end
+
 config.keys = {
+  -- Prompt jumping (OSC 133 marks required — turtle-shell-init provides them)
+  { key = 'UpArrow', mods = 'CMD', action = act.ScrollToPrompt(-1) },
+  { key = 'DownArrow', mods = 'CMD', action = act.ScrollToPrompt(1) },
+
+  -- Agent intelligence
+  { key = 'e', mods = 'CTRL|SHIFT', action = turtle_explain_selection() },
+  { key = 'n', mods = 'CTRL|SHIFT', action = turtle_nl_to_shell() },
+  { key = 'a', mods = 'CTRL|SHIFT', action = turtle_atlas_context() },
+
   { key = 'Enter', mods = 'CTRL|SHIFT', action = act.SplitVertical { domain = 'CurrentPaneDomain' } },
   { key = 'Enter', mods = 'CTRL|ALT', action = act.SplitHorizontal { domain = 'CurrentPaneDomain' } },
   { key = 'w', mods = 'CTRL|SHIFT', action = act.CloseCurrentPane { confirm = true } },
@@ -220,30 +383,78 @@ config.keys = {
 wezterm.on('format-tab-title', function(tab, tabs, panes, config_, hover, max_width)
   local pane = tab.active_pane
   local cwd = ''
+  local proc = ''
 
   if pane and pane.current_working_dir then
-    cwd = basename(tostring(pane.current_working_dir))
+    local raw = tostring(pane.current_working_dir)
+    cwd = raw:gsub('file://[^/]*', '')
+    local home = os.getenv('HOME') or ''
+    if home ~= '' then
+      cwd = cwd:gsub('^' .. home, '~')
+    end
   end
 
-  if cwd == '' then
-    cwd = 'terminal'
+  if pane and pane.foreground_process_name then
+    proc = basename(pane.foreground_process_name)
   end
 
-  local domain = turtle_domain()
-  local workspace = turtle_workspace()
-  return string.format(' 🐢 %s:%s [%s] ', workspace, cwd, domain)
+  local label
+  if proc ~= '' and proc ~= 'zsh' and proc ~= 'bash' and proc ~= 'fish' then
+    label = proc .. ' — ' .. (cwd ~= '' and cwd or '~')
+  else
+    label = cwd ~= '' and cwd or '~'
+  end
+
+  local idx = tab.tab_index + 1
+  return string.format(' %d  %s ', idx, label)
 end)
 
 wezterm.on('update-right-status', function(window, pane)
-  local workspace = turtle_workspace()
   local domain = turtle_domain()
-  local session = turtle_session_id()
+  if domain ~= 'host' then
+    window:set_right_status(string.format('  %s  ', domain))
+  else
+    window:set_right_status('')
+  end
+end)
 
-  if session ~= '' then
-    session = ' · ' .. session
+wezterm.on('update-left-status', function(window, pane)
+  local parts = {}
+
+  -- Git branch from pane cwd
+  if pane and pane.current_working_dir then
+    local cwd = tostring(pane.current_working_dir):gsub('file://[^/]*', '')
+    if cwd ~= '' then
+      local ok, stdout, _ = wezterm.run_child_process({
+        'git', '-C', cwd, 'branch', '--show-current',
+      })
+      if ok and stdout and stdout:match('%S') then
+        local branch = stdout:match('([^\n]+)')
+        if branch then
+          table.insert(parts, ' \xe2\x8e\x87 ' .. branch)  -- ⎇ UTF-8
+        end
+      end
+    end
   end
 
-  window:set_right_status(string.format(' 🐢 %s · %s%s ', workspace, domain, session))
+  -- Last exit code from state file
+  local home = os.getenv('HOME') or ''
+  local xdg_state = os.getenv('XDG_STATE_HOME') or (home .. '/.local/state')
+  local exit_file = xdg_state .. '/sourceos/terminal/last_exit'
+  local f = io.open(exit_file, 'r')
+  if f then
+    local code = f:read('*n')
+    f:close()
+    if code and code ~= 0 then
+      table.insert(parts, ' \xe2\x9c\x97 ' .. tostring(code))  -- ✗
+    end
+  end
+
+  if #parts > 0 then
+    window:set_left_status(table.concat(parts, '  ') .. '  ')
+  else
+    window:set_left_status('')
+  end
 end)
 
 wezterm.on('gui-startup', function(cmd)
