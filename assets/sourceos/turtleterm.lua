@@ -346,6 +346,62 @@ config.keys = {
   { key = 'UpArrow', mods = 'CMD', action = act.ScrollToPrompt(-1) },
   { key = 'DownArrow', mods = 'CMD', action = act.ScrollToPrompt(1) },
 
+  -- Command blocks: copy last output / last command to clipboard
+  {
+    key = 'b', mods = 'CMD',
+    action = wezterm.action_callback(function(window, pane)
+      local zones = {}
+      pcall(function() zones = pane:get_semantic_zones() end)
+      if #zones == 0 then
+        window:toast_notification('TurtleTerm', 'No blocks — enable shell integration (turtle-shell-init).', nil, 4000)
+        return
+      end
+      local last_output = nil
+      for _, z in ipairs(zones) do
+        if z.semantic_type == 'Output' then last_output = z end
+      end
+      if not last_output then
+        window:toast_notification('TurtleTerm', 'No output block in current scrollback.', nil, 3000)
+        return
+      end
+      local text = ''
+      pcall(function() text = pane:get_text_from_semantic_zone(last_output) end)
+      if text == '' then
+        window:toast_notification('TurtleTerm', 'Output block is empty.', nil, 3000)
+        return
+      end
+      local f = io.popen('pbcopy 2>/dev/null || xclip -selection clipboard 2>/dev/null || wl-copy 2>/dev/null', 'w')
+      if f then
+        f:write(text)
+        f:close()
+        window:toast_notification('TurtleTerm Block', string.format('Copied %d chars (last output).', #text), nil, 3000)
+      end
+    end),
+  },
+  {
+    key = 'b', mods = 'CMD|SHIFT',
+    action = wezterm.action_callback(function(window, pane)
+      local zones = {}
+      pcall(function() zones = pane:get_semantic_zones() end)
+      local last_input = nil
+      for _, z in ipairs(zones) do
+        if z.semantic_type == 'Input' then last_input = z end
+      end
+      if not last_input then
+        window:toast_notification('TurtleTerm', 'No command block found.', nil, 3000)
+        return
+      end
+      local text = ''
+      pcall(function() text = pane:get_text_from_semantic_zone(last_input) end)
+      text = text:gsub('^%s+', ''):gsub('%s+$', '')
+      if text ~= '' then
+        local f = io.popen('pbcopy 2>/dev/null || xclip -selection clipboard 2>/dev/null || wl-copy 2>/dev/null', 'w')
+        if f then f:write(text); f:close() end
+        window:toast_notification('TurtleTerm Command', text:sub(1, 100), nil, 3000)
+      end
+    end),
+  },
+
   -- Agent intelligence
   { key = 'e', mods = 'CTRL|SHIFT', action = turtle_explain_selection() },
   { key = 'n', mods = 'CTRL|SHIFT', action = turtle_nl_to_shell() },
@@ -448,6 +504,20 @@ wezterm.on('update-left-status', function(window, pane)
     if code and code ~= 0 then
       table.insert(parts, ' \xe2\x9c\x97 ' .. tostring(code))  -- ✗
     end
+  end
+
+  -- Block count from semantic zones (OSC 133)
+  local block_count = 0
+  pcall(function()
+    local zones = pane:get_semantic_zones()
+    for _, z in ipairs(zones) do
+      if z.semantic_type == 'Output' then
+        block_count = block_count + 1
+      end
+    end
+  end)
+  if block_count > 0 then
+    table.insert(parts, ' \xe2\x96\xa4 ' .. block_count)  -- ▤ block icon
   end
 
   if #parts > 0 then
