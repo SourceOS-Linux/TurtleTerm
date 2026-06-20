@@ -82,9 +82,10 @@ jobs:
           test -f "$archive.sha256"
           test -f "$archive.manifest.json"
           python3 packaging/scripts/verify-turtle-term-artifact.py "$archive"
-          # Verify shell inits are included
-          tar -tzf "$archive" | grep -q 'shell/turtle-shell-init.zsh' && echo "shell init: OK"
-          tar -tzf "$archive" | grep -q 'turtle-mcp-server' && echo "mcp-server: OK"
+          # Verify shell inits and mcp-server are included
+          tarlist="$(tar -tzf "$archive")"
+          echo "$tarlist" | grep -q 'shell/turtle-shell-init.zsh' && echo "shell init: OK"
+          echo "$tarlist" | grep -q 'turtle-mcp-server' && echo "mcp-server: OK"
 
       - name: Attest TurtleTerm release artifacts
         uses: actions/attest@v4
