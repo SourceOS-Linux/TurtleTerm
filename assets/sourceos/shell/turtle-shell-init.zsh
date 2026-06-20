@@ -20,14 +20,58 @@ _turtle_writer() {
     echo "$writer"
 }
 
+_turtle_state_dir() {
+    echo "${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/terminal"
+}
+
+# Dangerous command patterns — warn but don't block
+_TURTLE_DANGEROUS_PATTERNS=(
+    'rm[[:space:]]+-rf[[:space:]]+/'
+    'rm[[:space:]]+-rf[[:space:]]+~'
+    'git[[:space:]]+push[[:space:]]+.*--force'
+    'git[[:space:]]+push[[:space:]]+-f'
+    'DROP[[:space:]]+TABLE'
+    '\|[[:space:]]*sh'
+    'sudo[[:space:]]+rm[[:space:]]+-rf'
+    'kill[[:space:]]+-9[[:space:]]+1$'
+    ':\(\)\{.*\}'
+)
+
+_turtle_check_dangerous() {
+    local cmd="$1"
+    local matched=0
+    for pattern in "${_TURTLE_DANGEROUS_PATTERNS[@]}"; do
+        if [[ "$cmd" =~ $pattern ]]; then
+            matched=1
+            break
+        fi
+    done
+    if (( matched )); then
+        printf '\e[33m⚠  TurtleTerm policy: dangerous pattern detected — review before running\e[0m\n' >&2
+        local writer; writer="$(_turtle_writer)"
+        python3 "$writer" --stdio >/dev/null 2>&1 <<EOF &
+{"action": "ingest_event", "event": {"event_type": "policy.dangerous_pattern", "session_id": "${SOURCEOS_TERMINAL_SESSION_ID}", "command": "dangerous command intercepted", "shell": "zsh"}}
+EOF
+    fi
+}
+
 _TURTLE_ZSH_CMD=""
 _TURTLE_ZSH_STARTED_AT=""
+_TURTLE_ZSH_CMD_EPOCH=0
+_TURTLE_ZSH_EVT_ID=""
 
 preexec() {
     local cmd="$1"
     [[ -z "$cmd" ]] && return
     _TURTLE_ZSH_CMD="$cmd"
     _TURTLE_ZSH_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+    _TURTLE_ZSH_CMD_EPOCH=${EPOCHSECONDS:-0}
+
+    # OSC 133 C — command output start (marks command start for prompt jumping)
+    printf '\e]133;C\a'
+
+    # Dangerous pattern check
+    _turtle_check_dangerous "$cmd"
 
     local writer
     writer="$(_turtle_writer)"
@@ -55,17 +99,38 @@ EOF
 
 precmd() {
     local exit_status=$?
-    local completed_at
-    completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+
+    # OSC 133 D — command end with exit code
+    printf '\e]133;D;%d\a' $exit_status
+    # OSC 133 A — prompt start (enables cmd+up/down jumping in WezTerm)
+    printf '\e]133;A\a'
+
+    # Write exit code for status bar
+    local state_dir; state_dir="$(_turtle_state_dir)"
+    mkdir -p "$state_dir" 2>/dev/null || true
+    printf '%d' $exit_status > "$state_dir/last_exit" 2>/dev/null || true
+
+    # Long command notification (>10s, skipped if TURTLE_NOTIFY_THRESHOLD=0)
+    if [[ -n "$_TURTLE_ZSH_CMD" && ${_TURTLE_ZSH_CMD_EPOCH:-0} -gt 0 ]]; then
+        local elapsed=$(( ${EPOCHSECONDS:-0} - _TURTLE_ZSH_CMD_EPOCH ))
+        local threshold="${TURTLE_NOTIFY_THRESHOLD:-10}"
+        if [[ "$threshold" != "0" && $elapsed -ge $threshold ]]; then
+            local short_cmd="${_TURTLE_ZSH_CMD:0:50}"
+            osascript -e "display notification \"${short_cmd} (${elapsed}s, exit ${exit_status})\" with title \"TurtleTerm\"" 2>/dev/null &!
+        fi
+    fi
 
     [[ -z "$_TURTLE_ZSH_CMD" ]] && return
 
     local cmd="$_TURTLE_ZSH_CMD"
     local started_at="$_TURTLE_ZSH_STARTED_AT"
     local event_id="${_TURTLE_ZSH_EVT_ID:-evt_0}"
+    local completed_at
+    completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
 
     _TURTLE_ZSH_CMD=""
     _TURTLE_ZSH_EVT_ID=""
+    _TURTLE_ZSH_CMD_EPOCH=0
 
     local writer
     writer="$(_turtle_writer)"
