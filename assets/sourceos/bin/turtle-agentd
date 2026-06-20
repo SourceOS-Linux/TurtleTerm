@@ -301,6 +301,46 @@ def _policy_outcome_to_decision(pf_result: dict[str, Any] | None, action: str, c
     return "ask", reason, decision_id
 
 
+def agent_machine_url() -> str:
+    return env("SOURCEOS_AGENT_MACHINE_URL", "http://localhost:9000")
+
+
+def bearbrowser_a2a_url() -> str:
+    return env("BEARBROWSER_A2A_URL", "http://localhost:3031")
+
+
+def _http_get(url: str, timeout: int = 3) -> dict[str, Any] | None:
+    try:
+        req = urlrequest.Request(url, headers={"Accept": "application/json"})
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return {"raw": raw[:500]}
+    except (urlerror.URLError, OSError, TimeoutError):
+        return None
+
+
+def _http_post(url: str, payload: dict[str, Any], timeout: int = 5) -> dict[str, Any] | None:
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urlrequest.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return {"raw": raw[:500]}
+    except (urlerror.URLError, OSError, TimeoutError):
+        return None
+
+
 def noetica_chat(text: str, session_id: str | None = None, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """POST a message to Noetica /api/chat in sourceos mode."""
     payload: dict[str, Any] = {
@@ -688,9 +728,20 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         return response("agent_machine_surfaces", {"surfaces": [s for s in default_surfaces() if s["provider"] == "agent-machine"]})
 
     if action == "agent_machine_probe":
+        base = agent_machine_url()
+        result = _http_get(base.rstrip("/") + "/health", timeout=3)
+        if result is None:
+            result = _http_get(base.rstrip("/") + "/api/probe", timeout=3)
+        reachable = result is not None
         return response("agent_machine_probe", {
-            "status": "deferred",
-            "decision": decision_stub("agent-machine.probe", "Agent Machine probe adapter is specified but not implemented in turtle-agentd v0.", "defer"),
+            "agent_machine_url": base,
+            "reachable": reachable,
+            "probe_response": result,
+            "decision": decision_stub(
+                "agent-machine.probe",
+                f"Agent Machine {'reachable' if reachable else 'unreachable'} at {base}.",
+                "allow" if reachable else "defer",
+            ),
         })
 
     # ------------------------------------------------------------------
@@ -723,6 +774,61 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         return response("agentplane_promotion_request", {
             "status": "deferred",
             "decision": decision_stub("agentplane.bundle.create", "AgentPlane bundle promotion is specified but not implemented in turtle-agentd v0.", "defer"),
+        })
+
+    # ------------------------------------------------------------------
+    # BearBrowser A2A handoff
+    # ------------------------------------------------------------------
+    if action == "bearbrowser_handoff":
+        task_description = request.get("task", "")
+        if not task_description:
+            return response("error", {"message": "bearbrowser_handoff requires 'task' field"}, status="error")
+        base = bearbrowser_a2a_url()
+        session_id = env("SOURCEOS_TERMINAL_SESSION_ID") or str(uuid.uuid4())
+        handoff_id = str(uuid.uuid4())
+        payload = {
+            "task": {
+                "id": f"urn:srcos:bearbrowser:task:{handoff_id}",
+                "description": task_description,
+                "skill": "browser.handoff",
+                "context": {
+                    "source": "turtleterm",
+                    "session_id": session_id,
+                    "workspace": env("SOURCEOS_WORKSPACE", "default"),
+                    "execution_domain": detect_execution_domain(),
+                    "actor_id": env("SOURCEOS_ACTOR_ID", "human:local-user"),
+                    "policy_bundle_id": env("SOURCEOS_POLICY_BUNDLE_ID", "policy:default"),
+                    "handoff_id": handoff_id,
+                },
+            }
+        }
+        result = _http_post(base.rstrip("/") + "/a2a/tasks", payload, timeout=8)
+        reachable = result is not None
+        status_label = "submitted" if reachable else "queued_offline"
+        receipt = write_receipt({
+            "schema": "sourceos.terminal.event.v0",
+            "event_type": "bearbrowser.handoff",
+            "session_id": session_id,
+            "task": task_description,
+            "handoff_id": handoff_id,
+            "bearbrowser_url": base,
+            "reachable": reachable,
+            "status": status_label,
+            "capturedAt": utc_now(),
+        })
+        return response("bearbrowser_handoff", {
+            "handoff_id": handoff_id,
+            "task": task_description,
+            "bearbrowser_url": base,
+            "reachable": reachable,
+            "status": status_label,
+            "bearbrowser_response": result,
+            "receipt": receipt,
+            "decision": decision_stub(
+                "bearbrowser.handoff",
+                f"BearBrowser A2A handoff {'submitted' if reachable else 'queued (BearBrowser unreachable)'}.",
+                "allow" if reachable else "defer",
+            ),
         })
 
     return response("error", {"message": f"unknown action: {action}"}, status="error")

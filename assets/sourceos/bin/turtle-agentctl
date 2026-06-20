@@ -146,6 +146,10 @@ def main(argv: list[str]) -> int:
     # Track D: Policy Fabric
     sub.add_parser("policy-status", help="check Policy Fabric reachability and mode")
 
+    # BearBrowser A2A handoff
+    bearbrowser_p = sub.add_parser("bearbrowser-handoff", help="delegate a browser task to BearBrowser via A2A")
+    bearbrowser_p.add_argument("task", nargs=argparse.REMAINDER, help="task description")
+
     args = parser.parse_args(argv)
 
     if args.command == "ping":
@@ -197,6 +201,12 @@ def main(argv: list[str]) -> int:
         request = {"action": "noetica_query", "text": join_remainder(args.text)}
     elif args.command == "policy-status":
         request = {"action": "policy_status"}
+    elif args.command == "bearbrowser-handoff":
+        task = join_remainder(args.task)
+        if not task:
+            print(json.dumps({"status": "error", "message": "bearbrowser-handoff requires a task description"}))
+            return 2
+        request = {"action": "bearbrowser_handoff", "task": task}
     else:
         parser.print_help(sys.stderr)
         return 2

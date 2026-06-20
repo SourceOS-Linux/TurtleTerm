@@ -74,6 +74,119 @@ config.set_environment_variables = {
   TURTLETERM_PROFILE = 'turtleterm-v0',
 }
 
+-- ============================================================
+-- Policy TUI overlay
+-- ============================================================
+
+local function turtle_policy_gate()
+  return act.PromptInputLine {
+    description = '🐢 TurtleTerm Policy Gate — command to evaluate:',
+    initial_value = '',
+    action = wezterm.action_callback(function(window, pane, line)
+      if not line or line == '' then return end
+      local success, stdout, stderr = wezterm.run_child_process({
+        'turtle-agentctl', '--stdio', 'policy-evaluate', line,
+      })
+      if not success or (not stdout or stdout == '') then
+        window:toast_notification('TurtleTerm Policy', 'evaluation failed — is turtle-agentctl in PATH?\n' .. (stderr or ''), nil, 6000)
+        return
+      end
+      -- Extract decision and reason from JSON without requiring a parser.
+      local decision = stdout:match('"decision"%s*:%s*"([^"]+)"') or 'unknown'
+      local reason   = stdout:match('"reason"%s*:%s*"([^"]+)"') or ''
+      if decision == 'allow' then
+        window:toast_notification('TurtleTerm Policy', 'ALLOW — sending: ' .. line, nil, 3000)
+        pane:send_text(line .. '\n')
+      elseif decision == 'deny' then
+        window:toast_notification('TurtleTerm Policy', 'DENY: ' .. reason, nil, 6000)
+      elseif decision == 'ask' then
+        window:perform_action(
+          act.PromptInputLine {
+            description = '🐢 Policy asks: ' .. reason .. ' — approve? [y/n]',
+            initial_value = 'n',
+            action = wezterm.action_callback(function(w2, p2, answer)
+              if answer == 'y' or answer == 'Y' then
+                p2:send_text(line .. '\n')
+              else
+                w2:toast_notification('TurtleTerm Policy', 'Blocked at user gate.', nil, 3000)
+              end
+            end),
+          },
+          pane
+        )
+      else
+        window:toast_notification('TurtleTerm Policy', decision:upper() .. (reason ~= '' and (': ' .. reason) or ''), nil, 4000)
+      end
+    end),
+  }
+end
+
+-- ============================================================
+-- Shell auto-source integration
+-- ============================================================
+
+local function find_shell_init_dir()
+  local explicit = env('TURTLE_SHELL_INIT_DIR', '')
+  if explicit ~= '' then return explicit end
+  -- Relative to this config file (dev layout: assets/sourceos/shell/)
+  local cfg = wezterm.config_dir
+  for _, rel in ipairs({ '../../assets/sourceos/shell', '../shell', 'shell' }) do
+    local candidate = cfg .. '/' .. rel
+    local f = io.open(candidate .. '/turtle-shell-init.bash')
+    if f then f:close(); return candidate end
+  end
+  -- Common install prefixes
+  local home = env('HOME', '')
+  for _, p in ipairs({
+    '/opt/homebrew/share/turtleterm/shell',
+    '/usr/local/share/turtleterm/shell',
+    home .. '/.local/share/turtleterm/shell',
+  }) do
+    local f = io.open(p .. '/turtle-shell-init.bash')
+    if f then f:close(); return p end
+  end
+  return nil
+end
+
+local function write_zsh_init_shim(init_dir)
+  local home = env('HOME', '')
+  local state_home = env('XDG_STATE_HOME', home .. '/.local/state')
+  local shim_dir = state_home .. '/sourceos/terminal/zsh-init'
+  os.execute('mkdir -p ' .. shim_dir)
+  local f = io.open(shim_dir .. '/.zshenv', 'w')
+  if not f then
+    wezterm.log_warn('turtleterm: could not write zsh shim to ' .. shim_dir)
+    return nil
+  end
+  f:write(string.format([[
+# TurtleTerm zsh auto-integration shim. Auto-generated.
+_tdot_orig="${ZDOTDIR_ORIGINAL:-${HOME}}"
+unset ZDOTDIR
+[ -f "${_tdot_orig}/.zshenv" ] && source "${_tdot_orig}/.zshenv"
+_tinit="%s"
+[ -n "${_tinit}" ] && [ -f "${_tinit}/turtle-shell-init.zsh" ] && source "${_tinit}/turtle-shell-init.zsh"
+unset _tdot_orig _tinit
+]], init_dir))
+  f:close()
+  return shim_dir
+end
+
+local turtle_shell_init_dir = find_shell_init_dir()
+
+if turtle_shell_init_dir then
+  config.set_environment_variables['TURTLE_SHELL_INIT_DIR'] = turtle_shell_init_dir
+  -- bash: BASH_ENV is sourced for all non-interactive bash invocations
+  config.set_environment_variables['BASH_ENV'] = turtle_shell_init_dir .. '/turtle-shell-init.bash'
+  -- zsh: write a ZDOTDIR shim that sources the turtle init before the user's real .zshenv
+  local zsh_shim = write_zsh_init_shim(turtle_shell_init_dir)
+  if zsh_shim then
+    -- Preserve any existing ZDOTDIR so the shim can restore it
+    local orig_zdotdir = env('ZDOTDIR', env('HOME', ''))
+    config.set_environment_variables['ZDOTDIR_ORIGINAL'] = orig_zdotdir
+    config.set_environment_variables['ZDOTDIR'] = zsh_shim
+  end
+end
+
 config.keys = {
   { key = 'Enter', mods = 'CTRL|SHIFT', action = act.SplitVertical { domain = 'CurrentPaneDomain' } },
   { key = 'Enter', mods = 'CTRL|ALT', action = act.SplitHorizontal { domain = 'CurrentPaneDomain' } },
@@ -89,6 +202,7 @@ config.keys = {
   { key = 'x', mods = 'CTRL|SHIFT', action = act.ActivateCopyMode },
   { key = 'p', mods = 'CTRL|SHIFT', action = act.ActivateCommandPalette },
   { key = 'o', mods = 'CTRL|SHIFT', action = act.ShowLauncher },
+  { key = 'g', mods = 'CTRL|SHIFT', action = turtle_policy_gate() },
   {
     key = 's',
     mods = 'CTRL|SHIFT',

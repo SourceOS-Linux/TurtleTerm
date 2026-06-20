@@ -182,6 +182,22 @@ TOOLS = [
             "required": ["command"],
         },
     },
+    {
+        "name": "agent_machine_probe",
+        "description": "Probe the Agent Machine runtime to check reachability and surface status.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "bearbrowser_handoff",
+        "description": "Delegate a browser-required task to BearBrowser via the A2A protocol. BearBrowser handles Stagehand/Playwright automation with anti-fingerprinting. Returns a handoff task ID and receipt.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "Natural-language description of the browser task to delegate."},
+            },
+            "required": ["task"],
+        },
+    },
 ]
 
 
@@ -221,6 +237,13 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         return _agentd({
             "action": "request_execution",
             "command": arguments.get("command", ""),
+        })
+    if name == "agent_machine_probe":
+        return _agentd({"action": "agent_machine_probe"})
+    if name == "bearbrowser_handoff":
+        return _agentd({
+            "action": "bearbrowser_handoff",
+            "task": arguments.get("task", ""),
         })
     return {"error": f"unknown tool: {name}"}
 

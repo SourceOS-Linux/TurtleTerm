@@ -239,6 +239,14 @@ function M.agent_machine_probe()
   run_agentctl('TurtleTerm Agent Machine probe', 'agent-machine-probe')
 end
 
+function M.bearbrowser_handoff(task)
+  if task == nil or task == '' then
+    vim.notify('TurtleBearBrowserHandoff requires a task description', vim.log.levels.ERROR)
+    return
+  end
+  run_agentctl('TurtleTerm BearBrowser handoff', 'bearbrowser-handoff', task)
+end
+
 function M.inspect(session_id)
   run_agentctl('TurtleTerm inspect', 'inspect', session_id)
 end

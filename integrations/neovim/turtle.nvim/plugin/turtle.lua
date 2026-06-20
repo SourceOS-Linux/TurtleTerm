@@ -93,6 +93,10 @@ vim.api.nvim_create_user_command('TurtleAgentMachineProbe', function()
   turtle.agent_machine_probe()
 end, {})
 
+vim.api.nvim_create_user_command('TurtleBearBrowserHandoff', function(opts)
+  turtle.bearbrowser_handoff(opts.args)
+end, { nargs = '+' })
+
 vim.api.nvim_create_user_command('TurtleInspect', function(opts)
   turtle.inspect(opts.args)
 end, { nargs = '?' })
