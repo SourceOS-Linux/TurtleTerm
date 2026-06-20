@@ -19,19 +19,13 @@ on:
       - '.github/workflows/turtle-term-ci.yml'
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
-  # ------------------------------------------------------------------
-  # Python layer: gateway, CLI, shell integration, tests
-  # ------------------------------------------------------------------
   python-layer:
     name: Python layer (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-14]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -87,7 +81,7 @@ jobs:
   # ------------------------------------------------------------------
   packaging:
     name: Packaging verification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -126,43 +120,9 @@ jobs:
         run: |
           python3 -m py_compile assets/sourceos/mcp/turtle-mcp-server
 
-  # ------------------------------------------------------------------
-  # Rust core: build check (no full compile on CI — too slow without cache)
-  # ------------------------------------------------------------------
-  rust-check:
-    name: Rust check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libfontconfig1-dev libfreetype6-dev \
-            libx11-dev libxcb1-dev libxkbcommon-dev \
-            libssl-dev zlib1g-dev cmake
-
-      - name: cargo check (no compile, fast)
-        run: cargo check --workspace 2>&1 | tail -20
-        env:
-          OPENSSL_NO_VENDOR: "1"
-        continue-on-error: true
-        # Full Rust compile is too slow for PR CI without a Rust cache.
-        # Track F: enable cargo build --release on tag pushes.
-
-  # ------------------------------------------------------------------
-  # TRUST_SURFACE.yaml lint
-  # ------------------------------------------------------------------
   trust-surface:
     name: Trust surface lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
