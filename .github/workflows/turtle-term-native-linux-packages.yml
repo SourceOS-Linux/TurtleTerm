@@ -29,10 +29,7 @@ jobs:
             deb_arch: amd64
             rpm_arch: x86_64
             arch_arch: x86_64
-          - os: ubuntu-24.04-arm
-            deb_arch: arm64
-            rpm_arch: aarch64
-            arch_arch: aarch64
+          # ubuntu-24.04-arm is beta and unavailable on this plan; omitted for now
 
     steps:
       - name: Check out repository
@@ -52,7 +49,10 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install Linux build and package dependencies
         run: |
@@ -168,17 +168,16 @@ jobs:
 
       - name: Publish native packages to GitHub release
         if: startsWith(github.ref, 'refs/tags/turtle-term-v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/native/turtle-term_*.deb
-            dist/native/turtle-term_*.deb.sha256
-            dist/native/turtle-term_*.deb.manifest.json
-            dist/native/rpmbuild/RPMS/**/*.rpm
-            dist/native/rpmbuild/RPMS/**/*.rpm.sha256
-            dist/native/rpmbuild/RPMS/**/*.rpm.manifest.json
-            dist/native/turtle-term-*.pkg.tar.zst
-            dist/native/turtle-term-*.pkg.tar.zst.sha256
-            dist/native/turtle-term-*.pkg.tar.zst.manifest.json
-            dist/native/turtle-term-native-packages.index.json
-            dist/native/turtle-term-native-packages.index.json.sha256
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            --title "TurtleTerm ${tag}" \
+            --notes "TurtleTerm ${tag} — native Linux packages." \
+            2>/dev/null || true
+          find dist/native -name '*.deb' -o -name '*.deb.sha256' -o -name '*.deb.manifest.json' \
+            -o -name '*.rpm' -o -name '*.rpm.sha256' -o -name '*.rpm.manifest.json' \
+            -o -name '*.pkg.tar.zst' -o -name '*.pkg.tar.zst.sha256' -o -name '*.pkg.tar.zst.manifest.json' \
+            -o -name '*.index.json' -o -name '*.index.json.sha256' \
+            | xargs gh release upload "$tag" --clobber
