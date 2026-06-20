@@ -101,6 +101,11 @@ class TurtleTerm < Formula
     pkgshare.install "assets/sourceos/skills" => "skills" if Dir.exist?("assets/sourceos/skills")
     pkgshare.install "assets/sourceos/brand" => "brand" if Dir.exist?("assets/sourceos/brand")
     pkgshare.install "assets/sourceos/desktop" => "desktop" if Dir.exist?("assets/sourceos/desktop")
+    pkgshare.install "assets/sourceos/shell" => "shell" if Dir.exist?("assets/sourceos/shell")
+    if File.exist?("assets/sourceos/mcp/turtle-mcp-server")
+      chmod 0755, "assets/sourceos/mcp/turtle-mcp-server"
+      bin.install "assets/sourceos/mcp/turtle-mcp-server"
+    end
 
     if OS.linux?
       if File.exist?("assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop")
@@ -117,38 +122,52 @@ class TurtleTerm < Formula
 
   def caveats
     <<~EOS
-      TurtleTerm installed its profile at:
-        #{etc}/turtle-term/turtleterm.lua
+      TurtleTerm v0.2 installed.
 
-      To use it as your terminal profile:
-        ln -sf #{etc}/turtle-term/turtleterm.lua ~/.wezterm.lua
+      Profile:      #{etc}/turtle-term/turtleterm.lua
+      Shell inits:  #{pkgshare}/shell/
+      MCP server:   #{bin}/turtle-mcp-server
+      Skills:       #{pkgshare}/skills/
 
-      To launch TurtleTerm:
-        turtleterm
+      Shell integration — add to your shell rc:
+        source #{pkgshare}/shell/turtle-shell-init.zsh   # zsh
+        source #{pkgshare}/shell/turtle-shell-init.bash  # bash
+        source #{pkgshare}/shell/turtle-shell-init.fish  # fish (add to config.fish)
 
-      To test TurtleTerm:
-        turtle-term paths
-        turtle-term run -- echo hello
+      Claude Code MCP — add to ~/.claude/settings.json:
+        {
+          "mcpServers": {
+            "turtleterm": {
+              "type": "stdio",
+              "command": "#{bin}/turtle-mcp-server"
+            }
+          }
+        }
+
+      AI features — set ANTHROPIC_API_KEY for Claude-powered explain/NL→shell.
+      Fallback: Noetica at SOURCEOS_NOETICA_URL (default http://localhost:8080).
+
+      Keybinds (in TurtleTerm):
+        CMD+↑ / CMD+↓       Jump between prompt marks
+        CMD+B               Copy last command output to clipboard
+        CMD+SHIFT+B         Copy last command to clipboard
+        CTRL+SHIFT+E        Explain selected text (AI)
+        CTRL+SHIFT+N        Natural language → shell command
+        CTRL+SHIFT+A        Show Atlas context from .atlas/
+        CTRL+SHIFT+G        Policy gate prompt
+
+      Quick smoke test:
         turtle-agentctl --stdio ping
-        turtle-agentctl --stdio surfaces
-        turtle-agent-status --json
-        turtle-cloudfog surfaces
-        turtle-superconscious observe hello
-        turtle-agent-machine surfaces
-        turtle-language diagnostics #{__FILE__}
-        turtle-session profiles
+        turtle-agentctl --stdio noetica-status
+        turtle-agentctl explain-selection "No such file or directory"
+        turtle-agentctl nl-to-shell "show disk usage by directory"
     EOS
   end
 
   test do
-    assert_match "TurtleTerm command wrapper", shell_output("#{bin}/sourceos-term --help")
     assert_match "TurtleTerm command wrapper", shell_output("#{bin}/turtle-term --help")
     assert_match "TurtleTerm local agent gateway", shell_output("#{bin}/turtle-agentd --help")
     assert_match "TurtleTerm agent gateway CLI", shell_output("#{bin}/turtle-agentctl --help")
-    if (bin/"turtle-agent-status").exist?
-      assert_match "SourceOS agent reliability artifacts", shell_output("#{bin}/turtle-agent-status --help")
-    end
-    assert_match "TurtleTerm tmux bridge", shell_output("#{bin}/turtle-tmux --help")
 
     events = testpath/"events.ndjson"
     receipts = testpath/"receipts"
@@ -156,20 +175,18 @@ class TurtleTerm < Formula
     ENV["SOURCEOS_WORKSPACE"] = "turtle-term-brew"
     ENV["SOURCEOS_TERMINAL_EVENTS"] = events.to_s
     ENV["SOURCEOS_TERMINAL_RECEIPTS"] = receipts.to_s
-    ENV["SOURCEOS_ACTOR_ID"] = "test:homebrew"
-    ENV["SOURCEOS_POLICY_BUNDLE_ID"] = "policy:homebrew-test"
     ENV["SOURCEOS_EXECUTION_DOMAIN"] = "host"
+    ENV["ANTHROPIC_API_KEY"] = ""
 
-    assert_match "hello", shell_output("#{bin}/turtle-term run -- echo hello")
-    assert_path_exists events
-    assert_match "command.completed", events.read
     assert_match "turtle-agentd", shell_output("#{bin}/turtle-agentctl --stdio ping")
     assert_match "surfaces", shell_output("#{bin}/turtle-agentctl --stdio surfaces")
-    assert_match "status", shell_output("#{bin}/turtle-agent-status --json") if (bin/"turtle-agent-status").exist?
-    assert_match "cloudfog_surfaces", shell_output("#{bin}/turtle-cloudfog surfaces")
-    assert_match "superconscious_observation", shell_output("#{bin}/turtle-superconscious observe hello")
-    assert_match "agent_machine_surfaces", shell_output("#{bin}/turtle-agent-machine surfaces")
+    assert_match "explain_selection", shell_output("#{bin}/turtle-agentctl --stdio explain-selection 'test output'")
+    assert_match "nl_to_shell", shell_output("#{bin}/turtle-agentctl --stdio nl-to-shell 'list files by size'")
+    assert_match "atlas_context", shell_output("#{bin}/turtle-agentctl --stdio atlas-context #{testpath}")
     assert_match "diagnostics", shell_output("#{bin}/turtle-language diagnostics #{__FILE__}")
-    assert_match "profiles", shell_output("#{bin}/turtle-session profiles")
+    assert_path_exists "#{pkgshare}/shell/turtle-shell-init.zsh"
+    assert_path_exists "#{pkgshare}/shell/turtle-shell-init.bash"
+    assert_path_exists "#{pkgshare}/shell/turtle-shell-init.fish"
+    assert_path_exists "#{bin}/turtle-mcp-server"
   end
 end

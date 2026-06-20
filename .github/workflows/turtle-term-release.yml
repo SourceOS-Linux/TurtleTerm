@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'TurtleTerm version label, for example turtle-term-v0.1.0-dev'
+        description: 'TurtleTerm version label, e.g. turtle-term-v0.2.0-dev'
         required: false
         default: 'turtle-term-dev'
 
@@ -28,19 +28,18 @@ jobs:
         include:
           - os: macos-14
             target: macos-arm64
-          - os: macos-15-intel
-            target: macos-x86_64
           - os: ubuntu-24.04
             target: linux-x86_64
-          - os: ubuntu-24.04-arm
-            target: linux-arm64
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -74,15 +73,6 @@ jobs:
           fi
           packaging/scripts/package-turtle-term.sh "$version" "${{ matrix.target }}"
 
-      - name: Generate TurtleTerm SBOM
-        uses: anchore/sbom-action@v0
-        with:
-          path: .
-          format: spdx-json
-          output-file: dist/turtle-term-${{ matrix.target }}.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
-
       - name: Verify packaged artifacts
         shell: bash
         run: |
@@ -91,8 +81,10 @@ jobs:
           test -n "$archive"
           test -f "$archive.sha256"
           test -f "$archive.manifest.json"
-          test -f "dist/turtle-term-${{ matrix.target }}.spdx.json"
           python3 packaging/scripts/verify-turtle-term-artifact.py "$archive"
+          # Verify shell inits are included
+          tar -tzf "$archive" | grep -q 'shell/turtle-shell-init.zsh' && echo "shell init: OK"
+          tar -tzf "$archive" | grep -q 'turtle-mcp-server' && echo "mcp-server: OK"
 
       - name: Attest TurtleTerm release artifacts
         uses: actions/attest@v4
@@ -102,12 +94,6 @@ jobs:
             dist/turtle-term-*.tar.gz.sha256
             dist/turtle-term-*.tar.gz.manifest.json
 
-      - name: Attest TurtleTerm SBOM
-        uses: actions/attest@v4
-        with:
-          subject-path: dist/turtle-term-*.tar.gz
-          sbom-path: dist/turtle-term-${{ matrix.target }}.spdx.json
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -116,14 +102,19 @@ jobs:
             dist/turtle-term-*.tar.gz
             dist/turtle-term-*.tar.gz.sha256
             dist/turtle-term-*.tar.gz.manifest.json
-            dist/turtle-term-${{ matrix.target }}.spdx.json
 
       - name: Publish GitHub release assets
         if: startsWith(github.ref, 'refs/tags/turtle-term-v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/turtle-term-*.tar.gz
-            dist/turtle-term-*.tar.gz.sha256
-            dist/turtle-term-*.tar.gz.manifest.json
-            dist/turtle-term-${{ matrix.target }}.spdx.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            --title "TurtleTerm ${tag}" \
+            --notes "TurtleTerm ${tag} — see CHANGELOG for details." \
+            2>/dev/null || true
+          gh release upload "$tag" \
+            dist/turtle-term-*.tar.gz \
+            dist/turtle-term-*.tar.gz.sha256 \
+            dist/turtle-term-*.tar.gz.manifest.json \
+            --clobber

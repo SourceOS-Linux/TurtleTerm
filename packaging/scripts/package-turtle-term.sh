@@ -20,6 +20,8 @@ mkdir -p \
   "$stage/share/turtle-term/skills" \
   "$stage/share/turtle-term/brand" \
   "$stage/share/turtle-term/desktop" \
+  "$stage/share/turtle-term/shell" \
+  "$stage/share/turtle-term/mcp" \
   "$stage/libexec/turtle-term"
 
 cp "$repo_root/target/release/wezterm" "$stage/libexec/turtle-term/"
@@ -51,6 +53,12 @@ cp -R "$repo_root/docs/sourceos/." "$stage/share/turtle-term/sourceos/"
 cp -R "$repo_root/assets/sourceos/skills/." "$stage/share/turtle-term/skills/"
 cp -R "$repo_root/assets/sourceos/brand/." "$stage/share/turtle-term/brand/"
 cp -R "$repo_root/assets/sourceos/desktop/." "$stage/share/turtle-term/desktop/"
+cp -R "$repo_root/assets/sourceos/shell/." "$stage/share/turtle-term/shell/"
+if [[ -f "$repo_root/assets/sourceos/mcp/turtle-mcp-server" ]]; then
+  cp "$repo_root/assets/sourceos/mcp/turtle-mcp-server" "$stage/bin/turtle-mcp-server"
+  chmod 0755 "$stage/bin/turtle-mcp-server"
+  cp -R "$repo_root/assets/sourceos/mcp/." "$stage/share/turtle-term/mcp/"
+fi
 cp "$repo_root/LICENSE.md" "$stage/"
 cp "$repo_root/THIRD_PARTY_NOTICES.md" "$stage/" 2>/dev/null || true
 
