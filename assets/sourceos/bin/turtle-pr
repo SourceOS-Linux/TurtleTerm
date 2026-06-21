@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""turtle-pr — Create a GitHub PR from your current terminal session.
+
+Uses git context + AI to write the PR title and body.
+
+Usage:
+  turtle-pr                     Interactive PR creation
+  turtle-pr --style concise     Brief title + 3 bullets
+  turtle-pr --style detailed    Full template with testing section
+  turtle-pr --dry-run           Preview without creating
+  turtle-pr --open              Open PR in browser after creation
+"""
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+def agentd(payload: dict) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=30)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def run(*args: str, check: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run(list(args), capture_output=True, text=True, check=check)
+
+def main() -> int:
+    args = sys.argv[1:]
+    style    = "detailed"
+    dry_run  = "--dry-run" in args
+    open_pr  = "--open" in args
+    if "--style" in args:
+        idx = args.index("--style")
+        style = args[idx+1] if idx+1 < len(args) else "detailed"
+
+    cwd = Path.cwd()
+
+    # Check git
+    if not (cwd / ".git").exists():
+        parent = run("git", "rev-parse", "--show-toplevel")
+        if parent.returncode != 0:
+            print("Not a git repository.", file=sys.stderr); return 1
+        cwd = Path(parent.stdout.strip())
+
+    # Generate PR content via AI
+    print("Generating PR description from session history...")
+    r = agentd({"action": "session-to-pr", "cwd": str(cwd), "style": style})
+    if not r or r.get("status") != "ok":
+        print("Failed to generate PR content.", file=sys.stderr); return 1
+
+    d = r["data"]
+    title = d.get("title", "")
+    body  = d.get("body", "")
+    branch = d.get("branch", "")
+
+    if not title:
+        title = input("PR title: ").strip()
+    if not title:
+        print("Title required."); return 1
+
+    print(f"\n{'─'*60}")
+    print(f"Branch : {branch}")
+    print(f"Title  : {title}")
+    print(f"\nBody:\n{body[:600]}")
+    print(f"{'─'*60}")
+
+    if dry_run:
+        print("\n(dry-run — not creating PR)")
+        return 0
+
+    confirm = input("\nCreate PR? [Y/n] ").strip().lower()
+    if confirm == "n":
+        print("Aborted."); return 0
+
+    # Create via gh CLI
+    gh = run("gh", "--version")
+    if gh.returncode != 0:
+        print("Install gh CLI: brew install gh", file=sys.stderr); return 1
+
+    result = run("gh", "pr", "create", "--title", title, "--body", body)
+    if result.returncode != 0:
+        print(f"gh pr create failed:\n{result.stderr}", file=sys.stderr); return 1
+
+    pr_url = result.stdout.strip()
+    print(f"\n✓ PR created: {pr_url}")
+
+    if open_pr and pr_url:
+        run("open", pr_url)
+
+    return 0
+
+if __name__ == "__main__": raise SystemExit(main())

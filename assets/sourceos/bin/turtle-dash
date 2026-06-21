@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""turtle-dash — Live TurtleTerm dashboard (terminal UI).
+
+Shows: active sessions, recent commands, perf stats, agent status,
+memory count, active plan, error patterns.
+
+Usage:
+  turtle-dash                Auto-refresh every 2s
+  turtle-dash --once         Print once and exit
+  turtle-dash --json         JSON output for scripting
+"""
+from __future__ import annotations
+import json, os, subprocess, sys, time
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+RESET='\033[0m'; BOLD='\033[1m'; GREEN='\033[32m'; RED='\033[31m'
+YELLOW='\033[33m'; CYAN='\033[36m'; GRAY='\033[90m'; BLUE='\033[34m'
+MAGENTA='\033[35m'
+
+def agentd(payload: dict, timeout: int = 5) -> dict:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout).get("data", {})
+    except Exception: return {}
+
+def bar(val: int, max_val: int, width: int = 20, color: str = GREEN) -> str:
+    if max_val == 0: return "░" * width
+    filled = min(width, int(val / max_val * width))
+    return color + "█" * filled + RESET + GRAY + "░" * (width - filled) + RESET
+
+def clear() -> None:
+    os.system("clear" if os.name != "nt" else "cls")
+
+def render() -> str:
+    lines = []
+    W = 70
+
+    # Header
+    lines.append(f"{BOLD}{CYAN}{'━'*W}{RESET}")
+    lines.append(f"{BOLD}{CYAN}  🐢 TurtleTerm Dashboard{RESET}  {GRAY}{time.strftime('%H:%M:%S')}{RESET}")
+    lines.append(f"{CYAN}{'━'*W}{RESET}")
+
+    # Agent status
+    ping = agentd({"action": "ping"})
+    ver  = ping.get("version", "?")
+    lines.append(f"\n{BOLD}Agent{RESET}  v{ver}  {'🟢 online' if ver != '?' else '🔴 offline'}")
+
+    # Active plan
+    plan = agentd({"action": "plan_status"})
+    if plan.get("active"):
+        step = plan.get("current_step", 0)
+        total = len(plan.get("steps", []))
+        goal = plan.get("goal", "")[:50]
+        lines.append(f"{BOLD}Plan{RESET}   {YELLOW}⟳ step {step+1}/{total}{RESET}  {goal}")
+    else:
+        lines.append(f"{BOLD}Plan{RESET}   {GRAY}idle{RESET}")
+
+    # Background plans
+    bg = agentd({"action": "bg-plan-list"})
+    running_bg = [p for p in bg.get("plans", []) if p.get("status") == "running"]
+    if running_bg:
+        lines.append(f"{BOLD}BG Plans{RESET}  {len(running_bg)} running")
+        for p in running_bg[:3]:
+            lines.append(f"   {YELLOW}⟳{RESET}  {p.get('plan_id','?')}  {p.get('goal','')[:45]}")
+
+    # Perf stats
+    lines.append(f"\n{BOLD}{'─'*W}{RESET}")
+    lines.append(f"{BOLD}Performance{RESET}")
+    perf = agentd({"action": "perf-stats", "limit": 200})
+    total_cmds = perf.get("total", 0)
+    avg_ms     = perf.get("avg_ms", 0)
+    slowest    = (perf.get("slowest") or [{}])[0]
+    lines.append(f"  Commands tracked : {total_cmds}")
+    lines.append(f"  Avg wall time    : {avg_ms}ms")
+    if slowest.get("command"):
+        lines.append(f"  Slowest          : {slowest.get('wall_ms',0)}ms  {slowest.get('command','')[:35]}")
+
+    # Memory
+    lines.append(f"\n{BOLD}{'─'*W}{RESET}")
+    mems = agentd({"action": "memory-list", "limit": 3})
+    mem_count = mems.get("total", 0)
+    lines.append(f"{BOLD}AI Memory{RESET}  {mem_count} facts stored")
+    for m in (mems.get("memories") or [])[:3]:
+        lines.append(f"  {GREEN}·{RESET}  {m.get('key','?'):20}  {str(m.get('value',''))[:35]}")
+
+    # Persona
+    persona = agentd({"action": "persona-get"})
+    p = persona.get("persona", {})
+    if p and p.get("role"):
+        lines.append(f"\n{BOLD}Persona{RESET}  {p.get('role','')} · {p.get('stack','')[:40]}")
+
+    # Error patterns
+    errs = agentd({"action": "error-patterns", "threshold": 2})
+    patterns = errs.get("patterns", [])
+    total_fail = errs.get("total_failures", 0)
+    lines.append(f"\n{BOLD}{'─'*W}{RESET}")
+    lines.append(f"{BOLD}Errors{RESET}  {total_fail} failures in session")
+    for ep in patterns[:3]:
+        lines.append(f"  {RED}✗ ×{ep.get('count',0)}{RESET}  {ep.get('recent_command','')[:50]}")
+
+    # Webhooks
+    wh = agentd({"action": "webhook-list"})
+    wh_count = wh.get("count", 0)
+    if wh_count:
+        lines.append(f"\n{BOLD}Webhooks{RESET}  {wh_count} registered")
+
+    # Footer
+    lines.append(f"\n{CYAN}{'━'*W}{RESET}")
+    lines.append(f"{GRAY}  q=quit  r=refresh  m=memories  p=plan  b=bg-plans{RESET}")
+    return "\n".join(lines)
+
+def main() -> int:
+    args = sys.argv[1:]
+    once = "--once" in args
+    as_json = "--json" in args
+
+    if as_json:
+        data = {
+            "ping":   agentd({"action": "ping"}),
+            "plan":   agentd({"action": "plan_status"}),
+            "perf":   agentd({"action": "perf-stats"}),
+            "memory": agentd({"action": "memory-list"}),
+            "errors": agentd({"action": "error-patterns"}),
+        }
+        print(json.dumps(data, indent=2)); return 0
+
+    if once:
+        print(render()); return 0
+
+    try:
+        while True:
+            clear()
+            print(render())
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print("\nBye.")
+    return 0
+
+if __name__ == "__main__": raise SystemExit(main())

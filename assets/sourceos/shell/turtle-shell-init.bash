@@ -240,3 +240,31 @@ fi
 trap 'rm -f "$_TURTLE_GHOST_FILE"; [[ $_TURTLE_GHOST_PID -gt 0 ]] && kill "$_TURTLE_GHOST_PID" 2>/dev/null' EXIT
 
 fi  # end ANTHROPIC_API_KEY / TURTLE_GHOST_TEXT guard
+
+# ============================================================
+# Auto-perf timing for bash
+# ============================================================
+_turtle_bash_preexec() {
+    _TURTLE_PERF_START=$(date +%s%3N 2>/dev/null || echo 0)
+    _TURTLE_PERF_CMD="$BASH_COMMAND"
+}
+_turtle_bash_precmd() {
+    local rc=$?
+    if [[ -n "$_TURTLE_PERF_START" && -n "$_TURTLE_PERF_CMD" ]]; then
+        local now=$(date +%s%3N 2>/dev/null || echo 0)
+        local elapsed_ms=$(( now - _TURTLE_PERF_START ))
+        if (( elapsed_ms > 100 )); then
+            (turtle-agentctl --stdio perf-record "$_TURTLE_PERF_CMD" "$elapsed_ms" >/dev/null 2>&1 &)
+        fi
+        if (( elapsed_ms > 10000 )); then
+            (osascript -e "display notification \"${_TURTLE_PERF_CMD:0:40} (${elapsed_ms}ms)\" with title \"TurtleTerm\"" 2>/dev/null &)
+        fi
+        _TURTLE_PERF_START=""
+        _TURTLE_PERF_CMD=""
+    fi
+}
+trap '_turtle_bash_preexec' DEBUG
+# Add to PROMPT_COMMAND
+if [[ "$PROMPT_COMMAND" != *"_turtle_bash_precmd"* ]]; then
+    PROMPT_COMMAND="_turtle_bash_precmd${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+fi

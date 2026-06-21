@@ -3277,6 +3277,350 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         p_path.write_text(json.dumps(persona, indent=2))
         return response("persona_marketplace_install", {"installed": True, "persona": persona, "id": persona_id})
 
+    # ------------------------------------------------------------------
+    # Background Agent (run plans detached)
+    # ------------------------------------------------------------------
+    if action in ("bg_plan_start", "bg-plan-start"):
+        goal   = request.get("goal", "").strip()
+        notify = request.get("notify", True)
+        if not goal:
+            return response("bg_plan_start", {"started": False, "reason": "goal required"})
+        import subprocess as _sp_bg, uuid as _uuid
+        plan_id = str(_uuid.uuid4())[:8]
+        log_path = Path.home() / ".config" / "turtleterm" / "bg_plans" / f"{plan_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path = log_path.with_suffix(".json")
+        state = {"plan_id": plan_id, "goal": goal, "status": "running", "started": __import__('datetime').datetime.utcnow().isoformat(), "pid": None}
+        state_path.write_text(json.dumps(state))
+        # Spawn detached agentd process to execute the plan
+        agentd_path = Path(__file__)
+        proc = _sp_bg.Popen(
+            [sys.executable, str(agentd_path), "--stdio"],
+            stdin=_sp_bg.PIPE, stdout=open(log_path, "w"), stderr=_sp_bg.STDOUT,
+            start_new_session=True,
+        )
+        payload = json.dumps({"action": "plan_execute", "goal": goal, "bg_plan_id": plan_id})
+        try:
+            proc.stdin.write(payload.encode())
+            proc.stdin.close()
+        except Exception:
+            pass
+        state["pid"] = proc.pid
+        state_path.write_text(json.dumps(state))
+        return response("bg_plan_start", {"started": True, "plan_id": plan_id, "goal": goal, "log": str(log_path), "pid": proc.pid})
+
+    if action in ("bg_plan_list", "bg-plan-list"):
+        bg_dir = Path.home() / ".config" / "turtleterm" / "bg_plans"
+        plans = []
+        if bg_dir.exists():
+            for f in sorted(bg_dir.glob("*.json"), reverse=True)[:20]:
+                try:
+                    st = json.loads(f.read_text())
+                    # Check if still running
+                    pid = st.get("pid")
+                    if pid and st.get("status") == "running":
+                        import os as _os_bg
+                        try:
+                            _os_bg.kill(pid, 0)
+                        except ProcessLookupError:
+                            st["status"] = "completed"
+                            f.write_text(json.dumps(st))
+                    plans.append(st)
+                except Exception:
+                    pass
+        return response("bg_plan_list", {"plans": plans, "count": len(plans)})
+
+    if action in ("bg_plan_status", "bg-plan-status"):
+        plan_id = request.get("plan_id", "").strip()
+        bg_dir  = Path.home() / ".config" / "turtleterm" / "bg_plans"
+        if not plan_id:
+            # Return most recent
+            states = sorted(bg_dir.glob("*.json"), reverse=True) if bg_dir.exists() else []
+            if not states:
+                return response("bg_plan_status", {"found": False})
+            plan_id = states[0].stem
+        state_path = bg_dir / f"{plan_id}.json"
+        log_path   = bg_dir / f"{plan_id}.log"
+        if not state_path.exists():
+            return response("bg_plan_status", {"found": False, "plan_id": plan_id})
+        st = json.loads(state_path.read_text())
+        log_tail = ""
+        if log_path.exists():
+            lines = log_path.read_text().splitlines()
+            log_tail = "\n".join(lines[-20:])
+        return response("bg_plan_status", {**st, "log_tail": log_tail, "found": True})
+
+    if action in ("bg_plan_cancel", "bg-plan-cancel"):
+        plan_id = request.get("plan_id", "").strip()
+        bg_dir  = Path.home() / ".config" / "turtleterm" / "bg_plans"
+        state_path = bg_dir / f"{plan_id}.json"
+        if not state_path.exists():
+            return response("bg_plan_cancel", {"cancelled": False, "reason": "not found"})
+        st = json.loads(state_path.read_text())
+        pid = st.get("pid")
+        if pid:
+            import os as _os_bc, signal as _sig
+            try:
+                _os_bc.kill(pid, _sig.SIGTERM)
+            except Exception:
+                pass
+        st["status"] = "cancelled"
+        state_path.write_text(json.dumps(st))
+        return response("bg_plan_cancel", {"cancelled": True, "plan_id": plan_id})
+
+    # ------------------------------------------------------------------
+    # Webhook Dispatcher (terminal events → any URL)
+    # ------------------------------------------------------------------
+    if action in ("webhook_add", "webhook-add"):
+        url      = request.get("url", "").strip()
+        events   = request.get("events", ["command.completed"])
+        name     = request.get("name", url[:40])
+        if not url or not url.startswith("http"):
+            return response("webhook_add", {"added": False, "reason": "valid https:// URL required"})
+        wh_path = Path.home() / ".config" / "turtleterm" / "webhooks.json"
+        wh_path.parent.mkdir(parents=True, exist_ok=True)
+        hooks = []
+        if wh_path.exists():
+            try: hooks = json.loads(wh_path.read_text())
+            except: hooks = []
+        hooks = [h for h in hooks if h.get("url") != url]  # deduplicate
+        hooks.append({"url": url, "events": events, "name": name, "created": __import__('datetime').datetime.utcnow().isoformat()})
+        wh_path.write_text(json.dumps(hooks, indent=2))
+        return response("webhook_add", {"added": True, "total": len(hooks), "name": name})
+
+    if action in ("webhook_list", "webhook-list"):
+        wh_path = Path.home() / ".config" / "turtleterm" / "webhooks.json"
+        hooks = []
+        if wh_path.exists():
+            try: hooks = json.loads(wh_path.read_text())
+            except: hooks = []
+        return response("webhook_list", {"webhooks": hooks, "count": len(hooks)})
+
+    if action in ("webhook_remove", "webhook-remove"):
+        url = request.get("url", "").strip()
+        wh_path = Path.home() / ".config" / "turtleterm" / "webhooks.json"
+        if not wh_path.exists():
+            return response("webhook_remove", {"removed": False})
+        hooks = [h for h in json.loads(wh_path.read_text()) if h.get("url") != url]
+        wh_path.write_text(json.dumps(hooks, indent=2))
+        return response("webhook_remove", {"removed": True, "remaining": len(hooks)})
+
+    if action in ("webhook_dispatch", "webhook-dispatch"):
+        event_type = request.get("event_type", "")
+        event_data = request.get("data", {})
+        wh_path = Path.home() / ".config" / "turtleterm" / "webhooks.json"
+        if not wh_path.exists():
+            return response("webhook_dispatch", {"dispatched": 0})
+        try: hooks = json.loads(wh_path.read_text())
+        except: hooks = []
+        import urllib.request as _ur_wh, urllib.error as _ue_wh
+        dispatched = 0
+        errors = []
+        for hook in hooks:
+            if event_type and event_type not in hook.get("events", [event_type]):
+                continue
+            payload = json.dumps({"event": event_type, "data": event_data, "source": "turtleterm"}).encode()
+            req = _ur_wh.Request(hook["url"], data=payload, headers={"Content-Type": "application/json", "User-Agent": "TurtleTerm/1.0"})
+            try:
+                with _ur_wh.urlopen(req, timeout=5) as r:
+                    dispatched += 1
+            except Exception as e:
+                errors.append(str(e)[:80])
+        return response("webhook_dispatch", {"dispatched": dispatched, "total_hooks": len(hooks), "errors": errors})
+
+    # ------------------------------------------------------------------
+    # Error Pattern Detection (proactive: "you've hit this 3 times today")
+    # ------------------------------------------------------------------
+    if action in ("error_patterns", "error-patterns"):
+        session_id = request.get("session_id") or env("SOURCEOS_TERMINAL_SESSION_ID", "")
+        lookback   = int(request.get("lookback", 500))
+        threshold  = int(request.get("threshold", 2))
+        events = read_ndjson(event_stream_path(), limit=lookback)
+        if session_id:
+            events = [e for e in events if e.get("session_id") == session_id]
+        # Gather failed commands (exit_code != 0)
+        failed = [e for e in events if e.get("event_type") == "command.completed" and e.get("exit_code", 0) != 0]
+        from collections import Counter as _Ctr_ep
+        import re as _re_ep
+        # Normalize errors: strip variable parts (paths, numbers, UUIDs)
+        def _norm(s: str) -> str:
+            s = _re_ep.sub(r'/[^\s]+', '/<path>', s)
+            s = _re_ep.sub(r'\b[0-9]+\b', 'N', s)
+            s = _re_ep.sub(r'[a-f0-9]{8,}', '<hash>', s)
+            return s[:100]
+        cmd_counts = _Ctr_ep(_norm(e.get("command","")) for e in failed)
+        patterns = [{"pattern": p, "count": c, "recent_command": next((e.get("command","") for e in reversed(failed) if _norm(e.get("command","")) == p), "")}
+                    for p, c in cmd_counts.most_common(5) if c >= threshold]
+        # AI fix suggestions for top pattern
+        suggestions = []
+        if patterns and env("ANTHROPIC_API_KEY"):
+            top = patterns[0]
+            _persona = _load_persona_system()
+            _mems    = _load_memories_context()
+            _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+            system = (_prefix + "\n\n" if _prefix else "") + (
+                "You are a shell expert. The user keeps running a failing command. "
+                "Provide a concise fix in under 2 sentences."
+            )
+            ai = _claude_chat(f"Failing command (run {top['count']} times): {top['recent_command']}", system=system, timeout=10)
+            if ai:
+                suggestions.append({"pattern": top["pattern"], "fix": (ai.get("response") or "").strip()[:300]})
+        return response("error_patterns", {"patterns": patterns, "total_failures": len(failed), "suggestions": suggestions})
+
+    # ------------------------------------------------------------------
+    # Agent Scratchpad (persistent AI-readable notes)
+    # ------------------------------------------------------------------
+    if action in ("scratchpad_write", "scratchpad-write"):
+        content   = request.get("content", "").strip()
+        key       = request.get("key", "default").strip() or "default"
+        append    = bool(request.get("append", False))
+        sp_dir    = Path.home() / ".config" / "turtleterm" / "scratchpad"
+        sp_dir.mkdir(parents=True, exist_ok=True)
+        sp_file   = sp_dir / f"{key}.md"
+        if append and sp_file.exists():
+            existing = sp_file.read_text()
+            sp_file.write_text(existing + "\n\n" + content)
+        else:
+            sp_file.write_text(content)
+        return response("scratchpad_write", {"saved": True, "key": key, "path": str(sp_file), "size": sp_file.stat().st_size})
+
+    if action in ("scratchpad_read", "scratchpad-read"):
+        key    = request.get("key", "default").strip() or "default"
+        sp_dir = Path.home() / ".config" / "turtleterm" / "scratchpad"
+        sp_file = sp_dir / f"{key}.md"
+        if not sp_file.exists():
+            return response("scratchpad_read", {"content": "", "exists": False, "key": key})
+        content = sp_file.read_text()
+        return response("scratchpad_read", {"content": content, "exists": True, "key": key, "size": len(content)})
+
+    if action in ("scratchpad_list", "scratchpad-list"):
+        sp_dir = Path.home() / ".config" / "turtleterm" / "scratchpad"
+        pads = []
+        if sp_dir.exists():
+            for f in sorted(sp_dir.glob("*.md")):
+                pads.append({"key": f.stem, "path": str(f), "size": f.stat().st_size,
+                             "preview": f.read_text()[:80].replace("\n", " ")})
+        return response("scratchpad_list", {"pads": pads, "count": len(pads)})
+
+    # ------------------------------------------------------------------
+    # Policy Engine (YAML rules — block/warn/allow)
+    # ------------------------------------------------------------------
+    if action in ("policy_check", "policy-check"):
+        command  = request.get("command", "").strip()
+        cwd      = request.get("cwd", ".") or "."
+        if not command:
+            return response("policy_check", {"allowed": True, "verdict": "allow", "rules_checked": 0})
+        import re as _re_pol
+        # Find .turtle/policy.yaml walking up from cwd
+        policy: list[dict] = []
+        p = Path(cwd).expanduser().resolve()
+        for _ in range(8):
+            pf = p / ".turtle" / "policy.yaml"
+            if pf.exists():
+                try:
+                    import subprocess as _sp_pol
+                    r = _sp_pol.run(["python3", "-c", f"import yaml,json,sys; print(json.dumps(yaml.safe_load(open({str(pf)!r}))))"], capture_output=True, text=True, timeout=3)
+                    if r.returncode == 0:
+                        data = json.loads(r.stdout)
+                        policy = data.get("rules", []) if isinstance(data, dict) else []
+                except Exception:
+                    pass
+                break
+            parent = p.parent
+            if parent == p:
+                break
+            p = parent
+        if not policy:
+            return response("policy_check", {"allowed": True, "verdict": "allow", "rules_checked": 0, "policy_file": None})
+        verdict = "allow"
+        matched_rule = None
+        for rule in policy:
+            pattern = rule.get("pattern", "")
+            if not pattern:
+                continue
+            try:
+                if _re_pol.search(pattern, command, _re_pol.IGNORECASE):
+                    verdict = rule.get("action", "warn")
+                    matched_rule = rule
+                    break
+            except _re_pol.error:
+                if pattern.lower() in command.lower():
+                    verdict = rule.get("action", "warn")
+                    matched_rule = rule
+                    break
+        return response("policy_check", {
+            "allowed": verdict == "allow",
+            "verdict": verdict,
+            "matched_rule": matched_rule,
+            "rules_checked": len(policy),
+            "command": command,
+            "reason": (matched_rule or {}).get("reason", ""),
+        })
+
+    # ------------------------------------------------------------------
+    # Pre-commit Hook Installer
+    # ------------------------------------------------------------------
+    if action in ("install_hooks", "install-hooks"):
+        cwd      = request.get("cwd", ".") or "."
+        hooks    = request.get("hooks", ["secrets", "shellcheck", "policy"])
+        cwd_path = Path(cwd).expanduser().resolve()
+        git_dir  = cwd_path / ".git"
+        if not git_dir.exists():
+            return response("install_hooks", {"installed": False, "reason": f"Not a git repo: {cwd_path}"})
+        hooks_dir = git_dir / "hooks"
+        hooks_dir.mkdir(exist_ok=True)
+        hook_path = hooks_dir / "pre-commit"
+        agentctl_bin = str(Path(__file__).parent / "turtle-agentctl")
+        checks = []
+        if "secrets" in hooks:
+            checks.append(f'''
+# TurtleTerm: Detect secrets before commit
+echo "🐢 TurtleTerm: scanning for secrets..."
+git diff --cached --unified=0 | python3 "{agentctl_bin}" --stdio detect-secrets - 2>/dev/null | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+s=d.get('data',{{}}).get('secrets',[])
+if s:
+    print('\\033[31m✗ Secrets detected - commit blocked:\\033[0m')
+    for sec in s: print(' ', sec.get('type','?'), ':', sec.get('match','')[:40])
+    sys.exit(1)
+" || exit 1
+''')
+        if "shellcheck" in hooks:
+            checks.append(f'''
+# TurtleTerm: Shellcheck on staged .sh files
+for f in $(git diff --cached --name-only --diff-filter=ACM | grep '\\.sh$'); do
+  python3 "{agentctl_bin}" --stdio shellcheck-lint "$(cat $f)" 2>/dev/null | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+issues=d.get('data',{{}}).get('issues',[])
+if issues:
+    print(f'\\033[33m⚠ Shellcheck: $f has {{len(issues)}} issue(s)\\033[0m')
+    for i in issues[:3]: print('  L'+str(i.get('line','?'))+': '+str(i.get('message',''))[:80])
+" 2>/dev/null
+done
+''')
+        if "policy" in hooks:
+            checks.append(f'''
+# TurtleTerm: Policy check on commit message
+# (Extend: add your .turtle/policy.yaml rules)
+''')
+        script = "#!/bin/sh\n# TurtleTerm pre-commit hooks (auto-generated — do not edit)\n" + "\n".join(checks) + "\nexit 0\n"
+        hook_path.write_text(script)
+        hook_path.chmod(0o755)
+        return response("install_hooks", {"installed": True, "path": str(hook_path), "hooks": hooks, "cwd": str(cwd_path)})
+
+    if action in ("uninstall_hooks", "uninstall-hooks"):
+        cwd = request.get("cwd", ".") or "."
+        hook_path = Path(cwd).expanduser().resolve() / ".git" / "hooks" / "pre-commit"
+        if not hook_path.exists():
+            return response("uninstall_hooks", {"removed": False, "reason": "no hook found"})
+        content = hook_path.read_text()
+        if "TurtleTerm" not in content:
+            return response("uninstall_hooks", {"removed": False, "reason": "hook not managed by TurtleTerm"})
+        hook_path.unlink()
+        return response("uninstall_hooks", {"removed": True, "path": str(hook_path)})
+
     return response("error", {"message": f"unknown action: {action}"}, status="error")
 
 

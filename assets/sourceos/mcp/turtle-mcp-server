@@ -617,6 +617,23 @@ TOOLS = [
     {"name": "language_document_symbols", "description": "List all symbols (functions, classes, types) in a file as an outline", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "filename": {"type": "string"}}, "required": ["filename"]}},
     {"name": "language_rename", "description": "Rename a symbol at position across the entire file", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "filename": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "new_name": {"type": "string"}}, "required": ["filename", "new_name"]}},
     {"name": "language_workspace_diagnostics", "description": "Run diagnostics on all git-changed files in the project", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}}}}},
+    # New surface tools
+    {"name": "bg_plan_start", "description": "Start an AI agent plan in the background (detached from terminal)", "inputSchema": {"type": "object", "properties": {"goal": {"type": "string"}, "notify": {"type": "boolean"}}, "required": ["goal"]}},
+    {"name": "bg_plan_list", "description": "List all background plans (running, completed, cancelled)", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "bg_plan_status", "description": "Get status and log tail of a background plan", "inputSchema": {"type": "object", "properties": {"plan_id": {"type": "string"}}}},
+    {"name": "bg_plan_cancel", "description": "Cancel a running background plan", "inputSchema": {"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}},
+    {"name": "webhook_add", "description": "Register a webhook URL to receive terminal events", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "events": {"type": "array"}, "name": {"type": "string"}}, "required": ["url"]}},
+    {"name": "webhook_list", "description": "List registered webhooks", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "webhook_remove", "description": "Remove a webhook by URL", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
+    {"name": "webhook_dispatch", "description": "Manually dispatch an event to all matching webhooks", "inputSchema": {"type": "object", "properties": {"event_type": {"type": "string"}, "data": {"type": "object"}}}},
+    {"name": "error_patterns", "description": "Detect repeated failing command patterns with AI fix suggestions", "inputSchema": {"type": "object", "properties": {"threshold": {"type": "integer"}, "lookback": {"type": "integer"}}}},
+    {"name": "scratchpad_write", "description": "Write a note to the AI scratchpad (persistent cross-session notes)", "inputSchema": {"type": "object", "properties": {"content": {"type": "string"}, "key": {"type": "string"}, "append": {"type": "boolean"}}, "required": ["content"]}},
+    {"name": "scratchpad_read", "description": "Read a scratchpad note", "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}}}},
+    {"name": "scratchpad_list", "description": "List all scratchpad notes", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "policy_check", "description": "Check a command against .turtle/policy.yaml rules (allow/warn/block)", "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["command"]}},
+    {"name": "install_hooks", "description": "Install TurtleTerm pre-commit hooks (secrets, shellcheck, policy) in a git repo", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}, "hooks": {"type": "array"}}}},
+    {"name": "uninstall_hooks", "description": "Remove TurtleTerm pre-commit hooks", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}}},
+    {"name": "dashboard", "description": "Get a structured dashboard snapshot: agent status, plan, perf, memory, errors", "inputSchema": {"type": "object", "properties": {}}},
 ]
 
 
@@ -847,6 +864,30 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             except (json.JSONDecodeError, OSError):
                 workspaces.append({"name": p.stem, "saved_at": None, "tab_count": None})
         return {"workspaces": workspaces, "count": len(workspaces)}
+    if name == 'bg_plan_start': return _agentd({'action': 'bg-plan-start', 'goal': arguments.get('goal'), 'notify': arguments.get('notify', True)})
+    if name == 'bg_plan_list': return _agentd({'action': 'bg-plan-list'})
+    if name == 'bg_plan_status': return _agentd({'action': 'bg-plan-status', 'plan_id': arguments.get('plan_id', '')})
+    if name == 'bg_plan_cancel': return _agentd({'action': 'bg-plan-cancel', 'plan_id': arguments.get('plan_id')})
+    if name == 'webhook_add': return _agentd({'action': 'webhook-add', 'url': arguments.get('url'), 'events': arguments.get('events', ['command.completed']), 'name': arguments.get('name', '')})
+    if name == 'webhook_list': return _agentd({'action': 'webhook-list'})
+    if name == 'webhook_remove': return _agentd({'action': 'webhook-remove', 'url': arguments.get('url')})
+    if name == 'webhook_dispatch': return _agentd({'action': 'webhook-dispatch', 'event_type': arguments.get('event_type', ''), 'data': arguments.get('data', {})})
+    if name == 'error_patterns': return _agentd({'action': 'error-patterns', 'threshold': arguments.get('threshold', 2), 'lookback': arguments.get('lookback', 500)})
+    if name == 'scratchpad_write': return _agentd({'action': 'scratchpad-write', 'content': arguments.get('content'), 'key': arguments.get('key', 'default'), 'append': arguments.get('append', False)})
+    if name == 'scratchpad_read': return _agentd({'action': 'scratchpad-read', 'key': arguments.get('key', 'default')})
+    if name == 'scratchpad_list': return _agentd({'action': 'scratchpad-list'})
+    if name == 'policy_check': return _agentd({'action': 'policy-check', 'command': arguments.get('command'), 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD', '.'))})
+    if name == 'install_hooks': return _agentd({'action': 'install-hooks', 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD', '.')), 'hooks': arguments.get('hooks', ['secrets', 'shellcheck', 'policy'])})
+    if name == 'uninstall_hooks': return _agentd({'action': 'uninstall-hooks', 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD', '.'))})
+    if name == 'dashboard':
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=5) as ex:
+            futs = {k: ex.submit(_agentd, v) for k, v in [
+                ('ping', {'action':'ping'}), ('plan', {'action':'plan_status'}),
+                ('perf', {'action':'perf-stats'}), ('memory', {'action':'memory-list','limit':5}),
+                ('errors', {'action':'error-patterns','threshold':2}),
+            ]}
+            return {'status':'ok','data':{k: (f.result() or {}).get('data',{}) for k,f in futs.items()}}
     return {"error": f"unknown tool: {name}"}
 
 
@@ -870,7 +911,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turtleterm", "version": "0.7.0"},
+                "serverInfo": {"name": "turtleterm", "version": "0.8.0"},
             },
         }
 

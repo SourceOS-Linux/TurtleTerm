@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""turtle-issue — Create a GitHub issue from a terminal error.
+
+Captures the last failed command + output and files it as a bug report.
+
+Usage:
+  turtle-issue                    Create issue from last error
+  turtle-issue "description"      Create issue with custom description
+  turtle-issue --dry-run          Preview without creating
+"""
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+def agentd(payload: dict) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=20)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def run(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(list(args), capture_output=True, text=True)
+
+def main() -> int:
+    args = sys.argv[1:]
+    dry_run = "--dry-run" in args
+    description = " ".join(a for a in args if not a.startswith("-")).strip()
+
+    # Get last error from event stream
+    r = agentd({"action": "output-search", "query": "", "limit": 100})
+    last_error = None
+    if r:
+        results = r.get("data", {}).get("results", [])
+        failed = [x for x in results if x.get("exit_code", 0) != 0]
+        if failed:
+            last_error = failed[-1]
+
+    # Get git context
+    git_r = agentd({"action": "git-context"})
+    git_ctx = git_r.get("data", {}) if git_r else {}
+    branch = git_ctx.get("branch", "unknown")
+    remote = git_ctx.get("remote", "")
+
+    # Build issue
+    cmd  = (last_error or {}).get("command", "")
+    out  = (last_error or {}).get("output_preview", "")
+    rc   = (last_error or {}).get("exit_code", "?")
+
+    title = description or f"Error: `{cmd[:60]}`" if cmd else "Terminal error report"
+
+    body_parts = [f"## Error Report\n"]
+    if description: body_parts.append(f"**Description:** {description}\n")
+    if cmd:
+        body_parts.append(f"**Command:**\n```sh\n{cmd}\n```")
+        body_parts.append(f"**Exit code:** {rc}")
+    if out:
+        body_parts.append(f"**Output:**\n```\n{out[:500]}\n```")
+    body_parts.append(f"\n**Branch:** `{branch}`")
+    body_parts.append(f"\n*Reported via TurtleTerm v1.0.0*")
+    body = "\n\n".join(body_parts)
+
+    print(f"Title: {title}")
+    print(f"Body preview:\n{body[:300]}\n{'─'*50}")
+
+    if dry_run:
+        print("(dry-run — not creating issue)"); return 0
+
+    gh = run("gh", "--version")
+    if gh.returncode != 0:
+        print("Install gh CLI: brew install gh", file=sys.stderr); return 1
+
+    confirm = input("Create issue? [Y/n] ").strip().lower()
+    if confirm == "n":
+        print("Aborted."); return 0
+
+    result = run("gh", "issue", "create", "--title", title, "--body", body)
+    if result.returncode != 0:
+        print(f"Failed:\n{result.stderr}", file=sys.stderr); return 1
+
+    print(f"✓ Issue created: {result.stdout.strip()}")
+    return 0
+
+if __name__ == "__main__": raise SystemExit(main())

@@ -492,7 +492,7 @@ def test_mcp_plan_tools() -> None:
         else:
             fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
 
-    if '0.7.0' in content or '0.6.0' in content or '0.5.0' in content:
+    if '0.8.0' in content or '0.7.0' in content or '0.6.0' in content or '0.5.0' in content:
         ok('mcp version current')
     else:
         fail('mcp version current', 'version not updated')
@@ -859,8 +859,8 @@ def test_mcp_v06():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert "0.5.0" in r.stdout or "0.6.0" in r.stdout or "0.7.0" in r.stdout, f"MCP not reporting v0.5.0, v0.6.0, or v0.7.0: {r.stdout[:300]}"
-    ok("mcp_v0.5.0_or_v0.6.0_or_v0.7.0")
+    assert "0.5.0" in r.stdout or "0.6.0" in r.stdout or "0.7.0" in r.stdout or "0.8.0" in r.stdout, f"MCP not reporting v0.5.0, v0.6.0, v0.7.0, or v0.8.0: {r.stdout[:300]}"
+    ok("mcp_v0.5.0_or_later")
 
 
 def test_t1_memory():
@@ -1076,8 +1076,8 @@ def test_mcp_tool_count():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert "0.7.0" in r.stdout or "0.6.0" in r.stdout, f"MCP version unexpected: {r.stdout[:200]}"
-    ok("mcp_v0.7.0")
+    assert "0.8.0" in r.stdout or "0.7.0" in r.stdout or "0.6.0" in r.stdout, f"MCP version unexpected: {r.stdout[:200]}"
+    ok("mcp_v0.8.0")
 
 def test_persona_injection():
     """Verify persona is stored and returned correctly (foundation for AI injection)."""
@@ -1100,13 +1100,96 @@ def test_version_alignment():
     _ok(f"agentd version ({version})")
 
 
+def test_bg_agent():
+    r = _agentd({"action": "bg-plan-start", "goal": "echo turtle-selftest-bg"})
+    assert r and r.get("status") == "ok", f"bg-plan-start failed: {r}"
+    d = r["data"]
+    assert d.get("started") == True, f"not started: {d}"
+    plan_id = d.get("plan_id", "")
+    assert plan_id, f"no plan_id: {d}"
+    import time; time.sleep(0.5)
+    r2 = _agentd({"action": "bg-plan-status", "plan_id": plan_id})
+    assert r2 and r2.get("status") == "ok"
+    assert r2["data"].get("found") == True
+    _agentd({"action": "bg-plan-cancel", "plan_id": plan_id})
+    _ok(f"bg_plan start/status/cancel ({plan_id})")
+
+def test_webhook():
+    r = _agentd({"action": "webhook-add", "url": "https://httpbin.org/post", "events": ["command.completed"], "name": "selftest"})
+    assert r and r.get("status") == "ok", f"webhook-add failed: {r}"
+    assert r["data"].get("added") == True
+    r2 = _agentd({"action": "webhook-list"})
+    assert r2 and r2["data"].get("count", 0) >= 1
+    r3 = _agentd({"action": "webhook-remove", "url": "https://httpbin.org/post"})
+    assert r3 and r3["data"].get("removed") == True
+    _ok("webhook add/list/remove")
+
+def test_error_patterns():
+    r = _agentd({"action": "error-patterns", "threshold": 1})
+    assert r and r.get("status") == "ok", f"error-patterns failed: {r}"
+    d = r["data"]
+    assert "patterns" in d and "total_failures" in d, f"bad response: {d}"
+    _ok(f"error_patterns ({d['total_failures']} failures tracked)")
+
+def test_scratchpad():
+    r = _agentd({"action": "scratchpad-write", "content": "TurtleTerm selftest note", "key": "selftest"})
+    assert r and r.get("status") == "ok"
+    assert r["data"].get("saved") == True
+    r2 = _agentd({"action": "scratchpad-read", "key": "selftest"})
+    assert r2 and r2["data"].get("content") == "TurtleTerm selftest note"
+    r3 = _agentd({"action": "scratchpad-list"})
+    assert r3 and any(p["key"] == "selftest" for p in r3["data"].get("pads", []))
+    _ok("scratchpad write/read/list")
+
+def test_policy_check():
+    r = _agentd({"action": "policy-check", "command": "ls -la", "cwd": "/tmp"})
+    assert r and r.get("status") == "ok", f"policy-check failed: {r}"
+    d = r["data"]
+    assert "verdict" in d and d.get("allowed") == True, f"bad policy response: {d}"
+    _ok(f"policy_check (verdict={d['verdict']}, rules_checked={d['rules_checked']})")
+
+def test_install_hooks():
+    import tempfile, subprocess as _sp_ih
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _sp_ih.run(["git", "init", tmpdir], capture_output=True)
+        r = _agentd({"action": "install-hooks", "cwd": tmpdir, "hooks": ["secrets"]})
+        assert r and r.get("status") == "ok", f"install-hooks failed: {r}"
+        assert r["data"].get("installed") == True
+        hook_path = Path(tmpdir) / ".git" / "hooks" / "pre-commit"
+        assert hook_path.exists(), "hook file not created"
+        assert "TurtleTerm" in hook_path.read_text()
+        r2 = _agentd({"action": "uninstall-hooks", "cwd": tmpdir})
+        assert r2 and r2["data"].get("removed") == True
+    _ok("install_hooks / uninstall_hooks")
+
+def test_new_scripts_v2():
+    scripts = [("turtle-bg", "--help"), ("turtle-dash", "--once"), ("turtle-pr", "--help"), ("turtle-issue", "--help"), ("turtle-hooks", "--help")]
+    bin_dir = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "bin"
+    for name, flag in scripts:
+        p = bin_dir / name
+        assert p.exists(), f"missing: {name}"
+        r = subprocess.run([sys.executable, str(p), flag], capture_output=True, text=True, timeout=10)
+        assert r.returncode in (0, 1), f"{name} {flag} crashed: {r.stderr[:80]}"
+    _ok("new scripts: turtle-bg, turtle-dash, turtle-pr, turtle-issue, turtle-hooks")
+
+def test_mcp_v08():
+    mcp_path = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "mcp" / "turtle-mcp-server"
+    r = subprocess.run(
+        [sys.executable, str(mcp_path)],
+        input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+        capture_output=True, text=True, timeout=10,
+    )
+    assert "0.8.0" in r.stdout or "0.7.0" in r.stdout, f"MCP version: {r.stdout[:200]}"
+    _ok("mcp_v0.8.0")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> int:
     if not AS_JSON:
-        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.9.0{RESET}\n')
+        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v1.0.0{RESET}\n')
 
     test_agentd()
     test_agentctl()
@@ -1132,6 +1215,14 @@ def main() -> int:
     test_synapseiq_v08_workspace_symbols()
     test_synapseiq_v08_workspace_diagnostics()
     test_agentctl_new_dispatch()
+    test_bg_agent()
+    test_webhook()
+    test_error_patterns()
+    test_scratchpad()
+    test_policy_check()
+    test_install_hooks()
+    test_new_scripts_v2()
+    test_mcp_v08()
     test_mcp_tool_count()
     test_persona_injection()
     test_version_alignment()

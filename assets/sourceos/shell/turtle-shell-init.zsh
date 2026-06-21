@@ -183,8 +183,20 @@ _turtle_ai_complete() {
     [[ -z "$current_buffer" ]] && return
     _TURTLE_GHOST_SUGGESTION=""
 
+    # Enrich context with git branch and project type
+    local cwd="$PWD"
+    local git_branch=""
+    git_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    local _turtle_ctx="cwd=$cwd"
+    [[ -n "$git_branch" ]] && _turtle_ctx="${_turtle_ctx} git_branch=$git_branch"
+    [[ -f "package.json" ]] && _turtle_ctx="${_turtle_ctx} project=node"
+    [[ -f "Cargo.toml" ]] && _turtle_ctx="${_turtle_ctx} project=rust"
+    [[ -f "go.mod" ]] && _turtle_ctx="${_turtle_ctx} project=go"
+    [[ -f "requirements.txt" || -f "pyproject.toml" ]] && _turtle_ctx="${_turtle_ctx} project=python"
+    [[ -f "Makefile" ]] && _turtle_ctx="${_turtle_ctx} has_makefile=true"
+
     local result
-    result=$(turtle-agentctl nl-to-shell "$current_buffer" 2>/dev/null | \
+    result=$(turtle-agentctl nl-to-shell "$current_buffer" --context "$_turtle_ctx" 2>/dev/null | \
              python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',{}).get('command',''))" 2>/dev/null)
 
     if [[ -n "$result" && "$result" != "$current_buffer" ]]; then
@@ -296,3 +308,75 @@ TRAPALRM() {
 }
 
 fi  # end ANTHROPIC_API_KEY guard
+
+# ============================================================
+# Auto-performance timing (preexec/precmd — no user action needed)
+# ============================================================
+
+_turtle_preexec_timing() {
+    _TURTLE_PERF_START=$EPOCHREALTIME
+    _TURTLE_PERF_CMD="$1"
+}
+
+_turtle_precmd_timing() {
+    local rc=$?
+    if [[ -n "$_TURTLE_PERF_START" && -n "$_TURTLE_PERF_CMD" ]]; then
+        local elapsed_ms=$(( int(($EPOCHREALTIME - $_TURTLE_PERF_START) * 1000) ))
+        # Record async (fire-and-forget, no delay to prompt)
+        if (( elapsed_ms > 100 )); then
+            (turtle-agentctl --stdio perf-record "$_TURTLE_PERF_CMD" "$elapsed_ms" >/dev/null 2>&1 &)
+        fi
+        # macOS notification for long commands (> 10s)
+        if (( elapsed_ms > 10000 )); then
+            local cmd_short="${_TURTLE_PERF_CMD:0:40}"
+            (osascript -e "display notification \"${cmd_short} (${elapsed_ms}ms)\" with title \"TurtleTerm: Command done\"" 2>/dev/null &)
+        fi
+        _TURTLE_LAST_ELAPSED=$elapsed_ms
+        _TURTLE_PERF_START=""
+        _TURTLE_PERF_CMD=""
+    fi
+}
+
+# Install hooks (avoid duplicates)
+if (( ${preexec_functions[(I)_turtle_preexec_timing]} == 0 )); then
+    preexec_functions+=(_turtle_preexec_timing)
+fi
+if (( ${precmd_functions[(I)_turtle_precmd_timing]} == 0 )); then
+    precmd_functions+=(_turtle_precmd_timing)
+fi
+
+# ============================================================
+# Right-side prompt (RPROMPT) showing plan step + perf
+# ============================================================
+
+# Right-side prompt: active plan step + last command time
+_turtle_rprompt() {
+    local rp=""
+    # Show active plan step if any (cached, don't call agentd every prompt)
+    if [[ -n "$_TURTLE_PLAN_STEP" ]]; then
+        rp="%F{yellow}⟳ step ${_TURTLE_PLAN_STEP}%f "
+    fi
+    # Show last command time if > 1s
+    if [[ -n "$_TURTLE_LAST_ELAPSED" ]] && (( _TURTLE_LAST_ELAPSED > 1000 )); then
+        local secs=$(( _TURTLE_LAST_ELAPSED / 1000 ))
+        rp="${rp}%F{240}${secs}s%f"
+    fi
+    echo -n "$rp"
+}
+
+# Track elapsed for RPROMPT
+_turtle_precmd_rprompt() {
+    if [[ -n "$_TURTLE_PERF_START" ]]; then
+        _TURTLE_LAST_ELAPSED=$(( int(($EPOCHREALTIME - $_TURTLE_PERF_START) * 1000) ))
+    fi
+}
+
+if (( ${precmd_functions[(I)_turtle_precmd_rprompt]} == 0 )); then
+    precmd_functions+=(_turtle_precmd_rprompt)
+fi
+
+# Set RPROMPT if user hasn't set it
+if [[ -z "$RPROMPT" ]]; then
+    RPROMPT='$(_turtle_rprompt)'
+    setopt PROMPT_SUBST 2>/dev/null
+fi

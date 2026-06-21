@@ -302,6 +302,39 @@ def main(argv: list[str]) -> int:
     sfd_p.add_argument("host", nargs="?")
     sfd_p.add_argument("remote_path", nargs="?")
 
+    # Surface 2: bg agent, webhooks, scratchpad, policy, hooks
+    bgstart_p = sub.add_parser("bg-plan-start")
+    bgstart_p.add_argument("goal", nargs="?", default="")
+    bgsts_p = sub.add_parser("bg-plan-status")
+    bgsts_p.add_argument("plan_id", nargs="?", default="")
+    bglst_p = sub.add_parser("bg-plan-list")
+    bgcan_p = sub.add_parser("bg-plan-cancel")
+    bgcan_p.add_argument("plan_id", nargs="?", default="")
+    whadd_p = sub.add_parser("webhook-add")
+    whadd_p.add_argument("url", nargs="?", default="")
+    whadd_p.add_argument("name", nargs="?", default="")
+    sub.add_parser("webhook-list")
+    whrem_p = sub.add_parser("webhook-remove")
+    whrem_p.add_argument("url", nargs="?", default="")
+    whdisp_p = sub.add_parser("webhook-dispatch")
+    whdisp_p.add_argument("event_type", nargs="?", default="")
+    errpat_p = sub.add_parser("error-patterns")
+    errpat_p.add_argument("threshold", nargs="?", default="2")
+    spwrite_p = sub.add_parser("scratchpad-write")
+    spwrite_p.add_argument("content", nargs="?", default="")
+    spwrite_p.add_argument("key", nargs="?", default="default")
+    spread_p = sub.add_parser("scratchpad-read")
+    spread_p.add_argument("key", nargs="?", default="default")
+    sub.add_parser("scratchpad-list")
+    polchk_p = sub.add_parser("policy-check")
+    polchk_p.add_argument("command", nargs="?", default="")
+    polchk_p.add_argument("cwd", nargs="?", default="")
+    inhk_p = sub.add_parser("install-hooks")
+    inhk_p.add_argument("cwd", nargs="?", default="")
+    unhk_p = sub.add_parser("uninstall-hooks")
+    unhk_p.add_argument("cwd", nargs="?", default="")
+    sub.add_parser("dashboard")
+
     args, _remainder = parser.parse_known_args(argv)
 
     if args.command == "ping":
@@ -514,6 +547,38 @@ def main(argv: list[str]) -> int:
         request = {"action": "sftp_browse", "host": getattr(args, "host", ""), "path": getattr(args, "path", "/")}
     elif args.command == "sftp-download":
         request = {"action": "sftp_download", "host": getattr(args, "host", ""), "remote_path": getattr(args, "remote_path", "")}
+    elif args.command == "bg-plan-start":
+        request = {"action": "bg_plan_start", "goal": getattr(args, "goal", "")}
+    elif args.command == "bg-plan-status":
+        request = {"action": "bg_plan_status", "plan_id": getattr(args, "plan_id", "")}
+    elif args.command == "bg-plan-list":
+        request = {"action": "bg_plan_list"}
+    elif args.command == "bg-plan-cancel":
+        request = {"action": "bg_plan_cancel", "plan_id": getattr(args, "plan_id", "")}
+    elif args.command == "webhook-add":
+        request = {"action": "webhook_add", "url": getattr(args, "url", ""), "name": getattr(args, "name", "")}
+    elif args.command == "webhook-list":
+        request = {"action": "webhook_list"}
+    elif args.command == "webhook-remove":
+        request = {"action": "webhook_remove", "url": getattr(args, "url", "")}
+    elif args.command == "webhook-dispatch":
+        request = {"action": "webhook_dispatch", "event_type": getattr(args, "event_type", ""), "data": {}}
+    elif args.command == "error-patterns":
+        request = {"action": "error_patterns", "threshold": int(getattr(args, "threshold", 2) or 2)}
+    elif args.command == "scratchpad-write":
+        request = {"action": "scratchpad_write", "content": getattr(args, "content", ""), "key": getattr(args, "key", "default")}
+    elif args.command == "scratchpad-read":
+        request = {"action": "scratchpad_read", "key": getattr(args, "key", "default")}
+    elif args.command == "scratchpad-list":
+        request = {"action": "scratchpad_list"}
+    elif args.command == "policy-check":
+        request = {"action": "policy_check", "command": getattr(args, "command", ""), "cwd": getattr(args, "cwd", "") or os.getcwd()}
+    elif args.command == "install-hooks":
+        request = {"action": "install_hooks", "cwd": getattr(args, "cwd", "") or os.getcwd()}
+    elif args.command == "uninstall-hooks":
+        request = {"action": "uninstall_hooks", "cwd": getattr(args, "cwd", "") or os.getcwd()}
+    elif args.command == "dashboard":
+        request = {"action": "dashboard"}
     elif args.command is None and _remainder:
         # Passthrough: unknown subcommand treated as action name
         # Converts CLI → JSON payload for agentd
@@ -616,6 +681,32 @@ def main(argv: list[str]) -> int:
             "runbook-run":           ["name"],
             "runbook_show":          ["name"],
             "runbook-show":          ["name"],
+            # Surface 2: bg agent, webhooks, scratchpad, policy, hooks
+            "bg_plan_start":         ["goal"],
+            "bg-plan-start":         ["goal"],
+            "bg_plan_status":        ["plan_id"],
+            "bg-plan-status":        ["plan_id"],
+            "bg_plan_cancel":        ["plan_id"],
+            "bg-plan-cancel":        ["plan_id"],
+            "webhook_add":           ["url", "name"],
+            "webhook-add":           ["url", "name"],
+            "webhook_remove":        ["url"],
+            "webhook-remove":        ["url"],
+            "webhook_dispatch":      ["event_type"],
+            "webhook-dispatch":      ["event_type"],
+            "error_patterns":        ["threshold"],
+            "error-patterns":        ["threshold"],
+            "scratchpad_write":      ["content", "key"],
+            "scratchpad-write":      ["content", "key"],
+            "scratchpad_read":       ["key"],
+            "scratchpad-read":       ["key"],
+            "policy_check":          ["command", "cwd"],
+            "policy-check":          ["command", "cwd"],
+            "install_hooks":         ["cwd"],
+            "install-hooks":         ["cwd"],
+            "uninstall_hooks":       ["cwd"],
+            "uninstall-hooks":       ["cwd"],
+            "dashboard":             [],
         }
         field_names = _pos_map.get(raw_action, ["text"])
         for idx, val in enumerate(pos_args):
