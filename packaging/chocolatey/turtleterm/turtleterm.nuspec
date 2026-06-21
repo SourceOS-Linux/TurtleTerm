@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>turtleterm</id>
+    <version>1.4.0</version>
+    <packageSourceUrl>https://github.com/SourceOS-Linux/TurtleTerm</packageSourceUrl>
+    <owners>SourceOS-Linux</owners>
+    <title>TurtleTerm</title>
+    <authors>SourceOS-Linux</authors>
+    <projectUrl>https://github.com/SourceOS-Linux/TurtleTerm</projectUrl>
+    <iconUrl>https://raw.githubusercontent.com/SourceOS-Linux/TurtleTerm/main/assets/sourceos/brand/ai.sourceos.TurtleTerm.svg</iconUrl>
+    <licenseUrl>https://github.com/SourceOS-Linux/TurtleTerm/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/SourceOS-Linux/TurtleTerm</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/SourceOS-Linux/TurtleTerm/issues</bugTrackerUrl>
+    <tags>terminal wezterm ai agent sourceos turtleterm shell copilot</tags>
+    <summary>Policy-aware AI agent terminal fabric for SourceOS</summary>
+    <description><![CDATA[
+# TurtleTerm
+
+TurtleTerm is a WezTerm-based terminal emulator with a full AI agent fabric built in.
+
+## Features
+
+- **Self-hosted AI Co-pilot**: Always-on watcher that auto-explains errors and suggests improvements
+  - Multi-backend: Claude API, Ollama (local LLMs), Noetica (self-hosted)
+  - Multi-turn conversation threads: `turtle-copilot chat`
+- **gh CLI parity + Gitea-sovereign**: `turtle-gh` routes all forge operations to Gitea first, GitHub fallback
+- **37+ agent commands**: `turtle-agentd` with 190+ actions accessible via MCP, CLI, and keybinds
+- **SynapseIQ LSP integration**: TypeScript/Python/Go language intelligence
+- **Shell integration**: PowerShell, zsh, bash, fish — ghost-text AI completion, timing, RPROMPT
+- **Workspace intelligence**: Project type detection, persona suggestion, runbook discovery
+- **Project env management**: `turtle-env` — `.turtle/env.yaml` per project
+- **AI patch application**: `turtle-apply` — apply co-pilot suggestions as file changes
+- **Agent pipelines**: `turtle-chain` — pipe agent actions together
+
+## Quick Start
+
+```powershell
+# After installation, add to your PowerShell profile:
+. "$env:ChocolateyInstall\lib\turtleterm\tools\turtle-shell-init.ps1"
+
+# Start the co-pilot
+turtle-copilot start
+
+# Chat with your terminal co-pilot
+turtle-copilot chat "how do I find large files?"
+
+# Full forge CLI (Gitea primary, GitHub fallback)
+turtle-gh status
+turtle-gh pr create --ai
+```
+
+## Claude Code MCP
+
+Add to `~/.claude/settings.json`:
+```json
+{
+  "mcpServers": {
+    "turtleterm": {
+      "type": "stdio",
+      "command": "turtle-mcp-server"
+    }
+  }
+}
+```
+    ]]></description>
+    <releaseNotes>https://github.com/SourceOS-Linux/TurtleTerm/releases</releaseNotes>
+    <dependencies>
+      <dependency id="python3" version="3.11.0" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+    <file src="legal\**" target="legal" />
+  </files>
+</package>
