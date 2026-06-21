@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""turtle-chain — Pipeline agentd actions, piping output between them.
+
+Chains agentd actions so the output of one feeds the next.
+Useful for building AI-powered processing pipelines in the terminal.
+
+Usage:
+  turtle-chain ACTION1 [-- ACTION2 [-- ACTION3 ...]]
+  turtle-chain --list                 List saved named pipelines
+  turtle-chain --save NAME ACTIONS    Save a named pipeline
+  turtle-chain --run NAME             Run a saved pipeline
+
+Action args: key=value pairs.  Special arg: stdin_key=KEY reads prior output's KEY.
+
+Examples:
+  # Explain last error, then create a fix suggestion
+  turtle-chain explain-selection text="npm ERR! missing script" -- copilot-chat message="{explanation}"
+
+  # Search code, then AI-summarize results
+  turtle-chain gh-search query="database connection" kind=repos -- explain-selection text="{results}"
+
+  # Get workspace scan, then suggest persona
+  turtle-chain workspace-scan -- persona-get
+
+Built-in pipelines:
+  turtle-chain --run error-to-fix     Explain error → generate fix → apply
+  turtle-chain --run search-summarize  Search repos → AI summary
+  turtle-chain --run pr-auto          Generate PR body → create PR
+"""
+from __future__ import annotations
+import json, re, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+CHAINS_PATH = Path.home() / ".config" / "turtleterm" / "chains.json"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'
+
+BUILTIN_CHAINS = {
+    "error-to-fix": [
+        {"action": "copilot-suggest", "limit": "1"},
+        {"action": "copilot-chat", "message": "Based on this error: {suggestions[0].suggestion} — write a specific fix command or code change.", "thread_id": "chain-fix"},
+    ],
+    "search-summarize": [
+        {"action": "gh-search", "query": "{query}", "kind": "repos", "ai_rank": True},
+        {"action": "copilot-chat", "message": "Summarize these search results in 3 bullets: {results}", "thread_id": "chain-search"},
+    ],
+    "pr-auto": [
+        {"action": "session-to-pr", "style": "detailed"},
+        {"action": "gitea-pr-create", "title": "{title}", "body": "{body}"},
+    ],
+    "workspace-onboard": [
+        {"action": "workspace-scan"},
+        {"action": "persona-get"},
+    ],
+}
+
+def agentd(payload: dict, timeout: int = 30) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception as e: return {"status": "error", "data": {"error": str(e)}}
+
+def interpolate(val, ctx: dict) -> str:
+    """Replace {key} and {key[0].field} templates with values from ctx."""
+    if not isinstance(val, str): return val
+    def replacer(m):
+        expr = m.group(1)
+        # Simple: {key}
+        if expr in ctx:
+            v = ctx[expr]
+            return json.dumps(v) if isinstance(v, (dict,list)) else str(v)
+        # Nested: {key.field}
+        parts = expr.split(".")
+        cur = ctx
+        for p in parts:
+            # Handle list index: key[0]
+            idx_m = re.match(r'(\w+)\[(\d+)\]', p)
+            if idx_m:
+                cur = cur.get(idx_m.group(1), [])
+                if isinstance(cur, list) and int(idx_m.group(2)) < len(cur):
+                    cur = cur[int(idx_m.group(2))]
+                else: return m.group(0)
+            else:
+                if isinstance(cur, dict): cur = cur.get(p, m.group(0))
+                else: return m.group(0)
+        return json.dumps(cur) if isinstance(cur,(dict,list)) else str(cur)
+    return re.sub(r'\{([\w\[\]\.]+)\}', replacer, val)
+
+def run_chain(steps: list[dict], initial_ctx: dict | None = None) -> int:
+    ctx = initial_ctx or {}
+    for i, step in enumerate(steps):
+        action = step.get("action","")
+        payload = {k: interpolate(v, ctx) if isinstance(v,str) else v
+                   for k, v in step.items()}
+        print(f"  {CYAN}[{i+1}/{len(steps)}]{RESET}  {action}  ", end="", flush=True)
+        r = agentd(payload, timeout=30)
+        if not r or r.get("status") != "ok":
+            print(f"{RED}FAIL{RESET}  {(r or {}).get('data',{}).get('error',str(r))[:80]}")
+            return 1
+        data = r.get("data",{})
+        ctx.update(data)
+        # Show brief summary of output
+        summary_keys = ["reply","title","body","suggestion","project_type","results","prs","created"]
+        for k in summary_keys:
+            if k in data:
+                v = data[k]
+                snippet = str(v)[:60] if not isinstance(v,(dict,list)) else f"({type(v).__name__})"
+                print(f"{GREEN}✓{RESET}  {k}={snippet}")
+                break
+        else:
+            print(f"{GREEN}✓{RESET}")
+    print(f"\n  {BOLD}Chain complete.{RESET}  Final context keys: {list(ctx.keys())[:8]}")
+    return 0
+
+def parse_chain_args(args: list[str]) -> list[dict]:
+    """Split args on '--' to get steps, parse key=value within each."""
+    steps_raw = []
+    current: list[str] = []
+    for a in args:
+        if a == "--":
+            steps_raw.append(current); current = []
+        else:
+            current.append(a)
+    steps_raw.append(current)
+
+    steps = []
+    for step_args in steps_raw:
+        if not step_args: continue
+        action = step_args[0]
+        payload: dict = {"action": action}
+        for arg in step_args[1:]:
+            if "=" in arg:
+                k, v = arg.split("=", 1)
+                # Type coerce
+                if v.lower() in ("true",): v = True
+                elif v.lower() in ("false",): v = False
+                elif v.isdigit(): v = int(v)
+                payload[k] = v
+        steps.append(payload)
+    return steps
+
+def load_named_chains() -> dict:
+    saved = {}
+    if CHAINS_PATH.exists():
+        try: saved = json.loads(CHAINS_PATH.read_text())
+        except: pass
+    return {**BUILTIN_CHAINS, **saved}
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h","--help"):
+        print(__doc__); return 0
+
+    # List named pipelines
+    if args[0] == "--list":
+        chains = load_named_chains()
+        print(f"\n{BOLD}Named Pipelines:{RESET}")
+        for name, steps in chains.items():
+            builtin = name in BUILTIN_CHAINS
+            print(f"  {'(built-in) ' if builtin else ''}{CYAN}{name}{RESET}  {GRAY}{len(steps)} steps{RESET}")
+            for s in steps:
+                print(f"    → {s.get('action','?')}")
+        return 0
+
+    # Save a pipeline
+    if args[0] == "--save":
+        if len(args) < 3:
+            print("Usage: turtle-chain --save NAME ACTION1 [-- ACTION2 ...]"); return 1
+        name = args[1]
+        steps = parse_chain_args(args[2:])
+        chains = {}
+        if CHAINS_PATH.exists():
+            try: chains = json.loads(CHAINS_PATH.read_text())
+            except: pass
+        chains[name] = steps
+        CHAINS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CHAINS_PATH.write_text(json.dumps(chains, indent=2))
+        print(f"  {GREEN}✓{RESET}  Saved pipeline '{name}' ({len(steps)} steps)")
+        return 0
+
+    # Run a named pipeline
+    if args[0] == "--run":
+        name = args[1] if len(args) > 1 else ""
+        chains = load_named_chains()
+        if name not in chains:
+            print(f"Pipeline '{name}' not found. Run: turtle-chain --list"); return 1
+        steps = chains[name]
+        print(f"\n{BOLD}Running pipeline:{RESET} {name}  ({len(steps)} steps)")
+        # Extra args as initial context
+        ctx = {}
+        for arg in args[2:]:
+            if "=" in arg:
+                k, v = arg.split("=",1); ctx[k] = v
+        return run_chain(steps, ctx)
+
+    # Ad-hoc chain
+    steps = parse_chain_args(args)
+    if not steps:
+        print("No actions specified. See --help"); return 1
+    print(f"\n{BOLD}Running chain:{RESET} {len(steps)} step(s)")
+    for s in steps:
+        print(f"  → {s.get('action','?')}")
+    print()
+    return run_chain(steps)
+
+if __name__ == "__main__": raise SystemExit(main())

@@ -1447,6 +1447,7 @@ local function turtle_block_context_menu()
     table.insert(choices, { label = '📋  Copy selection',    id = 'copy_sel' })
     table.insert(choices, { label = '🔍  Search in output',  id = 'search'   })
     table.insert(choices, { label = '⌨   Paste from clipboard', id = 'paste' })
+    table.insert(choices, { label = '🤖  Co-pilot: explain selection', id = 'copilot_explain' })
 
     -- If no semantic zones yet, just paste (typical right-click behavior)
     if not last_output and not last_input then
@@ -1498,6 +1499,9 @@ local function turtle_block_context_menu()
 
           elseif id == 'paste' then
             w:perform_action(act.PasteFrom 'Clipboard', p)
+
+          elseif id == 'copilot_explain' then
+            w:perform_action(wezterm.action.EmitEvent('copilot-explain'), p)
           end
         end),
         title = 'TurtleTerm  Block Actions',
@@ -2118,7 +2122,113 @@ config.keys = {
           choices = choices,
         }, p)
       end) },
+
+    -- ── Copilot keybindings ──────────────────────────────────────────────────
+    -- Copilot chat (CMD+SHIFT+K)
+    {
+      key = 'k',
+      mods = 'CMD|SHIFT',
+      action = wezterm.action_callback(function(window, pane)
+        -- Split pane below (30% height) and run turtle-copilot chat
+        window:perform_action(
+          wezterm.action.SplitPane({
+            direction = 'Down',
+            size = { Percent = 30 },
+            command = {
+              args = { '/usr/bin/env', 'python3', os.getenv('HOME') .. '/dev/TurtleTerm/assets/sourceos/bin/turtle-copilot', 'chat' },
+            },
+          }),
+          pane
+        )
+      end),
+    },
+    -- Copilot status (CMD+SHIFT+J)
+    {
+      key = 'j',
+      mods = 'CMD|SHIFT',
+      action = wezterm.action_callback(function(window, pane)
+        -- Show copilot status via agentctl
+        window:perform_action(
+          wezterm.action.SpawnCommandInNewTab({
+            args = { '/usr/bin/env', 'python3', os.getenv('HOME') .. '/dev/TurtleTerm/assets/sourceos/bin/turtle-copilot', 'status' },
+          }),
+          pane
+        )
+      end),
+    },
+    -- Diagnose all integrations (CMD+SHIFT+ALT+D)
+    {
+      key = 'd',
+      mods = 'CMD|SHIFT|ALT',
+      action = wezterm.action_callback(function(window, pane)
+        window:perform_action(
+          wezterm.action.SpawnCommandInNewTab({
+            args = { '/usr/bin/env', 'python3', os.getenv('HOME') .. '/dev/TurtleTerm/assets/sourceos/bin/turtle-diagnose' },
+          }),
+          pane
+        )
+      end),
+    },
+    -- Workspace scan (CMD+SHIFT+W)
+    {
+      key = 'w',
+      mods = 'CMD|SHIFT',
+      action = wezterm.action_callback(function(window, pane)
+        window:toast_notification('TurtleTerm', 'Scanning workspace\xe2\x80\xa6', nil, 1500)
+        -- Run workspace scan and show summary as toast
+        local agentctl = os.getenv('HOME') .. '/dev/TurtleTerm/assets/sourceos/bin/turtle-agentctl'
+        local cwd_raw = ''
+        pcall(function()
+          cwd_raw = tostring(pane:get_current_working_dir()):gsub('file://[^/]*/', '')
+        end)
+        local handle = io.popen(
+          'echo ' .. wezterm.shell_quote_arg(
+            '{"action":"workspace-scan","cwd":"' .. cwd_raw .. '"}'
+          ) .. ' | python3 ' .. wezterm.shell_quote_arg(agentctl) .. ' --stdio 2>/dev/null'
+        )
+        if handle then
+          local out = handle:read('*a')
+          handle:close()
+          local ok2, data = pcall(wezterm.json_parse, out)
+          if ok2 and data and data.data then
+            local d = data.data
+            local ptype = table.concat(d.languages or {d.project_type or 'unknown'}, ', ')
+            local branch = d.git_branch or ''
+            local tools  = table.concat(d.tools or {}, ', ')
+            window:toast_notification(
+              'TurtleTerm Workspace',
+              'Type: ' .. ptype .. (branch ~= '' and '  branch: ' .. branch or '') ..
+              (tools ~= '' and '\nTools: ' .. tools or ''),
+              nil, 5000
+            )
+          end
+        end
+      end),
+    },
 }
+
+-- ── Copilot: explain selection event handler ────────────────────────────────
+wezterm.on('copilot-explain', function(window, pane)
+  local sel = window:get_selection_text_for_pane(pane) or ''
+  if sel == '' then
+    window:toast_notification('TurtleTerm', 'Select text first, then right-click \xe2\x86\x92 Co-pilot: explain', nil, 3000)
+    return
+  end
+  window:toast_notification('TurtleTerm Copilot', 'Asking co-pilot\xe2\x80\xa6', nil, 2000)
+  -- Pass selection to copilot chat
+  local agentctl = os.getenv('HOME') .. '/dev/TurtleTerm/assets/sourceos/bin/turtle-agentctl'
+  local payload = '{"action":"copilot-chat","message":"Explain this terminal output:\\n' .. sel:sub(1,500):gsub('"','\\"'):gsub('\n','\\n') .. '","thread_id":"explain"}'
+  local handle = io.popen('echo ' .. wezterm.shell_quote_arg(payload) .. ' | python3 ' .. wezterm.shell_quote_arg(agentctl) .. ' --stdio 2>/dev/null')
+  if handle then
+    local out = handle:read('*a')
+    handle:close()
+    local ok2, data = pcall(wezterm.json_parse, out)
+    if ok2 and data and data.data then
+      local reply = (data.data.reply or ''):sub(1, 200)
+      window:toast_notification('TurtleTerm Co-pilot', reply, nil, 10000)
+    end
+  end
+end)
 
 wezterm.on('format-tab-title', function(tab, tabs, panes, config_, hover, max_width)
   local pane = tab.active_pane
@@ -2612,5 +2722,50 @@ wezterm.on('gui-startup', function(cmd)
     end
   end
 end)
+
+-- ── Copilot suggestion poller ────────────────────────────────────────────────
+-- Poll every 30s for new co-pilot suggestions and show toasts.
+local _copilot_last_seen = 0
+
+local function _read_copilot_suggestions()
+  local path = wezterm.home_dir .. '/.config/turtleterm/copilot_suggestions.ndjson'
+  local f = io.open(path, 'r')
+  if not f then return {} end
+  local lines = {}
+  for line in f:lines() do
+    if line ~= '' then
+      local ok2, entry = pcall(wezterm.json_parse, line)
+      if ok2 and entry then table.insert(lines, entry) end
+    end
+  end
+  f:close()
+  return lines
+end
+
+wezterm.on('copilot-poll', function(window, pane)
+  local suggestions = _read_copilot_suggestions()
+  local new_count = #suggestions - _copilot_last_seen
+  if new_count > 0 then
+    local latest = suggestions[#suggestions]
+    local t = latest.type or 'tip'
+    local cmd = (latest.command or ''):sub(1, 40)
+    local msg = (latest.suggestion or ''):sub(1, 120)
+    local title = t == 'error_explain' and 'Co-pilot: error explained' or 'Co-pilot: performance tip'
+    window:toast_notification('TurtleTerm Copilot', title .. '\n$ ' .. cmd .. '\n' .. msg, nil, 8000)
+    _copilot_last_seen = #suggestions
+  end
+end)
+
+-- Schedule copilot polling every 30 seconds via recurring call_after chain
+local function _schedule_copilot_poll()
+  wezterm.time.call_after(30, function()
+    local wins = wezterm.gui and wezterm.gui.gui_windows and wezterm.gui.gui_windows() or {}
+    for _, w in ipairs(wins) do
+      w:perform_action(wezterm.action.EmitEvent('copilot-poll'), w:active_pane())
+    end
+    _schedule_copilot_poll()  -- re-schedule for next cycle
+  end)
+end
+_schedule_copilot_poll()
 
 return config

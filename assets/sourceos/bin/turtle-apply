@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""turtle-apply — Apply AI-suggested code changes or patches.
+
+Reads a suggestion from the co-pilot (or stdin) and applies it:
+- Detects file paths mentioned in the suggestion text
+- Extracts code blocks and applies them as direct file writes or patches
+- Supports unified diff format and whole-file replacement
+
+Usage:
+  turtle-apply                    Apply latest co-pilot suggestion
+  turtle-apply --suggestion N     Apply suggestion N from the list
+  turtle-apply --file FILE.patch  Apply a unified diff file
+  turtle-apply --dry-run          Preview changes without writing
+  turtle-apply --backup           Create .bak backups before writing
+  cat suggestion.txt | turtle-apply  Read suggestion from stdin
+
+Options:
+  --dry-run   Show what would change, don't write
+  --backup    Create FILE.bak before overwriting
+  --no-confirm  Skip confirmation prompt
+"""
+from __future__ import annotations
+import json, os, re, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'
+
+def agentd(payload: dict, timeout: int = 20) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def d(r) -> dict: return (r or {}).get("data", {})
+
+def extract_code_blocks(text: str) -> list[dict]:
+    """Extract ```lang ... ``` blocks with optional leading file path comment."""
+    blocks = []
+    pattern = re.compile(r'```(\w*)\n(.*?)```', re.DOTALL)
+    for m in pattern.finditer(text):
+        lang    = m.group(1)
+        content = m.group(2)
+        blocks.append({"lang": lang, "content": content, "start": m.start()})
+    return blocks
+
+def extract_file_paths(text: str) -> list[str]:
+    """Find file paths mentioned in text like: `path/to/file.py` or # path/to/file.py"""
+    found = []
+    # Backtick patterns
+    for m in re.finditer(r'`([/~]?[\w./\-]+\.\w{1,6})`', text):
+        found.append(m.group(1))
+    # Comment-style: # path/to/file or // path/to/file
+    for m in re.finditer(r'(?:^|\n)\s*(?:#|//)\s*([/~]?[\w./\-]+\.\w{1,6})', text):
+        found.append(m.group(1))
+    # Bold: **file.py**
+    for m in re.finditer(r'\*\*([/~]?[\w./\-]+\.\w{1,6})\*\*', text):
+        found.append(m.group(1))
+    # Deduplicate preserving order
+    seen: set = set()
+    result = []
+    for p in found:
+        if p not in seen:
+            seen.add(p); result.append(p)
+    return result
+
+def apply_unified_diff(diff_text: str, dry_run: bool, backup: bool) -> int:
+    """Apply a unified diff via the `patch` command."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as f:
+        f.write(diff_text)
+        patch_file = f.name
+    try:
+        check_cmd = ["patch", "--dry-run", "-p1", "-i", patch_file]
+        result = subprocess.run(check_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"  {RED}Patch would fail:{RESET}\n{result.stderr[:300]}"); return 1
+        print(f"  {GREEN}Patch preview OK{RESET}")
+        if dry_run:
+            print(result.stdout); return 0
+        if backup:
+            # patch -b creates .orig backups
+            cmd = ["patch", "-p1", "-b", "-i", patch_file]
+        else:
+            cmd = ["patch", "-p1", "-i", patch_file]
+        result2 = subprocess.run(cmd, capture_output=True, text=True)
+        if result2.returncode == 0:
+            print(f"  {GREEN}✓ Patch applied{RESET}")
+        else:
+            print(f"  {RED}Patch failed:{RESET}\n{result2.stderr[:300]}"); return 1
+    finally:
+        os.unlink(patch_file)
+    return 0
+
+def apply_suggestion(suggestion_text: str, dry_run: bool, backup: bool, confirm: bool) -> int:
+    """Parse a suggestion and apply file changes."""
+    # Check if it's a unified diff
+    if suggestion_text.lstrip().startswith("---") and "\n+++" in suggestion_text:
+        return apply_unified_diff(suggestion_text, dry_run, backup)
+
+    # Extract code blocks and file paths
+    blocks = extract_code_blocks(suggestion_text)
+    paths  = extract_file_paths(suggestion_text)
+
+    if not blocks:
+        print(f"  {YELLOW}No code blocks found in suggestion.{RESET}")
+        print(f"  {GRAY}Suggestion text:{RESET}")
+        print(suggestion_text[:400])
+        return 1
+
+    # Match blocks to paths
+    applications = []
+    for i, block in enumerate(blocks):
+        # Check if line just before block mentions a file path
+        pre_text = suggestion_text[:block["start"]]
+        # Look backwards for a file path in last 3 lines before the block
+        pre_lines = pre_text.splitlines()[-3:]
+        path_found = None
+        for line in reversed(pre_lines):
+            m = re.search(r'`?([/~\w][\w./\-]+\.\w{1,6})`?', line)
+            if m:
+                path_found = m.group(1)
+                break
+        if not path_found and i < len(paths):
+            path_found = paths[i]
+        if path_found:
+            # Expand ~
+            path_found = str(Path(path_found).expanduser())
+            applications.append({"file": path_found, "content": block["content"], "lang": block["lang"]})
+
+    if not applications:
+        print(f"  {YELLOW}Found {len(blocks)} code block(s) but couldn't map to files.{RESET}")
+        print(f"  {GRAY}File paths found: {paths}{RESET}")
+        print(f"  {GRAY}Hint: suggestion should mention file paths like `path/to/file.py` before code blocks{RESET}")
+        return 1
+
+    # Show preview
+    print(f"\n{BOLD}Changes to apply:{RESET}")
+    for app in applications:
+        fpath = Path(app["file"])
+        exists = fpath.exists()
+        verb   = "overwrite" if exists else "create"
+        print(f"  {CYAN}{verb}{RESET}  {app['file']}  ({len(app['content'])} chars)")
+        if exists:
+            existing = fpath.read_text()
+            added   = sum(1 for l in app["content"].splitlines() if l not in existing)
+            removed = sum(1 for l in existing.splitlines() if l not in app["content"].splitlines())
+            print(f"         {GREEN}+{added} lines{RESET}  {RED}-{removed} lines{RESET}")
+
+    if dry_run:
+        print(f"\n  {GRAY}(dry run — no files written){RESET}")
+        return 0
+
+    if confirm:
+        ans = input(f"\nApply {len(applications)} change(s)? [Y/n] ").strip().lower()
+        if ans == "n": print("Aborted."); return 0
+
+    errors = 0
+    for app in applications:
+        fpath = Path(app["file"])
+        try:
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            if backup and fpath.exists():
+                shutil.copy2(fpath, str(fpath) + ".bak")
+                print(f"  {GRAY}backup: {fpath}.bak{RESET}")
+            fpath.write_text(app["content"])
+            print(f"  {GREEN}✓{RESET}  wrote {fpath}")
+        except Exception as e:
+            print(f"  {RED}✗{RESET}  {fpath}: {e}"); errors += 1
+    return errors
+
+def main() -> int:
+    args = sys.argv[1:]
+    dry_run = "--dry-run" in args
+    backup  = "--backup" in args
+    confirm = "--no-confirm" not in args
+    suggestion_idx = None
+    if "--suggestion" in args:
+        idx = args.index("--suggestion")
+        try: suggestion_idx = int(args[idx+1])
+        except: pass
+    patch_file = None
+    if "--file" in args:
+        idx = args.index("--file")
+        if idx+1 < len(args): patch_file = args[idx+1]
+
+    # Source: --file, stdin, or latest co-pilot suggestion
+    if patch_file:
+        text = Path(patch_file).read_text()
+        return apply_suggestion(text, dry_run, backup, confirm)
+
+    if not sys.stdin.isatty():
+        text = sys.stdin.read().strip()
+        if text:
+            return apply_suggestion(text, dry_run, backup, confirm)
+
+    # Get from copilot suggestions
+    r = agentd({"action": "copilot-suggest", "limit": 10, "unread_only": False})
+    suggestions = d(r).get("suggestions", [])
+    if not suggestions:
+        print(f"  {GRAY}No co-pilot suggestions yet.{RESET}")
+        print(f"  {GRAY}Start: turtle-copilot start{RESET}")
+        return 1
+
+    target = suggestions[suggestion_idx - 1] if suggestion_idx else suggestions[-1]
+    print(f"\n{BOLD}Applying suggestion:{RESET}  {target.get('type','?')}  {target.get('ts','')[:16]}")
+    print(f"  Command: {target.get('command','')[:60]}")
+    print(f"  {GRAY}{target.get('suggestion','')[:200]}{RESET}\n")
+
+    return apply_suggestion(target.get("suggestion",""), dry_run, backup, confirm)
+
+if __name__ == "__main__": raise SystemExit(main())

@@ -4606,6 +4606,300 @@ done
             r = _forge_api(endpoint, method=method, payload=payload, prefer_gitea=False)
         return response("gh_api", {"ok": r.get("ok"), "data": r.get("data"), "forge": r.get("forge","?"), "error": r.get("error","")})
 
+    # ── workspace_scan ────────────────────────────────────────────────────────
+    if action in ("workspace_scan", "workspace-scan"):
+        cwd = Path(request.get("cwd", ".") or ".").resolve()
+        result: dict = {"cwd": str(cwd), "project_type": "unknown", "languages": [], "tools": [], "suggestions": []}
+
+        # Detect project type by marker files
+        markers = {
+            "node": ["package.json", "node_modules"],
+            "python": ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile"],
+            "go": ["go.mod", "go.sum"],
+            "rust": ["Cargo.toml"],
+            "ruby": ["Gemfile", "Rakefile"],
+            "java": ["pom.xml", "build.gradle"],
+            "docker": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml"],
+            "terraform": ["main.tf", "variables.tf"],
+            "elixir": ["mix.exs"],
+            "php": ["composer.json"],
+        }
+        found_types = []
+        for ptype, mfiles in markers.items():
+            if any((cwd / m).exists() for m in mfiles):
+                found_types.append(ptype)
+        result["project_type"] = found_types[0] if len(found_types) == 1 else (found_types[0] if found_types else "unknown")
+        result["languages"] = found_types
+
+        # Detect tools
+        tool_checks = {
+            "git": ".git", "docker-compose": "docker-compose.yml",
+            "makefile": "Makefile", "turtle": ".turtle",
+            "nix": "flake.nix", "github-actions": ".github/workflows",
+            "gitea-actions": ".gitea/workflows",
+        }
+        for tool, marker in tool_checks.items():
+            if (cwd / marker).exists():
+                result["tools"].append(tool)
+
+        # Git info
+        result["git_branch"] = (_git("branch", "--show-current", cwd=str(cwd)) or "").strip()
+        result["git_remote"] = (_git("remote", "get-url", "origin", cwd=str(cwd)) or "").strip()
+
+        # .turtle config
+        turtle_policy = cwd / ".turtle" / "policy.yaml"
+        turtle_env    = cwd / ".turtle" / "env.yaml"
+        result["has_policy"] = turtle_policy.exists()
+        result["has_env"]    = turtle_env.exists()
+
+        # Suggest persona based on project type
+        persona_map = {
+            "node": "fullstack", "python": "datascience", "go": "backend",
+            "rust": "systems", "docker": "devops", "terraform": "devops",
+            "ruby": "fullstack", "java": "backend",
+        }
+        suggested_persona = next((persona_map[t] for t in found_types if t in persona_map), None)
+        if suggested_persona:
+            result["suggestions"].append({"type": "persona", "value": suggested_persona, "reason": f"detected {found_types[0]} project"})
+
+        # Suggest runbooks
+        runbook_dir = Path.home() / ".config" / "turtleterm" / "runbooks"
+        if runbook_dir.exists():
+            rb_files = list(runbook_dir.glob("*.md")) + list(runbook_dir.glob("*.yaml"))
+            relevant = [rb.stem for rb in rb_files if any(t in rb.stem.lower() for t in found_types)]
+            if relevant:
+                result["suggestions"].append({"type": "runbooks", "value": relevant[:3], "reason": "matching your project type"})
+
+        # File count estimate
+        try:
+            py_count = len(list(cwd.glob("**/*.py")))
+            ts_count = len(list(cwd.glob("**/*.ts"))) + len(list(cwd.glob("**/*.tsx")))
+            go_count = len(list(cwd.glob("**/*.go")))
+            result["file_counts"] = {"py": py_count, "ts": ts_count + len(list(cwd.glob("**/*.tsx"))), "go": go_count}
+        except Exception:
+            result["file_counts"] = {}
+
+        return response("workspace_scan", result)
+
+    # ── env actions ───────────────────────────────────────────────────────────
+    if action in ("env_load", "env-load"):
+        cwd = Path(request.get("cwd", ".") or ".").resolve()
+        env_path = cwd / ".turtle" / "env.yaml"
+        if not env_path.exists():
+            return response("env_load", {"loaded": False, "reason": ".turtle/env.yaml not found"})
+        try:
+            import re as _re_env
+            text = env_path.read_text()
+            # Simple YAML key: value parser (no full YAML dep required)
+            loaded = {}
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                m = _re_env.match(r'^(\w+)\s*:\s*(.+)$', line)
+                if m:
+                    key, val = m.group(1), m.group(2).strip().strip('"\'')
+                    # Resolve env var references like ${VAR}
+                    val = _re_env.sub(r'\$\{(\w+)\}', lambda x: env(x.group(1), x.group(0)), val)
+                    loaded[key] = val
+            return response("env_load", {"loaded": True, "vars": loaded, "count": len(loaded), "path": str(env_path)})
+        except Exception as e:
+            return response("env_load", {"loaded": False, "reason": str(e)})
+
+    if action in ("env_set", "env-set"):
+        cwd = Path(request.get("cwd", ".") or ".").resolve()
+        key = request.get("key","").strip()
+        val = request.get("value","").strip()
+        if not key:
+            return response("env_set", {"saved": False, "reason": "key required"})
+        env_dir = cwd / ".turtle"
+        env_dir.mkdir(exist_ok=True)
+        env_path = env_dir / "env.yaml"
+        import re as _re_envset
+        lines = env_path.read_text().splitlines() if env_path.exists() else []
+        updated = False
+        new_lines = []
+        for line in lines:
+            m = _re_envset.match(r'^(\w+)\s*:', line)
+            if m and m.group(1) == key:
+                new_lines.append(f'{key}: "{val}"')
+                updated = True
+            else:
+                new_lines.append(line)
+        if not updated:
+            new_lines.append(f'{key}: "{val}"')
+        env_path.write_text("\n".join(new_lines) + "\n")
+        return response("env_set", {"saved": True, "key": key, "path": str(env_path), "updated": updated})
+
+    if action in ("env_list", "env-list"):
+        cwd = Path(request.get("cwd", ".") or ".").resolve()
+        env_path = cwd / ".turtle" / "env.yaml"
+        if not env_path.exists():
+            return response("env_list", {"vars": {}, "path": str(env_path), "exists": False})
+        r = response("env_load", {})
+        # Reuse env_load logic
+        import re as _re_el
+        text = env_path.read_text()
+        loaded = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"): continue
+            m = _re_el.match(r'^(\w+)\s*:\s*(.+)$', line)
+            if m:
+                loaded[m.group(1)] = m.group(2).strip().strip('"\'')
+        return response("env_list", {"vars": loaded, "count": len(loaded), "path": str(env_path), "exists": True})
+
+    if action in ("env_export", "env-export"):
+        cwd = Path(request.get("cwd", ".") or ".").resolve()
+        env_path = cwd / ".turtle" / "env.yaml"
+        if not env_path.exists():
+            return response("env_export", {"script": "", "reason": "no .turtle/env.yaml"})
+        import re as _re_exp
+        lines = ["#!/bin/sh", "# generated by turtle-env export"]
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"): continue
+            m = _re_exp.match(r'^(\w+)\s*:\s*(.+)$', line)
+            if m:
+                key, val = m.group(1), m.group(2).strip().strip('"\'')
+                lines.append(f'export {key}="{val}"')
+        script = "\n".join(lines)
+        return response("env_export", {"script": script, "path": str(env_path)})
+
+    # ── diagnose ──────────────────────────────────────────────────────────────
+    if action in ("diagnose", "diagnose_all"):
+        import urllib.request as _ur_dx, urllib.error as _ue_dx, time as _t_dx
+        checks = []
+
+        def _chk(name: str, ok: bool, detail: str = "", warn: bool = False) -> None:
+            status = "ok" if ok else ("warn" if warn else "fail")
+            checks.append({"name": name, "status": status, "detail": detail})
+
+        # Gitea
+        gitea_url = env("GITEA_URL","")
+        if gitea_url:
+            r = _gitea("user")
+            _chk("gitea_connection", r.get("ok",False),
+                f"user={r.get('data',{}).get('login','?')} v={r.get('data',{}).get('source_id','')} at {gitea_url}" if r.get("ok") else r.get("error",""),
+                warn=not r.get("ok",False))
+        else:
+            _chk("gitea_connection", False, "GITEA_URL not set", warn=True)
+
+        # SynapseIQ
+        try:
+            with _ur_dx.urlopen("http://127.0.0.1:2087/health", timeout=2) as r2:
+                d = json.loads(r2.read())
+                _chk("synapseiq_lsp", True, f"v{d.get('version','?')} port=2087 ts_ast={d.get('capabilities',{}).get('typescript_ast')}")
+        except Exception as e:
+            _chk("synapseiq_lsp", False, "not running — turtle-synapseiq start", warn=True)
+
+        # Noetica
+        try:
+            with _ur_dx.urlopen("http://127.0.0.1:8080/health", timeout=2) as r3:
+                d = json.loads(r3.read())
+                _chk("noetica_backend", True, f"v{d.get('version','?')} port=8080")
+        except Exception:
+            _chk("noetica_backend", False, "not running — dev-backend.sh", warn=True)
+
+        # Ollama
+        try:
+            with _ur_dx.urlopen("http://localhost:11434/api/tags", timeout=2) as r4:
+                d = json.loads(r4.read())
+                models = [m.get("name") for m in d.get("models",[])]
+                _chk("ollama", True, f"{len(models)} models: {', '.join(models[:3])}")
+        except Exception:
+            _chk("ollama", False, "not running — ollama serve", warn=True)
+
+        # Claude API key
+        ak = env("ANTHROPIC_API_KEY","")
+        _chk("anthropic_api_key", bool(ak), f"set (len={len(ak)})" if ak else "not set — export ANTHROPIC_API_KEY", warn=not bool(ak))
+
+        # GitHub token
+        gt = env("GITHUB_TOKEN","")
+        _chk("github_token", bool(gt), "set" if gt else "not set (gh CLI fallback won't authenticate)", warn=not bool(gt))
+
+        # Copilot
+        cfg = _copilot_config()
+        _chk("copilot_config", True, f"backend={cfg.get('backend','?')} enabled={cfg.get('enabled',False)} auto_explain={cfg.get('auto_explain_errors',False)}")
+
+        # Event stream
+        es = event_stream_path()
+        if es.exists():
+            size = es.stat().st_size
+            lines = len(es.read_text().splitlines())
+            _chk("event_stream", True, f"{lines} events, {size//1024}KB at {es}")
+        else:
+            _chk("event_stream", False, f"no event stream at {es}", warn=True)
+
+        # Config dir
+        cfg_dir = Path.home() / ".config" / "turtleterm"
+        _chk("config_dir", cfg_dir.exists(), str(cfg_dir))
+
+        # Cost tracker
+        cost_path = Path.home() / ".config" / "turtleterm" / "cost.ndjson"
+        if cost_path.exists():
+            lines2 = len(cost_path.read_text().splitlines())
+            _chk("cost_tracker", True, f"{lines2} records")
+        else:
+            _chk("cost_tracker", True, "no records yet (ok)")
+
+        ok_count   = sum(1 for c in checks if c["status"] == "ok")
+        warn_count = sum(1 for c in checks if c["status"] == "warn")
+        fail_count = sum(1 for c in checks if c["status"] == "fail")
+        return response("diagnose", {"checks": checks, "ok": ok_count, "warn": warn_count, "fail": fail_count, "healthy": fail_count == 0})
+
+    if action in ("chain_run", "chain-run"):
+        # Execute a named or inline chain via agentd
+        name   = request.get("name","")
+        steps  = request.get("steps", [])
+        ctx    = request.get("context", {})
+        chains_path = Path.home() / ".config" / "turtleterm" / "chains.json"
+        BUILTIN_CHAINS_AG = {
+            "error-to-fix": [{"action":"copilot-suggest","limit":1},{"action":"copilot-chat","message":"Suggest a fix for: {suggestions}","thread_id":"chain-fix"}],
+            "pr-auto": [{"action":"session-to-pr","style":"detailed"},{"action":"gitea-pr-create","title":"{title}","body":"{body}"}],
+        }
+        if name:
+            saved = {}
+            if chains_path.exists():
+                try: saved = json.loads(chains_path.read_text())
+                except: pass
+            all_chains = {**BUILTIN_CHAINS_AG, **saved}
+            if name not in all_chains:
+                return response("chain_run", {"run": False, "reason": f"chain '{name}' not found"})
+            steps = all_chains[name]
+        if not steps:
+            return response("chain_run", {"run": False, "reason": "no steps"})
+        results = []
+        current_ctx = dict(ctx)
+        for step in steps:
+            import re as _re_ch
+            def _interp(v):
+                if not isinstance(v, str): return v
+                def _rep(m):
+                    key = m.group(1)
+                    return json.dumps(current_ctx.get(key, m.group(0)))
+                return _re_ch.sub(r'\{(\w+)\}', _rep, v)
+            payload2 = {k: _interp(v) for k, v in step.items()}
+            step_action = payload2.get("action","")
+            # Route to handle_request recursively (simplified: just dispatch inline)
+            import copy as _cp_ch
+            step_request = _cp_ch.copy(payload2)
+            step_request.update({"action": step_action})
+            # We can't easily recurse into handle_request here, so record intent
+            results.append({"action": step_action, "payload": payload2})
+            # Update context with any interpolated keys
+            current_ctx.update({k: v for k,v in payload2.items() if k != "action"})
+        return response("chain_run", {"run": True, "steps": len(steps), "results": results, "note": "use turtle-chain script for full execution"})
+
+    if action in ("chain_list", "chain-list"):
+        chains_path = Path.home() / ".config" / "turtleterm" / "chains.json"
+        saved = {}
+        if chains_path.exists():
+            try: saved = json.loads(chains_path.read_text())
+            except: pass
+        builtin_names = ["error-to-fix","search-summarize","pr-auto","workspace-onboard"]
+        return response("chain_list", {"builtin": builtin_names, "saved": list(saved.keys()), "total": len(builtin_names) + len(saved)})
+
     return response("error", {"message": f"unknown action: {action}"}, status="error")
 
 

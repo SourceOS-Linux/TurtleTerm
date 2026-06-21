@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""turtle-env — Project-scoped environment variables and secret management.
+
+Stores per-project env vars in .turtle/env.yaml in your project root.
+Supports ${VAR} interpolation from actual environment. Safe to commit
+(don't put raw secrets — reference them via ${SECRET_VAR}).
+
+Usage:
+  turtle-env set KEY VALUE         Set a project env var
+  turtle-env get KEY               Get a single var
+  turtle-env list                  List all project env vars
+  turtle-env load                  Print export commands (eval with: eval $(turtle-env load))
+  turtle-env export > .envrc       Export as shell script
+  turtle-env init                  Create .turtle/env.yaml with a template
+  turtle-env diff                  Compare project env against current shell env
+  turtle-env scan                  Detect env vars used in project source files
+  turtle-env edit                  Open .turtle/env.yaml in $EDITOR
+
+Examples:
+  turtle-env set DATABASE_URL "postgres://localhost/mydb"
+  turtle-env set API_BASE "\${GITEA_URL}/api/v1"
+  eval \$(turtle-env load)
+  turtle-env scan | xargs turtle-env set
+"""
+from __future__ import annotations
+import json, os, re, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'
+
+def agentd(payload: dict, timeout: int = 10) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def d(r) -> dict: return (r or {}).get("data", {})
+
+def find_project_root() -> Path:
+    cwd = Path.cwd()
+    for parent in [cwd, *cwd.parents]:
+        if (parent / ".turtle").exists() or (parent / ".git").exists():
+            return parent
+    return cwd
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); return 0
+
+    sub = args[0]
+    rest = args[1:]
+    cwd = str(find_project_root())
+
+    if sub == "set":
+        if len(rest) < 2:
+            print("Usage: turtle-env set KEY VALUE"); return 1
+        key, val = rest[0], rest[1]
+        r = agentd({"action": "env-set", "cwd": cwd, "key": key, "value": val})
+        data = d(r)
+        if data.get("saved"):
+            verb = "Updated" if data.get("updated") else "Set"
+            print(f"  {GREEN}✓{RESET}  {verb} {key} in {data.get('path','')}")
+        else:
+            print(f"  {RED}Failed: {data.get('reason','?')}{RESET}"); return 1
+        return 0
+
+    if sub == "get":
+        key = rest[0] if rest else ""
+        r = agentd({"action": "env-list", "cwd": cwd})
+        data = d(r)
+        val = data.get("vars",{}).get(key)
+        if val is None:
+            print(f"  {GRAY}{key} not set{RESET}", file=sys.stderr); return 1
+        print(val)
+        return 0
+
+    if sub == "list":
+        r = agentd({"action": "env-list", "cwd": cwd})
+        data = d(r)
+        if not data.get("exists"):
+            print(f"  {GRAY}No .turtle/env.yaml in {cwd}{RESET}")
+            print(f"  {GRAY}Run: turtle-env init{RESET}")
+            return 0
+        print(f"\n{BOLD}Project env vars{RESET}  {GRAY}({data.get('path','')}){RESET}")
+        for k, v in data.get("vars",{}).items():
+            print(f"  {CYAN}{k:30}{RESET}  {v}")
+        print(f"\n  {GRAY}{data.get('count',0)} vars total{RESET}")
+        return 0
+
+    if sub == "load":
+        r = agentd({"action": "env-load", "cwd": cwd})
+        data = d(r)
+        if not data.get("loaded"):
+            print(f"# {data.get('reason','no .turtle/env.yaml found')}", file=sys.stderr); return 1
+        for k, v in data.get("vars",{}).items():
+            print(f'export {k}="{v}"')
+        return 0
+
+    if sub == "export":
+        r = agentd({"action": "env-export", "cwd": cwd})
+        data = d(r)
+        if not data.get("script"):
+            print(f"# {data.get('reason','')}", file=sys.stderr); return 1
+        print(data["script"])
+        return 0
+
+    if sub == "init":
+        env_dir = Path(cwd) / ".turtle"
+        env_dir.mkdir(exist_ok=True)
+        env_path = env_dir / "env.yaml"
+        if env_path.exists():
+            print(f"  {YELLOW}Already exists:{RESET} {env_path}")
+            return 0
+        env_path.write_text(
+            "# Project environment variables\n"
+            "# Use ${VAR} to reference values from your shell environment\n"
+            "# Example:\n"
+            "#   DATABASE_URL: \"postgres://localhost/mydb\"\n"
+            "#   API_KEY: \"${MY_SECRET_API_KEY}\"\n"
+        )
+        print(f"  {GREEN}✓{RESET}  Created {env_path}")
+        print(f"  {GRAY}Add vars: turtle-env set KEY VALUE{RESET}")
+        print(f"  {GRAY}Load in shell: eval \$(turtle-env load){RESET}")
+        return 0
+
+    if sub == "diff":
+        r = agentd({"action": "env-list", "cwd": cwd})
+        data = d(r)
+        if not data.get("exists"):
+            print(f"  {GRAY}No .turtle/env.yaml — run: turtle-env init{RESET}"); return 0
+        print(f"\n{BOLD}Env diff — project vs shell{RESET}")
+        for k, v in data.get("vars",{}).items():
+            shell_val = os.environ.get(k)
+            if shell_val is None:
+                print(f"  {YELLOW}+{RESET}  {k:30}  {GRAY}not in shell{RESET}")
+            elif shell_val != v:
+                print(f"  {CYAN}~{RESET}  {k:30}  project={v[:30]}  shell={shell_val[:30]}")
+            else:
+                print(f"  {GREEN}={RESET}  {k:30}  {GRAY}match{RESET}")
+        return 0
+
+    if sub == "scan":
+        # Detect env vars referenced in source files
+        cwd_path = Path(cwd)
+        pattern = re.compile(r'(?:os\.environ\.get|os\.getenv|process\.env|ENV)\[?[\'"]([A-Z_][A-Z0-9_]{2,})[\'"]')
+        found: dict[str, list[str]] = {}
+        for ext in (".py",".ts",".js",".go",".rb",".sh"):
+            for f in cwd_path.glob(f"**/*{ext}"):
+                if any(p in str(f) for p in ("node_modules","__pycache__",".git","vendor")):
+                    continue
+                try:
+                    text = f.read_text(errors="ignore")
+                    for m in pattern.finditer(text):
+                        key = m.group(1)
+                        found.setdefault(key, []).append(str(f.relative_to(cwd_path)))
+                except Exception: pass
+        if not found:
+            print(f"  {GRAY}No env var references found{RESET}"); return 0
+        print(f"\n{BOLD}Env vars referenced in source:{RESET}")
+        for k, files in sorted(found.items()):
+            in_env = os.environ.get(k)
+            status = f"{GREEN}set{RESET}" if in_env else f"{YELLOW}not set{RESET}"
+            print(f"  {k:40} [{status}]  {GRAY}{files[0]}{RESET}")
+        return 0
+
+    if sub == "edit":
+        env_path = Path(cwd) / ".turtle" / "env.yaml"
+        if not env_path.exists():
+            print(f"  {GRAY}No env.yaml — run: turtle-env init{RESET}"); return 1
+        editor = os.environ.get("EDITOR","vim")
+        result = subprocess.run([editor, str(env_path)])
+        return result.returncode
+
+    print(f"Unknown: {sub}", file=sys.stderr); return 1
+
+if __name__ == "__main__": raise SystemExit(main())

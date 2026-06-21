@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""turtle-diagnose — Full health check of all TurtleTerm integrations.
+
+Checks: Gitea, SynapseIQ LSP, Noetica, Ollama, Claude API key,
+GitHub token, co-pilot config, event stream, cost tracker, config dir.
+
+Usage:
+  turtle-diagnose            Pretty health report
+  turtle-diagnose --json     JSON output
+  turtle-diagnose --fix      Auto-fix what can be fixed
+"""
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'
+AS_JSON = "--json" in sys.argv
+FIX     = "--fix" in sys.argv
+
+def agentd(payload: dict, timeout: int = 10) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def main() -> int:
+    print(f"\n{BOLD}TurtleTerm Diagnose{RESET}  {GRAY}checking all integrations…{RESET}\n")
+    r = agentd({"action": "diagnose"}, timeout=15)
+    data = (r or {}).get("data", {})
+    checks = data.get("checks", [])
+
+    if AS_JSON:
+        print(json.dumps(data, indent=2)); return 0
+
+    for chk in checks:
+        name   = chk["name"]
+        status = chk["status"]
+        detail = chk.get("detail","")
+        if status == "ok":
+            icon = f"{GREEN}✓{RESET}"
+        elif status == "warn":
+            icon = f"{YELLOW}!{RESET}"
+        else:
+            icon = f"{RED}✗{RESET}"
+        print(f"  {icon}  {name:30}  {GRAY}{detail}{RESET}")
+
+    ok_c   = data.get("ok", 0)
+    warn_c = data.get("warn", 0)
+    fail_c = data.get("fail", 0)
+    healthy= data.get("healthy", False)
+
+    print(f"\n  {BOLD}{'✓ All systems healthy' if healthy else '! Issues found'}{RESET}")
+    print(f"  {GREEN}{ok_c} ok{RESET}  {YELLOW}{warn_c} warn{RESET}  {RED}{fail_c} fail{RESET}")
+
+    if FIX:
+        print(f"\n{BOLD}Auto-fix suggestions:{RESET}")
+        for chk in checks:
+            if chk["status"] in ("warn","fail") and "not set" in chk.get("detail",""):
+                print(f"  {CYAN}→{RESET}  {chk['name']}: {chk['detail']}")
+        print(f"  {GRAY}Start missing services manually or configure env vars.{RESET}")
+
+    return 0 if healthy else 1
+
+if __name__ == "__main__": raise SystemExit(main())

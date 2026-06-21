@@ -1356,6 +1356,70 @@ def test_agentd_version_v11():
     ok(f"agentd version aligned (v{ver})")
 
 
+def test_workspace_env():
+    import tempfile, os as _os_ws
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # workspace_scan
+        r = agentd({"action": "workspace-scan", "cwd": tmpdir})
+        assert r and r.get("status") == "ok", f"workspace-scan failed: {r}"
+        d = r["data"]
+        assert "project_type" in d
+        assert "languages" in d
+        assert "tools" in d
+        ok(f"workspace_scan (type={d['project_type']}, tools={len(d['tools'])})")
+
+        # env_set + env_list + env_load
+        r2 = agentd({"action": "env-set", "cwd": tmpdir, "key": "TEST_VAR", "value": "hello123"})
+        assert r2 and r2.get("status") == "ok"
+        assert r2["data"].get("saved") == True
+        ok("env_set")
+
+        r3 = agentd({"action": "env-list", "cwd": tmpdir})
+        assert r3 and r3.get("status") == "ok"
+        assert r3["data"].get("vars",{}).get("TEST_VAR") == "hello123"
+        ok("env_list")
+
+        r4 = agentd({"action": "env-load", "cwd": tmpdir})
+        assert r4 and r4.get("status") == "ok"
+        assert r4["data"].get("vars",{}).get("TEST_VAR") == "hello123"
+        ok("env_load")
+
+        r5 = agentd({"action": "env-export", "cwd": tmpdir})
+        assert r5 and r5.get("status") == "ok"
+        assert 'export TEST_VAR=' in r5["data"].get("script","")
+        ok("env_export")
+
+def test_diagnose():
+    r = agentd({"action": "diagnose"}, timeout=20)
+    assert r and r.get("status") == "ok", f"diagnose failed: {r}"
+    data = r["data"]
+    checks = data.get("checks", [])
+    assert len(checks) >= 5, f"expected >=5 checks, got {len(checks)}"
+    names = {c["name"] for c in checks}
+    assert "anthropic_api_key" in names and "copilot_config" in names
+    ok(f"diagnose ({data.get('ok',0)} ok, {data.get('warn',0)} warn, {data.get('fail',0)} fail)")
+
+def test_chain():
+    r = agentd({"action": "chain-list"})
+    assert r and r.get("status") == "ok"
+    assert "builtin" in r["data"]
+    assert len(r["data"]["builtin"]) >= 3
+    ok(f"chain_list ({r['data']['total']} total)")
+
+    r2 = agentd({"action": "chain-run", "name": "nonexistent-xyz"})
+    assert r2 and r2.get("status") == "ok"
+    assert r2["data"].get("run") == False
+    ok("chain_run (graceful not-found)")
+
+def test_new_scripts_v4():
+    for script in ("turtle-env", "turtle-diagnose", "turtle-apply", "turtle-chain"):
+        p = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "bin" / script
+        assert p.exists(), f"{script} missing"
+        r = subprocess.run([sys.executable, str(p), "--help"], capture_output=True, text=True, timeout=10)
+        assert r.returncode in (0,1), f"{script} --help crashed: {r.stderr[:60]}"
+    ok("new scripts: turtle-env, turtle-diagnose, turtle-apply, turtle-chain")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1430,6 +1494,10 @@ def main() -> int:
     test_gh_parity()
     test_turtle_gh_script()
     test_mcp_v10()
+    test_workspace_env()
+    test_diagnose()
+    test_chain()
+    test_new_scripts_v4()
 
     passed = sum(1 for r in results if r['status'] == 'pass')
     failed = sum(1 for r in results if r['status'] == 'fail')

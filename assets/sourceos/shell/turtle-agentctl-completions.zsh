@@ -99,6 +99,14 @@ _turtle_agentctl() {
         (gh-search)       _message 'kind: repos|issues|prs  query: search terms' ;;
         (gh-status)       # no args ;;
         (gh-api)          _message 'endpoint: e.g. repos/owner/repo [--method GET]' ;;
+        (workspace-scan) # no args ;;
+        (env-load)      # no args ;;
+        (env-set)       _message 'KEY VALUE' ;;
+        (env-list)      # no args ;;
+        (env-export)    # no args ;;
+        (diagnose)      # no args ;;
+        (chain-run)     _message 'name: pipeline name' ;;
+        (chain-list)    # no args ;;
       esac ;;
   esac
 }
@@ -273,6 +281,15 @@ _turtle_agentctl_cmds() {
     'gh-search:Search repos/issues/PRs/code with optional AI re-ranking'
     'gh-status:Show forge status: open PRs, issues, co-pilot state'
     'gh-api:Raw Gitea or GitHub API call'
+    # v1.4.0 — workspace intelligence, env, diagnose, chain
+    'workspace-scan:Detect project type, languages, tools, and suggest persona/runbook'
+    'env-load:Load project .turtle/env.yaml into current shell environment'
+    'env-set:Set a project-scoped environment variable in .turtle/env.yaml'
+    'env-list:List all project-scoped environment variables'
+    'env-export:Export project env vars as shell export statements'
+    'diagnose:Run full health check on all TurtleTerm integrations'
+    'chain-run:Run a named agent action pipeline'
+    'chain-list:List all saved and built-in agent action pipelines'
   )
   _describe 'turtle-agentctl command' cmds
 }

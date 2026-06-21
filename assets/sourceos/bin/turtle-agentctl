@@ -420,6 +420,18 @@ def main(argv: list[str]) -> int:
     gh_api_p.add_argument("endpoint", nargs="?", default="")
     gh_api_p.add_argument("--method", default="GET")
 
+    sub.add_parser("workspace-scan")
+    sub.add_parser("env-load")
+    env_set_p = sub.add_parser("env-set")
+    env_set_p.add_argument("key", nargs="?", default="")
+    env_set_p.add_argument("value", nargs="?", default="")
+    sub.add_parser("env-list")
+    sub.add_parser("env-export")
+    sub.add_parser("diagnose")
+    chain_run_p = sub.add_parser("chain-run")
+    chain_run_p.add_argument("name", nargs="?", default="")
+    sub.add_parser("chain-list")
+
     args, _remainder = parser.parse_known_args(argv)
 
     if args.command == "ping":
@@ -747,6 +759,22 @@ def main(argv: list[str]) -> int:
         request = {"action": "gh_status", "cwd": os.getcwd()}
     elif args.command == "gh-api":
         request = {"action": "gh_api", "endpoint": getattr(args, "endpoint", ""), "method": getattr(args, "method", "GET")}
+    elif args.command == "workspace-scan":
+        request = {"action": "workspace_scan", "cwd": os.getcwd()}
+    elif args.command == "env-load":
+        request = {"action": "env_load", "cwd": os.getcwd()}
+    elif args.command == "env-set":
+        request = {"action": "env_set", "key": getattr(args,"key",""), "value": getattr(args,"value",""), "cwd": os.getcwd()}
+    elif args.command == "env-list":
+        request = {"action": "env_list", "cwd": os.getcwd()}
+    elif args.command == "env-export":
+        request = {"action": "env_export", "cwd": os.getcwd()}
+    elif args.command == "diagnose":
+        request = {"action": "diagnose"}
+    elif args.command == "chain-run":
+        request = {"action": "chain_run", "name": getattr(args,"name",""), "steps": []}
+    elif args.command == "chain-list":
+        request = {"action": "chain_list"}
     elif args.command is None and _remainder:
         # Passthrough: unknown subcommand treated as action name
         # Converts CLI → JSON payload for agentd
