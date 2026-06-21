@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""turtle-files — Inline file browser for TurtleTerm.
+
+Usage:
+  turtle-files [DIR]        Browse DIR (default: current directory)
+  turtle-files --insert     Print selected path to stdout for shell insertion
+"""
+from __future__ import annotations
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+
+def agentd(payload: dict) -> dict | None:
+    try:
+        r = subprocess.run(
+            [sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=10,
+        )
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if "--help" in args or "-h" in args:
+        print(__doc__); return 0
+
+    insert_mode = "--insert" in args
+    args = [a for a in args if not a.startswith("-")]
+    cwd = args[0] if args else "."
+
+    r = agentd({"action": "file-tree", "cwd": cwd, "max": 500})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr); return 1
+
+    d = r.get("data", {})
+    files = d.get("files", [])
+
+    if not files:
+        print("No files found.", file=sys.stderr); return 0
+
+    # Print tree
+    for f in files:
+        indent = "  " * (f.get("depth", 0))
+        marker = "/" if f.get("is_dir") else ""
+        print(f"{indent}{f['name']}{marker}")
+
+    if insert_mode:
+        # Wait for user to type a filter via stdin
+        try:
+            sel = input("\nPath to insert: ").strip()
+            print(sel)
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -582,6 +582,31 @@ TOOLS = [
     {"name": "smart_paste_sanitize", "description": "Sanitize pasted text: fix curly quotes, zero-width chars, unbalanced quotes", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "shell": {"type": "string"}}, "required": ["text"]}},
     {"name": "dep_vuln_scan", "description": "Scan install commands (npm/pip/cargo) for known vulnerabilities before executing", "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["command"]}},
     {"name": "session_to_pr", "description": "Generate GitHub PR title + body from current git branch and session history", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}, "style": {"type": "string", "enum": ["concise", "detailed", "conventional"]}}}},
+    # T1 tools
+    {"name": "memory_add", "description": "Save a fact to TurtleTerm's persistent cross-session memory", "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["key", "value"]}},
+    {"name": "memory_list", "description": "List saved memories, optionally filtered by query or tags", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "tags": {"type": "array"}, "limit": {"type": "integer"}}}},
+    {"name": "memory_forget", "description": "Remove a specific memory by key", "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}},
+    {"name": "memory_search", "description": "Semantic search across all saved memories", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}}},
+    {"name": "persona_set", "description": "Set your AI persona (role, stack, style, preferred_tools, notes)", "inputSchema": {"type": "object", "properties": {"role": {"type": "string"}, "stack": {"type": "string"}, "style": {"type": "string"}, "preferred_tools": {"type": "string"}, "notes": {"type": "string"}}}},
+    {"name": "persona_get", "description": "Get your current AI persona", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "persona_marketplace_list", "description": "Browse available TurtleTerm personas (devops, ml-researcher, sre, security, fullstack)", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "persona_marketplace_install", "description": "Install a persona from the marketplace", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}},
+    # T2 tools
+    {"name": "workflow_detect", "description": "Detect repeated command patterns and suggest auto-generated runbooks", "inputSchema": {"type": "object", "properties": {"threshold": {"type": "integer"}}}},
+    {"name": "workflow_save", "description": "Save an AI-generated workflow as a named runbook", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "content": {"type": "string"}}, "required": ["name", "content"]}},
+    {"name": "file_tree", "description": "Browse the file tree of a directory with .gitignore awareness", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}, "max": {"type": "integer"}, "hidden": {"type": "boolean"}}}},
+    {"name": "perf_record", "description": "Record a command's wall time for performance profiling", "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "wall_ms": {"type": "integer"}, "exit_code": {"type": "integer"}}, "required": ["command", "wall_ms"]}},
+    {"name": "perf_stats", "description": "Get command performance statistics: slowest commands, average time", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
+    {"name": "output_export", "description": "Export terminal output as markdown, JSON, HTML, or GitHub Gist", "inputSchema": {"type": "object", "properties": {"content": {"type": "string"}, "format": {"type": "string", "enum": ["markdown", "json", "html", "gist"]}, "filename": {"type": "string"}}, "required": ["content"]}},
+    {"name": "output_search", "description": "Search across all terminal output history", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}}},
+    # T3 tools
+    {"name": "plugin_list", "description": "List installed TurtleTerm Lua plugins from ~/.config/turtleterm/plugins/", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "plugin_install", "description": "Install a Lua plugin by content or HTTPS URL", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "content": {"type": "string"}, "source": {"type": "string"}}, "required": ["name"]}},
+    {"name": "team_config_set", "description": "Configure team runbook remote (git URL, org)", "inputSchema": {"type": "object", "properties": {"remote": {"type": "string"}, "org": {"type": "string"}}}},
+    {"name": "team_sync_pull", "description": "Pull team runbooks from the configured remote", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "team_runbook_list", "description": "List all runbooks: personal + team combined", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "sftp_browse", "description": "Browse remote files via SSH/SFTP", "inputSchema": {"type": "object", "properties": {"host": {"type": "string"}, "path": {"type": "string"}}, "required": ["host"]}},
+    {"name": "sftp_download", "description": "Download a file from SSH remote via SCP", "inputSchema": {"type": "object", "properties": {"host": {"type": "string"}, "remote_path": {"type": "string"}, "local_dir": {"type": "string"}}, "required": ["host", "remote_path"]}},
 ]
 
 
@@ -768,6 +793,28 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         return _agentd({"action": "dep-vuln-scan", "command": arguments.get("command"), "cwd": arguments.get("cwd") or __import__("os").environ.get("PWD")})
     if name == "session_to_pr":
         return _agentd({"action": "session-to-pr", "cwd": arguments.get("cwd") or __import__("os").environ.get("PWD"), "style": arguments.get("style")})
+    if name == 'memory_add': return _agentd({'action': 'memory-add', 'key': arguments.get('key'), 'value': arguments.get('value'), 'tags': arguments.get('tags', [])})
+    if name == 'memory_list': return _agentd({'action': 'memory-list', 'query': arguments.get('query', ''), 'limit': arguments.get('limit', 20)})
+    if name == 'memory_forget': return _agentd({'action': 'memory-forget', 'key': arguments.get('key')})
+    if name == 'memory_search': return _agentd({'action': 'memory-search', 'query': arguments.get('query', ''), 'limit': arguments.get('limit', 5)})
+    if name == 'persona_set': return _agentd({'action': 'persona-set', 'role': arguments.get('role'), 'stack': arguments.get('stack'), 'style': arguments.get('style'), 'preferred_tools': arguments.get('preferred_tools'), 'notes': arguments.get('notes')})
+    if name == 'persona_get': return _agentd({'action': 'persona-get'})
+    if name == 'persona_marketplace_list': return _agentd({'action': 'persona-marketplace-list'})
+    if name == 'persona_marketplace_install': return _agentd({'action': 'persona-marketplace-install', 'id': arguments.get('id')})
+    if name == 'workflow_detect': return _agentd({'action': 'workflow-detect', 'threshold': arguments.get('threshold', 3)})
+    if name == 'workflow_save': return _agentd({'action': 'workflow-save', 'name': arguments.get('name'), 'content': arguments.get('content')})
+    if name == 'file_tree': return _agentd({'action': 'file-tree', 'cwd': arguments.get('cwd', '.'), 'max': arguments.get('max', 200), 'hidden': arguments.get('hidden', False)})
+    if name == 'perf_record': return _agentd({'action': 'perf-record', 'command': arguments.get('command'), 'wall_ms': arguments.get('wall_ms'), 'exit_code': arguments.get('exit_code', 0)})
+    if name == 'perf_stats': return _agentd({'action': 'perf-stats', 'limit': arguments.get('limit', 500)})
+    if name == 'output_export': return _agentd({'action': 'output-export', 'content': arguments.get('content'), 'format': arguments.get('format', 'markdown'), 'filename': arguments.get('filename', 'turtle-output')})
+    if name == 'output_search': return _agentd({'action': 'output-search', 'query': arguments.get('query', ''), 'limit': arguments.get('limit', 50)})
+    if name == 'plugin_list': return _agentd({'action': 'plugin-list'})
+    if name == 'plugin_install': return _agentd({'action': 'plugin-install', 'name': arguments.get('name'), 'content': arguments.get('content', ''), 'source': arguments.get('source', '')})
+    if name == 'team_config_set': return _agentd({'action': 'team-config-set', 'remote': arguments.get('remote', ''), 'org': arguments.get('org', '')})
+    if name == 'team_sync_pull': return _agentd({'action': 'team-sync-pull'})
+    if name == 'team_runbook_list': return _agentd({'action': 'team-runbook-list'})
+    if name == 'sftp_browse': return _agentd({'action': 'sftp-browse', 'host': arguments.get('host'), 'path': arguments.get('path', '/')})
+    if name == 'sftp_download': return _agentd({'action': 'sftp-download', 'host': arguments.get('host'), 'remote_path': arguments.get('remote_path'), 'local_dir': arguments.get('local_dir', '')})
     if name == "workspace_list":
         import os as _os
         ws_dir = Path.home() / ".config" / "turtleterm" / "workspaces"
@@ -808,7 +855,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turtleterm", "version": "0.5.0"},
+                "serverInfo": {"name": "turtleterm", "version": "0.6.0"},
             },
         }
 

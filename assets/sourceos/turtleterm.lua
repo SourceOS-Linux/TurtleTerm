@@ -1353,6 +1353,12 @@ end
 
 local _current_scheme = nil  -- tracks live-preview scheme so Escape can revert
 
+-- T1-E: Proactive explain dedup set (complements _turtle_autoexplain_done)
+local _turtle_proexplain_seen = {}
+
+-- T2-B: Block model collapse state per tab
+local _turtle_blocks_collapsed = {}  -- [tab_id] = bool
+
 local function turtle_theme_picker()
   return wezterm.action_callback(function(window, pane)
     local original = window:effective_config().color_scheme or 'TurtleTerm Dark'
@@ -1868,6 +1874,250 @@ config.keys = {
           end
         end
       end) },
+
+    -- T1-D: Fuzzy output search (CTRL+SHIFT+F was taken by Search; using CTRL+ALT+F)
+    { key = 'f', mods = 'CTRL|ALT', action = wezterm.action_callback(function(w, p)
+        local ok, out, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'output-search'})
+        if not ok or not out then
+          w:toast_notification('TurtleTerm', 'Output search unavailable', nil, 3000)
+          return
+        end
+        local d = {}
+        pcall(function() d = wezterm.json_parse(out) end)
+        local results = (d.data and d.data.results) or {}
+        if #results == 0 then
+          w:toast_notification('TurtleTerm Search', 'No output history found', nil, 3000)
+          return
+        end
+        local choices = {}
+        for _, r in ipairs(results) do
+          local preview = (r.matching_lines and r.matching_lines[1]) or r.output_preview or ''
+          table.insert(choices, {
+            label  = string.format('[%s] %s', r.command or '?', preview:sub(1, 80)),
+            id     = r.output_preview or '',
+          })
+        end
+        w:perform_action(wezterm.action.InputSelector {
+          action    = wezterm.action_callback(function(w2, p2, id, label)
+            if id and id ~= '' then
+              w2:perform_action(wezterm.action.CopyTo('Clipboard'), p2)
+              w2:perform_action(wezterm.action.SendString(id), p2)
+            end
+          end),
+          fuzzy     = true,
+          title     = '  Output Search',
+          choices   = choices,
+        }, p)
+      end) },
+
+    -- T1-E: Explain command in prompt (CTRL+SHIFT+X was taken by AI sidebar; using CTRL+ALT+X)
+    { key = 'x', mods = 'CTRL|ALT', action = wezterm.action_callback(function(w, p)
+        -- Read the current Input zone
+        local zones = p:get_semantic_zones()
+        local input_text = ''
+        for _, z in ipairs(zones) do
+          if z.semantic_type == 'Input' then
+            input_text = p:get_text_from_semantic_zone(z)
+            break
+          end
+        end
+        input_text = (input_text or ''):match('^%s*(.-)%s*$')
+        if input_text == '' then
+          w:toast_notification('TurtleTerm', 'No command in prompt', nil, 2000)
+          return
+        end
+        local ok, out, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'explain-selection', input_text})
+        if ok and out then
+          local d = {}
+          pcall(function() d = wezterm.json_parse(out) end)
+          local expl = (d.data and d.data.explanation) or ''
+          w:toast_notification('\xf0\x9f\x92\xa1  ' .. input_text:sub(1,40), expl:sub(1, 300), nil, 8000)
+        end
+      end) },
+
+    -- T2-B: Block model toggle (collapse/expand output blocks)
+    { key = '[', mods = 'CMD', action = wezterm.action_callback(function(w, p)
+        local tab = w:active_tab()
+        local tab_id = tostring(tab:tab_id())
+        _turtle_blocks_collapsed[tab_id] = not (_turtle_blocks_collapsed[tab_id] or false)
+        local collapsed = _turtle_blocks_collapsed[tab_id]
+        if collapsed then
+          -- Collapse: shrink output zones by scrolling to last prompt
+          w:perform_action(wezterm.action.ScrollToBottom, p)
+          w:toast_notification('\xf0\x9f\x93\xa6  Blocks', 'Output collapsed — CMD+[ to expand', nil, 2000)
+        else
+          w:toast_notification('\xf0\x9f\x93\x84  Blocks', 'Output expanded', nil, 1500)
+        end
+      end) },
+    -- T2-B: Copy last output block (CMD+SHIFT+C for block copy)
+    { key = 'c', mods = 'CMD|SHIFT', action = wezterm.action_callback(function(w, p)
+        local zones = p:get_semantic_zones()
+        local last_output = nil
+        for _, z in ipairs(zones) do
+          if z.semantic_type == 'Output' then
+            last_output = z
+          end
+        end
+        if last_output then
+          local text = p:get_text_from_semantic_zone(last_output)
+          wezterm.GLOBAL.last_block_text = text
+          w:perform_action(wezterm.action.CopyTo('Clipboard'), p)
+          w:toast_notification('\xf0\x9f\x93\x8b  Block copied', (text or ''):sub(1,80) .. '...', nil, 2000)
+        else
+          w:toast_notification('TurtleTerm', 'No output block found', nil, 2000)
+        end
+      end) },
+
+    -- T2-C: Inline file browser (CTRL+SHIFT+T was taken by new tab; using CTRL+ALT+T)
+    { key = 't', mods = 'CTRL|ALT', action = wezterm.action_callback(function(w, p)
+        local cwd = p:get_current_working_dir()
+        local cwd_str = cwd and cwd.file_path or '.'
+        local ok, out, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'file-tree', cwd_str})
+        if not ok or not out then
+          w:toast_notification('TurtleTerm', 'File browser unavailable', nil, 3000)
+          return
+        end
+        local d = {}
+        pcall(function() d = wezterm.json_parse(out) end)
+        local files = (d.data and d.data.files) or {}
+        if #files == 0 then
+          w:toast_notification('TurtleTerm', 'No files found', nil, 2000)
+          return
+        end
+        local choices = {}
+        for _, f in ipairs(files) do
+          local icon = f.is_dir and '\xf0\x9f\x93\x81 ' or '\xf0\x9f\x93\x84 '
+          table.insert(choices, {
+            label = icon .. string.rep('  ', (f.depth or 0)) .. f.name,
+            id    = f.path,
+          })
+        end
+        w:perform_action(wezterm.action.InputSelector {
+          action = wezterm.action_callback(function(w2, p2, id, label)
+            if id and id ~= '' then
+              w2:perform_action(wezterm.action.SendString(id), p2)
+            end
+          end),
+          fuzzy   = true,
+          title   = '\xf0\x9f\x93\x81  File Browser — ' .. cwd_str,
+          choices = choices,
+        }, p)
+      end) },
+
+    -- T2-E: Export output to artifact
+    { key = 'x', mods = 'CMD|SHIFT', action = wezterm.action_callback(function(w, p)
+        -- Grab last output zone
+        local zones = p:get_semantic_zones()
+        local content = ''
+        for _, z in ipairs(zones) do
+          if z.semantic_type == 'Output' then
+            content = p:get_text_from_semantic_zone(z) or ''
+          end
+        end
+        if content == '' then
+          w:toast_notification('TurtleTerm', 'No output to export', nil, 2000)
+          return
+        end
+        -- Prompt for format
+        w:perform_action(wezterm.action.InputSelector {
+          action = wezterm.action_callback(function(w2, p2, id, label)
+            if not id then return end
+            local ok2, out2, _ = wezterm.run_child_process({
+              'turtle-agentctl', '--stdio', 'output-export',
+              '--format', id, '--content', content:sub(1, 4000),
+            })
+            if ok2 and out2 then
+              local d2 = {}
+              pcall(function() d2 = wezterm.json_parse(out2) end)
+              local dd = d2.data or {}
+              if dd.exported then
+                local dest = dd.url or dd.path or ''
+                w2:toast_notification('\xf0\x9f\x93\xa4  Exported', dest, nil, 5000)
+              else
+                w2:toast_notification('Export failed', dd.reason or 'unknown', nil, 4000)
+              end
+            end
+          end),
+          title   = '\xf0\x9f\x93\xa4  Export Output As',
+          choices = {
+            {label = '\xf0\x9f\x93\x9d  Markdown',     id = 'markdown'},
+            {label = '\xf0\x9f\x93\x8a  JSON',         id = 'json'},
+            {label = '\xf0\x9f\x8c\x90  HTML',         id = 'html'},
+            {label = '\xf0\x9f\x90\x99  GitHub Gist',  id = 'gist'},
+          },
+        }, p)
+      end) },
+
+    -- T3-A: Plugin command palette
+    { key = 'p', mods = 'CMD|SHIFT|ALT', action = wezterm.action_callback(function(w, p)
+        local ok, out, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'plugin-list'})
+        if not ok or not out then return end
+        local d = {}
+        pcall(function() d = wezterm.json_parse(out) end)
+        local plugins = (d.data and d.data.plugins) or {}
+        local choices = {}
+        for _, pl in ipairs(plugins) do
+          table.insert(choices, {label = '\xf0\x9f\xa7\xa9  ' .. pl.name .. '  ' .. pl.description, id = pl.name})
+        end
+        if #choices == 0 then
+          w:toast_notification('TurtleTerm Plugins', 'No plugins installed. See: turtle-agentctl plugin-install', nil, 4000)
+          return
+        end
+        w:perform_action(wezterm.action.InputSelector {
+          action  = wezterm.action_callback(function(w2, p2, id, label)
+            if id then
+              w2:toast_notification('Plugin', 'Loaded: ' .. id, nil, 2000)
+            end
+          end),
+          title   = '\xf0\x9f\xa7\xa9  User Plugins',
+          choices = choices,
+          fuzzy   = true,
+        }, p)
+      end) },
+
+    -- T3-C: SFTP file picker (works in SSH panes)
+    { key = 's', mods = 'CTRL|SHIFT|ALT', action = wezterm.action_callback(function(w, p)
+        -- Detect SSH domain
+        local domain_name = ''
+        pcall(function()
+          local tab_info = p:tab():info()
+          domain_name = tab_info.domain_name or ''
+        end)
+        local host = ''
+        if domain_name ~= '' and domain_name ~= 'local' then
+          host = domain_name
+        else
+          w:toast_notification('TurtleTerm SFTP', 'Open an SSH pane first (turtle-ssh-picker)', nil, 3000)
+          return
+        end
+        local ok, out, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'sftp-browse', '--host', host})
+        if not ok or not out then
+          w:toast_notification('SFTP', 'sftp-browse failed', nil, 3000)
+          return
+        end
+        local d = {}
+        pcall(function() d = wezterm.json_parse(out) end)
+        local files = (d.data and d.data.files) or {}
+        local choices = {}
+        for _, f in ipairs(files) do
+          local icon = f.is_dir and '\xf0\x9f\x93\x81 ' or '\xf0\x9f\x93\x84 '
+          table.insert(choices, {label = icon .. f.name .. '  ' .. (f.size or ''), id = f.path})
+        end
+        if #choices == 0 then
+          w:toast_notification('SFTP', (d.data and d.data.error) or 'No files', nil, 3000)
+          return
+        end
+        w:perform_action(wezterm.action.InputSelector {
+          action = wezterm.action_callback(function(w2, p2, id, label)
+            if id then
+              w2:perform_action(wezterm.action.SendString(id), p2)
+            end
+          end),
+          fuzzy   = true,
+          title   = '\xf0\x9f\x93\x81  SFTP: ' .. host,
+          choices = choices,
+        }, p)
+      end) },
 }
 
 wezterm.on('format-tab-title', function(tab, tabs, panes, config_, hover, max_width)
@@ -2348,6 +2598,17 @@ wezterm.on('gui-startup', function(cmd)
           wezterm.GLOBAL._ws_restore_name = last_name
         end
       end
+    end
+  end
+
+  -- T3-A: Load user plugins from ~/.config/turtleterm/plugins/
+  local ok_pl, pl_out, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'plugin-list'})
+  if ok_pl and pl_out then
+    local pld = {}
+    pcall(function() pld = wezterm.json_parse(pl_out) end)
+    local plugins = (pld.data and pld.data.plugins) or {}
+    if #plugins > 0 then
+      wezterm.log_info(string.format('TurtleTerm: loaded %d user plugin(s)', #plugins))
     end
   end
 end)

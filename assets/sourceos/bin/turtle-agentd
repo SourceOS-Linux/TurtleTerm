@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TurtleTerm local agent gateway v0.3.0.
+"""TurtleTerm local agent gateway v0.4.0.
 
 Conservative local JSON gateway for TurtleTerm. Supports:
 - stdio (one request / one response)
@@ -484,6 +484,44 @@ def _session_memory_get(session_id: str) -> list[dict[str, Any]]:
     return list(_SESSION_MEMORY.get(session_id, []))
 
 
+def _load_memories_context() -> str:
+    mem_path = Path.home() / ".config" / "turtleterm" / "memories.json"
+    if not mem_path.exists():
+        return ""
+    try:
+        mems = json.loads(mem_path.read_text())
+    except Exception:
+        return ""
+    if not mems:
+        return ""
+    recent = mems[-5:]
+    lines = ["[TurtleTerm user memories — inject as context:]"]
+    for m in recent:
+        lines.append(f"  {m.get('key','?')}: {m.get('value','')}")
+    return "\n".join(lines)
+
+
+def _load_persona_system() -> str:
+    p_path = Path.home() / ".config" / "turtleterm" / "persona.json"
+    if not p_path.exists():
+        return ""
+    try:
+        p = json.loads(p_path.read_text())
+    except Exception:
+        return ""
+    if not p:
+        return ""
+    parts = []
+    if p.get("role"):       parts.append(f"Role: {p['role']}")
+    if p.get("stack"):      parts.append(f"Stack: {p['stack']}")
+    if p.get("style"):      parts.append(f"Coding style: {p['style']}")
+    if p.get("preferred_tools"): parts.append(f"Preferred tools: {p['preferred_tools']}")
+    if p.get("notes"):      parts.append(f"Notes: {p['notes']}")
+    if not parts:
+        return ""
+    return "[User persona]\n" + "\n".join(parts)
+
+
 def smart_chat(
     text: str,
     system: str | None = None,
@@ -718,7 +756,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         noetica_reachable = noetica_get("/api/status", timeout=1) is not None
         return response("pong", {
             "service": "turtle-agentd",
-            "version": "0.3.0",
+            "version": "0.4.0",
             "noetica_url": noetica_url(),
             "noetica_reachable": noetica_reachable,
         })
@@ -1032,7 +1070,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         context = request.get("context") or {}
         cwd = context.get("cwd") or os.getcwd()
         git = git_info(cwd)
-        system_prompt = (
+        _persona = _load_persona_system()
+        _mems    = _load_memories_context()
+        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+        system_prompt = (_prefix + "\n\n" if _prefix else "") + (
             "You are a terminal intelligence assistant. Explain what the following terminal output "
             "or selected text means, in 2-4 concise sentences. Identify errors, key data, or "
             "actionable next steps if relevant. Be direct and technical. "
@@ -1091,7 +1132,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         shell = context.get("shell") or os.environ.get("SHELL", "zsh").split("/")[-1]
         proj_type = _detect_project_type(cwd)
         proj_ctx = f" in a {proj_type} project" if proj_type else ""
-        system_prompt = (
+        _persona = _load_persona_system()
+        _mems    = _load_memories_context()
+        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+        system_prompt = (_prefix + "\n\n" if _prefix else "") + (
             f"You are a {shell} shell command generator{proj_ctx}. "
             f"Current working directory: {cwd}. "
             f"The user describes what they want to do. "
@@ -1210,7 +1254,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
                 "id": "turtleterm",
                 "name": "TurtleTerm",
                 "description": "TurtleTerm terminal intelligence agent (SourceOS)",
-                "version": "0.3.0",
+                "version": "0.4.0",
                 "capabilities": ["terminal", "shell", "explain_selection", "nl_to_shell"],
                 "endpoint": env("TURTLETERM_ACP_ENDPOINT", ""),
             }
@@ -1305,7 +1349,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         if not goal:
             return response("error", {"message": "goal is required"}, status="error")
 
-        system_prompt = (
+        _persona = _load_persona_system()
+        _mems    = _load_memories_context()
+        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+        system_prompt = (_prefix + "\n\n" if _prefix else "") + (
             "You are a shell command planner for a terminal intelligence system. "
             "Given a user goal, generate a step-by-step plan as JSON. "
             "Output ONLY valid JSON with this exact schema (no markdown, no prose):\n"
@@ -1754,7 +1801,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         text = request.get("text", "")
         shell = request.get("shell", "bash")
         if not text or not text.strip():
-            return response("shellcheck_lint", {"issues": [], "clean": True})
+            return response("shellcheck_lint", {"issues": [], "clean": True, "fixed_script": "", "fix_diff": ""})
         import subprocess as _sp_sc, tempfile as _tf, os as _os_sc
         # Try shellcheck first
         with _tf.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
@@ -1767,7 +1814,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             )
             _os_sc.unlink(tmpfile)
             if r.returncode == 0:
-                return response("shellcheck_lint", {"issues": [], "clean": True, "tool": "shellcheck"})
+                return response("shellcheck_lint", {"issues": [], "clean": True, "fixed_script": "", "fix_diff": "", "tool": "shellcheck"})
             try:
                 issues = json.loads(r.stdout)
                 formatted = [{
@@ -1775,7 +1822,27 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
                     "level": i.get("level", "warning"),
                     "message": i.get("message", ""), "code": f"SC{i.get('code','')}",
                 } for i in issues if isinstance(i, dict)]
-                return response("shellcheck_lint", {"issues": formatted, "clean": len(formatted) == 0, "tool": "shellcheck"})
+                # AI-generate fix if there are issues
+                fixed_script = ""
+                fix_diff = ""
+                if formatted and text and env("ANTHROPIC_API_KEY"):
+                    issues_text = json.dumps(formatted[:10])
+                    ai = _claude_chat(
+                        f"Shell script:\n```sh\n{text[:3000]}\n```\n\nShellcheck issues:\n{issues_text}\n\nReturn ONLY the corrected shell script, no explanation, no markdown fences.",
+                        system="You are a shell expert. Fix exactly the reported shellcheck issues and nothing else. Return only the script.",
+                        timeout=15,
+                    )
+                    if ai:
+                        fixed_script = (ai.get("response") or "").strip().removeprefix("```sh").removeprefix("```bash").removeprefix("```").removesuffix("```").strip()
+                        if fixed_script and fixed_script != text:
+                            import difflib as _dl
+                            diff_lines = list(_dl.unified_diff(
+                                text.splitlines(keepends=True),
+                                fixed_script.splitlines(keepends=True),
+                                fromfile="original.sh", tofile="fixed.sh", n=2
+                            ))
+                            fix_diff = "".join(diff_lines[:60])
+                return response("shellcheck_lint", {"issues": formatted, "clean": len(formatted) == 0, "fixed_script": fixed_script, "fix_diff": fix_diff, "tool": "shellcheck"})
             except json.JSONDecodeError:
                 pass
         except (FileNotFoundError, _sp_sc.TimeoutExpired):
@@ -1788,18 +1855,38 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             r2 = _sp_sc.run(['bash', '-n', tmpfile2], capture_output=True, text=True, timeout=3)
             _os_sc.unlink(tmpfile2)
             if r2.returncode == 0:
-                return response("shellcheck_lint", {"issues": [], "clean": True, "tool": "bash -n"})
+                return response("shellcheck_lint", {"issues": [], "clean": True, "fixed_script": "", "fix_diff": "", "tool": "bash -n"})
             lines = r2.stderr.strip().splitlines()
             issues2 = []
             for line in lines:
                 import re as _re_bl
                 m = _re_bl.search(r'line (\d+)', line)
                 issues2.append({"line": int(m.group(1)) if m else 0, "col": 0, "level": "error", "message": line, "code": ""})
-            return response("shellcheck_lint", {"issues": issues2, "clean": False, "tool": "bash -n"})
+            # AI-generate fix for bash -n issues too
+            fixed_script = ""
+            fix_diff = ""
+            if issues2 and text and env("ANTHROPIC_API_KEY"):
+                issues_text = json.dumps(issues2[:10])
+                ai = _claude_chat(
+                    f"Shell script:\n```sh\n{text[:3000]}\n```\n\nShellcheck issues:\n{issues_text}\n\nReturn ONLY the corrected shell script, no explanation, no markdown fences.",
+                    system="You are a shell expert. Fix exactly the reported shellcheck issues and nothing else. Return only the script.",
+                    timeout=15,
+                )
+                if ai:
+                    fixed_script = (ai.get("response") or "").strip().removeprefix("```sh").removeprefix("```bash").removeprefix("```").removesuffix("```").strip()
+                    if fixed_script and fixed_script != text:
+                        import difflib as _dl2
+                        diff_lines2 = list(_dl2.unified_diff(
+                            text.splitlines(keepends=True),
+                            fixed_script.splitlines(keepends=True),
+                            fromfile="original.sh", tofile="fixed.sh", n=2
+                        ))
+                        fix_diff = "".join(diff_lines2[:60])
+            return response("shellcheck_lint", {"issues": issues2, "clean": False, "fixed_script": fixed_script, "fix_diff": fix_diff, "tool": "bash -n"})
         except (FileNotFoundError, _sp_sc.TimeoutExpired):
             try: _os_sc.unlink(tmpfile2)
             except OSError: pass
-        return response("shellcheck_lint", {"issues": [], "clean": True, "tool": "unavailable"})
+        return response("shellcheck_lint", {"issues": [], "clean": True, "fixed_script": "", "fix_diff": "", "tool": "unavailable"})
 
     if action in ("inline_diff", "inline-diff"):
         cwd = request.get("cwd", ".") or "."
@@ -2397,6 +2484,8 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         import subprocess as _sp_sh, shutil as _sh_sh
         port = int(request.get("port", 7723))
         ttl  = int(request.get("ttl_minutes", 60))
+        role  = request.get("role", "writer")  # "writer" | "viewer"
+        token = request.get("token", "") or __import__('secrets').token_urlsafe(8)
 
         if _sh_sh.which("ttyd"):
             shell = env("SHELL", "/bin/zsh")
@@ -2411,8 +2500,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
                 "url": url,
                 "pid": proc.pid,
                 "backend": "ttyd",
+                "role": role,
+                "token": token,
                 "ttl_minutes": ttl,
-                "hint": f"Open {url} in a browser to view/share this session",
+                "hint": f"Open {url}?token={token} — role={role}",
             })
         elif _sh_sh.which("upterm"):
             r = _sp_sh.run(
@@ -2617,6 +2708,548 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             "command": command,
         })
 
+    # ------------------------------------------------------------------
+    # T1-A: Cross-Session AI Memory
+    # ------------------------------------------------------------------
+    if action in ("memory_add", "memory-add"):
+        key   = request.get("key", "").strip()
+        value = request.get("value", "").strip()
+        tags  = request.get("tags", [])
+        if not key or not value:
+            return response("memory_add", {"saved": False, "reason": "key and value required"})
+        mem_path = Path.home() / ".config" / "turtleterm" / "memories.json"
+        mem_path.parent.mkdir(parents=True, exist_ok=True)
+        mems = []
+        if mem_path.exists():
+            try: mems = json.loads(mem_path.read_text())
+            except: mems = []
+        # Update existing key or append
+        for m in mems:
+            if m.get("key") == key:
+                m["value"] = value
+                m["tags"]  = tags
+                m["updated"] = __import__('datetime').datetime.utcnow().isoformat()
+                break
+        else:
+            mems.append({"key": key, "value": value, "tags": tags,
+                         "created": __import__('datetime').datetime.utcnow().isoformat()})
+        mems = mems[-200:]  # cap at 200 memories
+        mem_path.write_text(json.dumps(mems, indent=2))
+        return response("memory_add", {"saved": True, "total": len(mems), "key": key})
+
+    if action in ("memory_list", "memory-list"):
+        query = request.get("query", "").lower().strip()
+        tags  = request.get("tags", [])
+        limit = int(request.get("limit", 20))
+        mem_path = Path.home() / ".config" / "turtleterm" / "memories.json"
+        mems = []
+        if mem_path.exists():
+            try: mems = json.loads(mem_path.read_text())
+            except: mems = []
+        if query:
+            mems = [m for m in mems if query in m.get("key","").lower() or query in m.get("value","").lower()]
+        if tags:
+            mems = [m for m in mems if any(t in m.get("tags",[]) for t in tags)]
+        return response("memory_list", {"memories": mems[-limit:], "total": len(mems)})
+
+    if action in ("memory_forget", "memory-forget"):
+        key = request.get("key", "").strip()
+        mem_path = Path.home() / ".config" / "turtleterm" / "memories.json"
+        if not mem_path.exists():
+            return response("memory_forget", {"removed": False, "reason": "no memories"})
+        try: mems = json.loads(mem_path.read_text())
+        except: mems = []
+        before = len(mems)
+        mems = [m for m in mems if m.get("key") != key]
+        mem_path.write_text(json.dumps(mems, indent=2))
+        return response("memory_forget", {"removed": len(mems) < before, "remaining": len(mems)})
+
+    if action in ("memory_search", "memory-search"):
+        query = request.get("query", "").strip()
+        limit = int(request.get("limit", 5))
+        mem_path = Path.home() / ".config" / "turtleterm" / "memories.json"
+        mems = []
+        if mem_path.exists():
+            try: mems = json.loads(mem_path.read_text())
+            except: mems = []
+        if not mems:
+            return response("memory_search", {"memories": [], "total": 0})
+        if not query:
+            return response("memory_search", {"memories": mems[-limit:], "total": len(mems)})
+        # Simple relevance: count query word hits in key+value
+        scored = []
+        words = query.lower().split()
+        for m in mems:
+            text = (m.get("key","") + " " + m.get("value","")).lower()
+            score = sum(1 for w in words if w in text)
+            if score > 0:
+                scored.append((score, m))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return response("memory_search", {"memories": [m for _, m in scored[:limit]], "total": len(scored)})
+
+    # ------------------------------------------------------------------
+    # T1-B: Custom AI Persona
+    # ------------------------------------------------------------------
+    if action in ("persona_set", "persona-set"):
+        persona = request.get("persona", {})
+        if not persona:
+            # Accept flat params too
+            persona = {k: v for k, v in request.items()
+                       if k not in ("action", "session_id") and v}
+        p_path = Path.home() / ".config" / "turtleterm" / "persona.json"
+        p_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = {}
+        if p_path.exists():
+            try: existing = json.loads(p_path.read_text())
+            except: existing = {}
+        existing.update(persona)
+        existing["updated"] = __import__('datetime').datetime.utcnow().isoformat()
+        p_path.write_text(json.dumps(existing, indent=2))
+        return response("persona_set", {"saved": True, "persona": existing})
+
+    if action in ("persona_get", "persona-get"):
+        p_path = Path.home() / ".config" / "turtleterm" / "persona.json"
+        if not p_path.exists():
+            return response("persona_get", {"persona": {}, "exists": False})
+        try:
+            persona = json.loads(p_path.read_text())
+        except Exception:
+            persona = {}
+        return response("persona_get", {"persona": persona, "exists": bool(persona)})
+
+    # ------------------------------------------------------------------
+    # T2-A: AI Workflow Template Detection
+    # ------------------------------------------------------------------
+    if action in ("workflow_detect", "workflow-detect"):
+        session_id = request.get("session_id") or env("SOURCEOS_TERMINAL_SESSION_ID", "")
+        threshold  = int(request.get("threshold", 3))
+        events = read_ndjson(event_stream_path(), limit=500)
+        if session_id:
+            events = [e for e in events if e.get("session_id") == session_id]
+        completed = [e.get("command","").strip() for e in events if e.get("event_type") == "command.completed" and e.get("command")]
+        if len(completed) < threshold * 2:
+            return response("workflow_detect", {"patterns": [], "message": "Not enough history yet"})
+
+        # Detect repeated n-grams (sequences of 2-4 commands that appear >= threshold times)
+        from collections import Counter as _Ctr
+        patterns: list[dict] = []
+        for n in (4, 3, 2):
+            ngrams = [tuple(completed[i:i+n]) for i in range(len(completed)-n+1)]
+            counts = _Ctr(ngrams)
+            for seq, cnt in counts.most_common(5):
+                if cnt >= threshold:
+                    patterns.append({"commands": list(seq), "count": cnt, "n": n})
+            if patterns:
+                break
+
+        if not patterns:
+            return response("workflow_detect", {"patterns": [], "message": "No repeated patterns detected"})
+
+        # AI-generate runbook for top pattern
+        top = patterns[0]
+        cmds_text = "\n".join(f"  - {c}" for c in top["commands"])
+        ai = _claude_chat(
+            f"This sequence of shell commands was repeated {top['count']} times:\n{cmds_text}\n\n"
+            "Generate a YAML runbook for TurtleTerm. Format:\n"
+            "name: <short-name>\ndescription: <one line>\nsteps:\n  - name: <step>\n    command: <cmd>\n",
+            system="You are a DevOps automation expert. Generate a clean YAML runbook. No markdown fences.",
+            timeout=12,
+        )
+        suggested_runbook = (ai.get("response") or "").strip() if ai else ""
+        return response("workflow_detect", {
+            "patterns": patterns,
+            "top_pattern": top,
+            "suggested_runbook": suggested_runbook,
+        })
+
+    if action in ("workflow_save", "workflow-save"):
+        name    = request.get("name", "workflow").strip().replace(" ", "-").lower()
+        content = request.get("content", "").strip()
+        if not content:
+            return response("workflow_save", {"saved": False, "reason": "no content"})
+        rb_dir = Path.home() / ".turtle" / "runbooks"
+        rb_dir.mkdir(parents=True, exist_ok=True)
+        rb_path = rb_dir / f"{name}.yaml"
+        rb_path.write_text(content)
+        return response("workflow_save", {"saved": True, "path": str(rb_path), "name": name})
+
+    # ------------------------------------------------------------------
+    # T2-C: Inline File Tree
+    # ------------------------------------------------------------------
+    if action in ("file_tree", "file-tree"):
+        import subprocess as _sp_ft  # noqa: F841
+        cwd  = request.get("cwd", ".") or "."
+        max_files = int(request.get("max", 200))
+        show_hidden = bool(request.get("hidden", False))
+
+        cwd_path = Path(cwd).expanduser().resolve()
+        if not cwd_path.is_dir():
+            return response("file_tree", {"files": [], "cwd": str(cwd_path), "error": "not a directory"})
+
+        # Read .gitignore patterns
+        gitignore_pats: set[str] = {"node_modules", ".git", "__pycache__", ".mypy_cache",
+                                     "dist", "build", ".next", "target", ".cache", "venv", ".venv"}
+        gi = cwd_path / ".gitignore"
+        if gi.exists():
+            for line in gi.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    gitignore_pats.add(line.strip("/"))
+
+        files: list[dict] = []
+        def _walk(d: Path, prefix: str, depth: int) -> None:
+            if depth > 5 or len(files) >= max_files:
+                return
+            try:
+                entries = sorted(d.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            except PermissionError:
+                return
+            for entry in entries:
+                if not show_hidden and entry.name.startswith("."):
+                    continue
+                if entry.name in gitignore_pats:
+                    continue
+                rel = str(entry.relative_to(cwd_path))
+                is_dir = entry.is_dir()
+                files.append({"path": rel, "name": entry.name, "is_dir": is_dir,
+                               "prefix": prefix, "depth": depth})
+                if is_dir:
+                    _walk(entry, prefix + "  ", depth + 1)
+                if len(files) >= max_files:
+                    return
+
+        _walk(cwd_path, "", 0)
+        return response("file_tree", {"files": files, "cwd": str(cwd_path), "count": len(files)})
+
+    # ------------------------------------------------------------------
+    # T2-D: Command Performance Tracking
+    # ------------------------------------------------------------------
+    if action in ("perf_record", "perf-record"):
+        cmd      = request.get("command", "").strip()
+        wall_ms  = int(request.get("wall_ms", 0))
+        exit_code= int(request.get("exit_code", 0))
+        cwd      = request.get("cwd", "")
+        if not cmd:
+            return response("perf_record", {"recorded": False})
+        perf_path = Path.home() / ".config" / "turtleterm" / "perf.ndjson"
+        perf_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": __import__('datetime').datetime.utcnow().isoformat(),
+            "command": cmd, "wall_ms": wall_ms,
+            "exit_code": exit_code, "cwd": cwd,
+        }
+        with open(perf_path, "a") as fh:
+            fh.write(json.dumps(record) + "\n")
+        return response("perf_record", {"recorded": True})
+
+    if action in ("perf_stats", "perf-stats"):
+        limit = int(request.get("limit", 500))
+        perf_path = Path.home() / ".config" / "turtleterm" / "perf.ndjson"
+        if not perf_path.exists():
+            return response("perf_stats", {"records": [], "slowest": [], "avg_ms": 0, "total": 0})
+        records = []
+        for line in perf_path.read_text().splitlines()[-limit:]:
+            try: records.append(json.loads(line))
+            except: pass
+        if not records:
+            return response("perf_stats", {"records": [], "slowest": [], "avg_ms": 0, "total": 0})
+        avg_ms = sum(r.get("wall_ms",0) for r in records) // len(records)
+        slowest = sorted(records, key=lambda r: r.get("wall_ms",0), reverse=True)[:10]
+        return response("perf_stats", {
+            "records": records[-20:],
+            "slowest": slowest,
+            "avg_ms": avg_ms,
+            "total": len(records),
+        })
+
+    # ------------------------------------------------------------------
+    # T2-E: Output Export
+    # ------------------------------------------------------------------
+    if action in ("output_export", "output-export"):
+        content  = request.get("content", "").strip()
+        fmt      = request.get("format", "markdown")  # markdown|json|html|gist
+        filename = request.get("filename", "turtle-output")
+        if not content:
+            return response("output_export", {"exported": False, "reason": "no content"})
+
+        import tempfile as _tf_oe, subprocess as _sp_oe  # noqa: F401
+        out_path = ""
+
+        if fmt == "markdown":
+            out_path = str(Path.home() / "Desktop" / f"{filename}.md")
+            Path(out_path).write_text(f"# Terminal Output\n\n```\n{content}\n```\n")
+        elif fmt == "json":
+            out_path = str(Path.home() / "Desktop" / f"{filename}.json")
+            Path(out_path).write_text(json.dumps({"output": content, "exported_at": __import__('datetime').datetime.utcnow().isoformat()}, indent=2))
+        elif fmt == "html":
+            html = (
+                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<style>body{background:#0f0f0f;color:#e8e8e8;font-family:monospace;padding:20px}"
+                "pre{white-space:pre-wrap;word-wrap:break-word}</style></head>"
+                f"<body><pre>{content.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')}</pre></body></html>"
+            )
+            out_path = str(Path.home() / "Desktop" / f"{filename}.html")
+            Path(out_path).write_text(html)
+        elif fmt == "gist":
+            gh_token = env("GITHUB_TOKEN", "")
+            if not gh_token:
+                return response("output_export", {"exported": False, "reason": "GITHUB_TOKEN not set"})
+            import urllib.request as _ur, urllib.error as _ue  # noqa: F401
+            payload = json.dumps({
+                "description": f"TurtleTerm export: {filename}",
+                "public": False,
+                "files": {f"{filename}.txt": {"content": content}},
+            }).encode()
+            req = _ur.Request(
+                "https://api.github.com/gists",
+                data=payload,
+                headers={"Authorization": f"token {gh_token}", "Content-Type": "application/json", "User-Agent": "TurtleTerm"},
+            )
+            try:
+                with _ur.urlopen(req, timeout=10) as resp:
+                    gist_data = json.loads(resp.read())
+                return response("output_export", {"exported": True, "format": "gist", "url": gist_data.get("html_url",""), "id": gist_data.get("id","")})
+            except Exception as e:
+                return response("output_export", {"exported": False, "reason": str(e)})
+        else:
+            return response("output_export", {"exported": False, "reason": f"unknown format: {fmt}"})
+
+        return response("output_export", {"exported": True, "format": fmt, "path": out_path})
+
+    # ------------------------------------------------------------------
+    # T2-F: Output Search
+    # ------------------------------------------------------------------
+    if action in ("output_search", "output-search"):
+        query = request.get("query", "").strip().lower()
+        session_id = request.get("session_id") or env("SOURCEOS_TERMINAL_SESSION_ID", "")
+        limit = int(request.get("limit", 50))
+        events = read_ndjson(event_stream_path(), limit=2000)
+        if session_id:
+            events = [e for e in events if e.get("session_id") == session_id]
+        output_events = [e for e in events if e.get("event_type") in ("command.completed", "output.captured") and e.get("output")]
+        results: list[dict] = []
+        for e in output_events:
+            out = e.get("output", "")
+            cmd = e.get("command", "")
+            if not query or query in out.lower() or query in cmd.lower():
+                # Find matching line
+                lines = out.splitlines()
+                matching = [l for l in lines if query in l.lower()] if query else lines[:3]
+                results.append({
+                    "command": cmd,
+                    "ts": e.get("ts", ""),
+                    "matching_lines": matching[:5],
+                    "output_preview": out[:200],
+                    "exit_code": e.get("exit_code", 0),
+                })
+        return response("output_search", {"results": results[-limit:], "total": len(results), "query": query})
+
+    # ------------------------------------------------------------------
+    # T3-A: Lua Plugin Discovery
+    # ------------------------------------------------------------------
+    if action in ("plugin_list", "plugin-list"):
+        plugin_dir = Path.home() / ".config" / "turtleterm" / "plugins"
+        plugins: list[dict] = []
+        if plugin_dir.exists():
+            for f in sorted(plugin_dir.glob("*.lua")):
+                # Parse name and description from first 5 lines
+                lines = f.read_text().splitlines()[:5]
+                desc = next((l.lstrip("-# ") for l in lines if l.strip().startswith("--")), "")
+                plugins.append({"name": f.stem, "path": str(f), "description": desc})
+        return response("plugin_list", {"plugins": plugins, "count": len(plugins), "plugin_dir": str(plugin_dir)})
+
+    if action in ("plugin_install", "plugin-install"):
+        name    = request.get("name", "").strip()
+        content = request.get("content", "").strip()
+        source  = request.get("source", "")  # URL or inline
+        if not name:
+            return response("plugin_install", {"installed": False, "reason": "name required"})
+        plugin_dir = Path.home() / ".config" / "turtleterm" / "plugins"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        if content:
+            (plugin_dir / f"{name}.lua").write_text(content)
+        elif source and source.startswith("https://"):
+            import urllib.request as _ur_pi
+            try:
+                with _ur_pi.urlopen(source, timeout=10) as r:
+                    (plugin_dir / f"{name}.lua").write_bytes(r.read())
+            except Exception as e:
+                return response("plugin_install", {"installed": False, "reason": str(e)})
+        else:
+            return response("plugin_install", {"installed": False, "reason": "provide content or https source"})
+        return response("plugin_install", {"installed": True, "name": name, "path": str(plugin_dir / f"{name}.lua")})
+
+    # ------------------------------------------------------------------
+    # T3-B: Team Runbooks
+    # ------------------------------------------------------------------
+    if action in ("team_sync_pull", "team-sync-pull"):
+        import subprocess as _sp_ts
+        cfg_path = Path.home() / ".config" / "turtleterm" / "team.json"
+        if not cfg_path.exists():
+            return response("team_sync_pull", {"synced": False, "reason": "No team config. Set team_remote via team-config-set."})
+        try: cfg = json.loads(cfg_path.read_text())
+        except: cfg = {}
+        remote = cfg.get("remote", "")
+        if not remote:
+            return response("team_sync_pull", {"synced": False, "reason": "No team remote configured"})
+        team_rb_dir = Path.home() / ".turtle" / "team-runbooks"
+        team_rb_dir.mkdir(parents=True, exist_ok=True)
+        if (team_rb_dir / ".git").exists():
+            r = _sp_ts.run(["git", "pull", "--rebase"], capture_output=True, text=True, cwd=team_rb_dir, timeout=20)
+        else:
+            r = _sp_ts.run(["git", "clone", "--depth=1", remote, str(team_rb_dir)], capture_output=True, text=True, timeout=30)
+        pulled = list(team_rb_dir.glob("*.yaml"))
+        return response("team_sync_pull", {"synced": r.returncode == 0, "runbooks": [f.name for f in pulled], "output": r.stdout.strip()[:300]})
+
+    if action in ("team_runbook_list", "team-runbook-list"):
+        personal_dir = Path.home() / ".turtle" / "runbooks"
+        team_dir     = Path.home() / ".turtle" / "team-runbooks"
+        personal = [{"name": f.stem, "source": "personal", "path": str(f)}
+                    for f in sorted(personal_dir.glob("*.yaml"))] if personal_dir.exists() else []
+        team     = [{"name": f.stem, "source": "team",     "path": str(f)}
+                    for f in sorted(team_dir.glob("*.yaml"))]     if team_dir.exists()     else []
+        return response("team_runbook_list", {"runbooks": personal + team, "personal": len(personal), "team": len(team)})
+
+    if action in ("team_config_set", "team-config-set"):
+        cfg_path = Path.home() / ".config" / "turtleterm" / "team.json"
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = {}
+        if cfg_path.exists():
+            try: existing = json.loads(cfg_path.read_text())
+            except: pass
+        for k in ("remote", "org", "token"):
+            if k in request:
+                existing[k] = request[k]
+        cfg_path.write_text(json.dumps(existing, indent=2))
+        return response("team_config_set", {"saved": True, "config": existing})
+
+    # ------------------------------------------------------------------
+    # T3-C: SFTP Browser
+    # ------------------------------------------------------------------
+    if action in ("sftp_browse", "sftp-browse"):
+        import subprocess as _sp_sftp
+        host = request.get("host", "").strip()
+        path = request.get("path", "/").strip() or "/"
+        if not host:
+            return response("sftp_browse", {"files": [], "error": "host required"})
+        # Use ssh + ls -la for compatibility (no sftp binary needed)
+        r = _sp_sftp.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, f"ls -la {path}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode != 0:
+            return response("sftp_browse", {"files": [], "error": r.stderr.strip()[:200], "host": host})
+        files: list[dict] = []
+        for line in r.stdout.splitlines()[1:]:  # skip "total N"
+            parts = line.split(None, 8)
+            if len(parts) < 9:
+                continue
+            name = parts[8]
+            if name in (".", ".."):
+                continue
+            files.append({
+                "name": name,
+                "perms": parts[0],
+                "size": parts[4],
+                "is_dir": parts[0].startswith("d"),
+                "path": path.rstrip("/") + "/" + name,
+            })
+        return response("sftp_browse", {"files": files, "host": host, "path": path, "count": len(files)})
+
+    if action in ("sftp_download", "sftp-download"):
+        import subprocess as _sp_sfd
+        host      = request.get("host", "").strip()
+        remote    = request.get("remote_path", "").strip()
+        local_dir = Path(request.get("local_dir", str(Path.home() / "Downloads"))).expanduser()
+        if not host or not remote:
+            return response("sftp_download", {"downloaded": False, "error": "host and remote_path required"})
+        local_dir.mkdir(parents=True, exist_ok=True)
+        r = _sp_sfd.run(
+            ["scp", "-o", "BatchMode=yes", f"{host}:{remote}", str(local_dir)],
+            capture_output=True, text=True, timeout=60,
+        )
+        local_name = Path(remote).name
+        return response("sftp_download", {
+            "downloaded": r.returncode == 0,
+            "local_path": str(local_dir / local_name),
+            "error": r.stderr.strip()[:200] if r.returncode != 0 else "",
+        })
+
+    # ------------------------------------------------------------------
+    # T3-E: Persona Marketplace
+    # ------------------------------------------------------------------
+    if action in ("persona_marketplace_list", "persona-marketplace-list"):
+        import urllib.request as _ur_pm
+        # Community personas hosted as GitHub Gist index (public JSON)
+        index_url = "https://gist.githubusercontent.com/raw/turtleterm-personas/index.json"
+        builtins = [
+            {"id": "devops", "name": "DevOps Engineer", "description": "Terraform, K8s, CI/CD focus", "builtin": True},
+            {"id": "ml-researcher", "name": "ML Researcher", "description": "PyTorch, Jupyter, arXiv focus", "builtin": True},
+            {"id": "sre", "name": "SRE", "description": "Incident response, observability, reliability", "builtin": True},
+            {"id": "security", "name": "Security Engineer", "description": "OWASP, CVE, pen-test idioms", "builtin": True},
+            {"id": "fullstack", "name": "Fullstack Dev", "description": "React+Node, Postgres, REST/GraphQL", "builtin": True},
+        ]
+        community: list = []
+        try:
+            with _ur_pm.urlopen(index_url, timeout=5) as r:
+                community = json.loads(r.read()).get("personas", [])
+        except Exception:
+            pass  # offline — show builtins only
+        return response("persona_marketplace_list", {
+            "personas": builtins + community,
+            "builtin_count": len(builtins),
+            "community_count": len(community),
+        })
+
+    if action in ("persona_marketplace_install", "persona-marketplace-install"):
+        persona_id = request.get("id", "").strip()
+        BUILTIN_PERSONAS: dict[str, dict] = {
+            "devops": {
+                "role": "DevOps Engineer",
+                "stack": "Terraform, Kubernetes, Docker, GitHub Actions, AWS/GCP",
+                "style": "infrastructure-as-code, immutable deployments, GitOps",
+                "preferred_tools": "kubectl, terraform, helm, aws-cli",
+                "notes": "Prefer declarative configs. Always think about rollback.",
+            },
+            "ml-researcher": {
+                "role": "ML Researcher",
+                "stack": "Python, PyTorch, Jupyter, HuggingFace, wandb",
+                "style": "reproducible experiments, clean notebooks, clear metrics",
+                "preferred_tools": "jupyter, pytest, black, ruff",
+                "notes": "Citation-aware. Prefer open datasets. arXiv first.",
+            },
+            "sre": {
+                "role": "Site Reliability Engineer",
+                "stack": "Go, Python, Prometheus, Grafana, PagerDuty, k8s",
+                "style": "defensive, error-budget thinking, blameless postmortems",
+                "preferred_tools": "kubectl, promtool, ab, hey, gcloud",
+                "notes": "SLO-driven. Always think about blast radius and rollback.",
+            },
+            "security": {
+                "role": "Security Engineer",
+                "stack": "Python, Bash, Burp Suite, nmap, Semgrep",
+                "style": "threat-model first, least privilege, defense in depth",
+                "preferred_tools": "semgrep, trivy, grype, nmap",
+                "notes": "OWASP Top 10 always in mind. Check for SSRF, injection, secrets.",
+            },
+            "fullstack": {
+                "role": "Full-stack Developer",
+                "stack": "TypeScript, React, Node.js, PostgreSQL, GraphQL",
+                "style": "typed, tested, component-first, schema-first APIs",
+                "preferred_tools": "pnpm, prisma, vitest, eslint, prettier",
+                "notes": "Prefer functional components. Zod for validation. tRPC when possible.",
+            },
+        }
+        if persona_id not in BUILTIN_PERSONAS:
+            return response("persona_marketplace_install", {"installed": False, "reason": f"unknown persona: {persona_id}. Use persona-marketplace-list to see available."})
+        persona = BUILTIN_PERSONAS[persona_id]
+        p_path = Path.home() / ".config" / "turtleterm" / "persona.json"
+        p_path.parent.mkdir(parents=True, exist_ok=True)
+        persona["_source"] = f"marketplace:{persona_id}"
+        persona["_installed"] = __import__('datetime').datetime.utcnow().isoformat()
+        p_path.write_text(json.dumps(persona, indent=2))
+        return response("persona_marketplace_install", {"installed": True, "persona": persona, "id": persona_id})
+
     return response("error", {"message": f"unknown action: {action}"}, status="error")
 
 
@@ -2668,7 +3301,7 @@ def serve_http(port: int) -> int:
             if self.path in ('/health', '/healthz'):
                 body = json.dumps({
                     "status": "ok", "service": "turtle-agentd",
-                    "version": "0.3.0", "mode": "http-daemon",
+                    "version": "0.4.0", "mode": "http-daemon",
                 }).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')

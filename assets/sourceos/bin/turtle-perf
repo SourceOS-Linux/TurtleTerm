@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""turtle-perf — Terminal command performance profiler for TurtleTerm.
+
+Usage:
+  turtle-perf stats             Show performance stats from this session
+  turtle-perf slowest [N]       Show N slowest commands (default 10)
+  turtle-perf record CMD MS     Record a command with wall time in ms
+  turtle-perf reset             Clear performance history
+"""
+from __future__ import annotations
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+
+def agentd(payload: dict) -> dict | None:
+    try:
+        r = subprocess.run(
+            [sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=15,
+        )
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def cmd_stats(args: list[str]) -> int:
+    r = agentd({"action": "perf-stats"})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr); return 1
+    d = r.get("data", {})
+    total   = d.get("total", 0)
+    avg_ms  = d.get("avg_ms", 0)
+    slowest = d.get("slowest", [])
+    print(f"Commands tracked: {total}   Avg wall time: {avg_ms}ms")
+    if slowest:
+        print(f"\nTop {min(10, len(slowest))} slowest:")
+        for s in slowest[:10]:
+            cmd = (s.get("command") or "?")[:50]
+            print(f"  {s.get('wall_ms', 0):6}ms  {cmd}")
+    return 0
+
+
+def cmd_record(args: list[str]) -> int:
+    if len(args) < 2:
+        print("Usage: turtle-perf record <command> <wall_ms>", file=sys.stderr); return 1
+    cmd, wall_ms = args[0], args[1]
+    r = agentd({"action": "perf-record", "command": cmd, "wall_ms": int(wall_ms)})
+    if not r or r.get("status") != "ok":
+        print("Failed to record", file=sys.stderr); return 1
+    print(f"Recorded: {cmd} ({wall_ms}ms)")
+    return 0
+
+
+def cmd_reset(args: list[str]) -> int:
+    perf_path = Path.home() / ".config" / "turtleterm" / "perf.ndjson"
+    if perf_path.exists():
+        perf_path.unlink()
+        print("Performance history cleared.")
+    else:
+        print("No performance history found.")
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); return 0
+    subcmd = args[0]; rest = args[1:]
+    if subcmd in ("stats",):       return cmd_stats(rest)
+    if subcmd in ("slowest",):     return cmd_stats(rest)
+    if subcmd == "record":         return cmd_record(rest)
+    if subcmd == "reset":          return cmd_reset(rest)
+    print(f"Unknown: {subcmd}. Use: stats, slowest, record, reset", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

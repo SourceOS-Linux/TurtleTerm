@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""turtle-persona — AI persona management for TurtleTerm.
+
+All AI responses (completions, explanations, NL-to-shell) are tailored
+to your persona — your role, stack, preferred tools, and coding style.
+
+Usage:
+  turtle-persona show                   Show current persona
+  turtle-persona set --role ROLE        Set your role
+  turtle-persona set --stack STACK      Set your tech stack
+  turtle-persona set --style STYLE      Set coding style preference
+  turtle-persona set --tools TOOLS      Set preferred tools
+  turtle-persona set --notes NOTES      Add extra context
+  turtle-persona install devops         Install a marketplace persona
+  turtle-persona install ml-researcher  Install ML researcher persona
+  turtle-persona install sre            Install SRE persona
+  turtle-persona install security       Install security engineer persona
+  turtle-persona install fullstack      Install fullstack dev persona
+  turtle-persona list                   List marketplace personas
+  turtle-persona reset                  Clear persona
+"""
+from __future__ import annotations
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+
+def agentd(payload: dict) -> dict | None:
+    try:
+        r = subprocess.run(
+            [sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=15,
+        )
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def cmd_show(args: list[str]) -> int:
+    r = agentd({"action": "persona-get"})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr); return 1
+    p = r.get("data", {}).get("persona", {})
+    if not p:
+        print("No persona set. Use: turtle-persona install <name>  or  turtle-persona set --role <role>")
+        return 0
+    for k, v in p.items():
+        if not k.startswith("_"):
+            print(f"  {k:20} {v}")
+    return 0
+
+
+def cmd_set(args: list[str]) -> int:
+    payload: dict = {"action": "persona-set"}
+    i = 0
+    while i < len(args):
+        if args[i] in ("--role", "-r") and i+1 < len(args):
+            payload["role"] = args[i+1]; i += 2
+        elif args[i] in ("--stack", "-s") and i+1 < len(args):
+            payload["stack"] = args[i+1]; i += 2
+        elif args[i] in ("--style") and i+1 < len(args):
+            payload["style"] = args[i+1]; i += 2
+        elif args[i] in ("--tools", "-t") and i+1 < len(args):
+            payload["preferred_tools"] = args[i+1]; i += 2
+        elif args[i] in ("--notes", "-n") and i+1 < len(args):
+            payload["notes"] = args[i+1]; i += 2
+        else:
+            i += 1
+    if len(payload) <= 1:
+        print("Usage: turtle-persona set --role <role> [--stack <stack>] [--style <style>]", file=sys.stderr)
+        return 1
+    r = agentd(payload)
+    if not r or r.get("status") != "ok":
+        print("Failed to set persona", file=sys.stderr); return 1
+    print("Persona saved.")
+    cmd_show([])
+    return 0
+
+
+def cmd_install(args: list[str]) -> int:
+    if not args:
+        print("Usage: turtle-persona install <name>", file=sys.stderr); return 1
+    persona_id = args[0]
+    r = agentd({"action": "persona-marketplace-install", "id": persona_id})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr); return 1
+    d = r.get("data", {})
+    if not d.get("installed"):
+        print(f"Failed: {d.get('reason', 'unknown')}", file=sys.stderr); return 1
+    print(f"Installed persona: {persona_id}")
+    cmd_show([])
+    return 0
+
+
+def cmd_list(args: list[str]) -> int:
+    r = agentd({"action": "persona-marketplace-list"})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr); return 1
+    d = r.get("data", {})
+    personas = d.get("personas", [])
+    print(f"Available personas ({len(personas)}):\n")
+    for p in personas:
+        src = "(builtin)" if p.get("builtin") else "(community)"
+        print(f"  {p['id']:20} {p['name']}  {src}")
+        print(f"  {'':20} {p.get('description', '')}")
+        print()
+    return 0
+
+
+def cmd_reset(args: list[str]) -> int:
+    p_path = Path.home() / ".config" / "turtleterm" / "persona.json"
+    if p_path.exists():
+        p_path.unlink()
+        print("Persona cleared.")
+    else:
+        print("No persona set.")
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); return 0
+    subcmd = args[0]; rest = args[1:]
+    if subcmd == "show":     return cmd_show(rest)
+    if subcmd == "set":      return cmd_set(rest)
+    if subcmd == "install":  return cmd_install(rest)
+    if subcmd == "list":     return cmd_list(rest)
+    if subcmd == "reset":    return cmd_reset(rest)
+    print(f"Unknown: {subcmd}", file=sys.stderr); return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

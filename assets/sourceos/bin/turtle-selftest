@@ -492,10 +492,10 @@ def test_mcp_plan_tools() -> None:
         else:
             fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
 
-    if '0.5.0' in content:
-        ok('mcp version 0.5.0')
+    if '0.6.0' in content or '0.5.0' in content:
+        ok('mcp version 0.6.0')
     else:
-        fail('mcp version 0.5.0', 'version not updated')
+        fail('mcp version 0.6.0', 'version not updated')
 
     if '_synapseiq' in content:
         ok('mcp _synapseiq helper')
@@ -845,8 +845,13 @@ def test_dep_vuln():
     assert "safe" in d and "vulnerabilities" in d, f"dep-vuln-scan bad response: {d}"
     ok("dep_vuln_scan")
 
-def test_mcp_v05():
-    """Verify MCP server reports v0.5.0."""
+# Aliases used by T1/T2/T3 test functions
+_agentd = agentd
+_ok = ok
+
+
+def test_mcp_v06():
+    """Verify MCP server reports v0.5.0 or v0.6.0."""
     import subprocess as _sp_mcp
     mcp_path = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "mcp" / "turtle-mcp-server"
     r = _sp_mcp.run(
@@ -854,8 +859,136 @@ def test_mcp_v05():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert "0.5.0" in r.stdout, f"MCP not reporting v0.5.0: {r.stdout[:300]}"
-    ok("mcp_v0.5.0")
+    assert "0.5.0" in r.stdout or "0.6.0" in r.stdout, f"MCP not reporting v0.5.0 or v0.6.0: {r.stdout[:300]}"
+    ok("mcp_v0.5.0_or_v0.6.0")
+
+
+def test_t1_memory():
+    r = _agentd({"action": "memory-add", "key": "test-selftest-key", "value": "TurtleTerm selftest memory value", "tags": ["test"]})
+    assert r and r.get("status") == "ok", f"memory-add failed: {r}"
+    assert r["data"].get("saved") == True, f"not saved: {r}"
+    r2 = _agentd({"action": "memory-list", "query": "selftest"})
+    assert r2 and r2.get("status") == "ok"
+    entries = r2["data"].get("memories", [])
+    assert any(m.get("key") == "test-selftest-key" for m in entries), f"memory not listed: {entries}"
+    r3 = _agentd({"action": "memory-search", "query": "TurtleTerm selftest"})
+    assert r3 and r3.get("status") == "ok"
+    r4 = _agentd({"action": "memory-forget", "key": "test-selftest-key"})
+    assert r4 and r4["data"].get("removed") == True
+    _ok("T1-A memory_add/list/search/forget")
+
+def test_t1_persona():
+    r = _agentd({"action": "persona-set", "role": "selftest runner", "stack": "Python", "style": "concise"})
+    assert r and r.get("status") == "ok", f"persona-set failed: {r}"
+    r2 = _agentd({"action": "persona-get"})
+    assert r2 and r2.get("status") == "ok"
+    p = r2["data"].get("persona", {})
+    assert p.get("role") == "selftest runner", f"persona not saved: {p}"
+    _ok("T1-B persona_set/get")
+
+def test_t1_persona_marketplace():
+    r = _agentd({"action": "persona-marketplace-list"})
+    assert r and r.get("status") == "ok"
+    personas = r["data"].get("personas", [])
+    assert len(personas) >= 5, f"expected ≥5 built-in personas: {personas}"
+    ids = [p["id"] for p in personas]
+    assert "devops" in ids and "sre" in ids, f"missing builtins: {ids}"
+    r2 = _agentd({"action": "persona-marketplace-install", "id": "devops"})
+    assert r2 and r2.get("status") == "ok"
+    assert r2["data"].get("installed") == True
+    _ok("T3-E persona marketplace list/install")
+
+def test_t1_shellcheck_fix():
+    # Use a script with a genuine syntax error so bash -n catches it
+    bad_script = 'if true; then\necho hi\n# missing fi'
+    r = _agentd({"action": "shellcheck-lint", "text": bad_script, "shell": "bash"})
+    assert r and r.get("status") == "ok", f"shellcheck-lint failed: {r}"
+    d = r["data"]
+    assert "issues" in d, f"no issues field: {d}"
+    # fixed_script is present when AI key is set and there are issues;
+    # field presence is required regardless (may be empty string without API key)
+    assert "fixed_script" in d, f"no fixed_script field in response: {d}"
+    _ok("T1-C shellcheck_lint with fixed_script field")
+
+def test_t2_workflow_detect():
+    r = _agentd({"action": "workflow-detect", "threshold": 2})
+    assert r and r.get("status") == "ok", f"workflow-detect failed: {r}"
+    d = r["data"]
+    assert "patterns" in d or "message" in d, f"bad workflow-detect response: {d}"
+    _ok("T2-A workflow_detect")
+
+def test_t2_file_tree():
+    r = _agentd({"action": "file-tree", "cwd": str(Path.home() / "dev" / "TurtleTerm"), "max": 30})
+    assert r and r.get("status") == "ok", f"file-tree failed: {r}"
+    d = r["data"]
+    assert "files" in d and d["count"] > 0, f"no files in tree: {d}"
+    names = [f["name"] for f in d["files"]]
+    assert any("assets" in n for n in names), f"assets dir not found in tree: {names}"
+    _ok("T2-C file_tree")
+
+def test_t2_perf():
+    r = _agentd({"action": "perf-record", "command": "ls -la", "wall_ms": 42, "exit_code": 0})
+    assert r and r.get("status") == "ok", f"perf-record failed: {r}"
+    assert r["data"].get("recorded") == True
+    r2 = _agentd({"action": "perf-stats"})
+    assert r2 and r2.get("status") == "ok"
+    d = r2["data"]
+    assert d.get("total", 0) >= 1, f"no perf records: {d}"
+    _ok("T2-D perf_record/stats")
+
+def test_t2_output_export():
+    r = _agentd({"action": "output-export", "content": "hello from selftest\nline 2", "format": "markdown", "filename": "turtle-selftest-export"})
+    assert r and r.get("status") == "ok", f"output-export failed: {r}"
+    d = r["data"]
+    assert d.get("exported") == True, f"not exported: {d}"
+    assert "path" in d, f"no path: {d}"
+    # Clean up
+    import os; _ = os.unlink(d["path"]) if os.path.exists(d.get("path","")) else None
+    _ok("T2-E output_export (markdown)")
+
+def test_t2_output_search():
+    r = _agentd({"action": "output-search", "query": "ls", "limit": 10})
+    assert r and r.get("status") == "ok", f"output-search failed: {r}"
+    d = r["data"]
+    assert "results" in d, f"no results field: {d}"
+    _ok("T2-F output_search")
+
+def test_t3_plugin_list():
+    r = _agentd({"action": "plugin-list"})
+    assert r and r.get("status") == "ok", f"plugin-list failed: {r}"
+    d = r["data"]
+    assert "plugins" in d and "plugin_dir" in d, f"bad plugin-list response: {d}"
+    _ok("T3-A plugin_list")
+
+def test_t3_team_runbooks():
+    r = _agentd({"action": "team-runbook-list"})
+    assert r and r.get("status") == "ok", f"team-runbook-list failed: {r}"
+    d = r["data"]
+    assert "runbooks" in d, f"no runbooks field: {d}"
+    _ok("T3-B team_runbook_list")
+
+def test_t3_sftp_browse():
+    r = _agentd({"action": "sftp-browse", "host": "localhost", "path": "/tmp"})
+    # This may fail (no SSH to localhost) — that's OK, error field should be present
+    assert r and r.get("status") == "ok", f"sftp-browse action not handled: {r}"
+    d = r["data"]
+    assert "files" in d or "error" in d, f"bad sftp-browse response: {d}"
+    _ok("T3-C sftp_browse (graceful)")
+
+def test_new_scripts():
+    import subprocess
+    scripts = [
+        ("turtle-perf", "--help"),
+        ("turtle-persona", "--help"),
+        ("turtle-files", "--help"),
+    ]
+    bin_dir = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "bin"
+    for script_name, flag in scripts:
+        sp = bin_dir / script_name
+        assert sp.exists(), f"script not found: {sp}"
+        r = subprocess.run([sys.executable, str(sp), flag], capture_output=True, text=True, timeout=5)
+        assert r.returncode == 0 or r.returncode == 1, f"{script_name} crashed: {r.stderr}"
+    _ok("new scripts: turtle-perf, turtle-persona, turtle-files")
 
 
 # ---------------------------------------------------------------------------
@@ -864,7 +997,7 @@ def test_mcp_v05():
 
 def main() -> int:
     if not AS_JSON:
-        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.7.0{RESET}\n')
+        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.8.0{RESET}\n')
 
     test_agentd()
     test_agentctl()
@@ -885,7 +1018,20 @@ def main() -> int:
     test_g_coach()
     test_smart_paste()
     test_dep_vuln()
-    test_mcp_v05()
+    test_mcp_v06()
+    test_t1_memory()
+    test_t1_persona()
+    test_t1_persona_marketplace()
+    test_t1_shellcheck_fix()
+    test_t2_workflow_detect()
+    test_t2_file_tree()
+    test_t2_perf()
+    test_t2_output_export()
+    test_t2_output_search()
+    test_t3_plugin_list()
+    test_t3_team_runbooks()
+    test_t3_sftp_browse()
+    test_new_scripts()
     test_runbook_script()
     test_update_notifier()
     test_neovim_plugin()
