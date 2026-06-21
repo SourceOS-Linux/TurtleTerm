@@ -19,6 +19,11 @@ Tools exposed (all read-only or proposal-only — no ambient shell authority):
   language_definition                Jump-to-definition for a symbol at a position.
   language_references                All references to a symbol at a position.
   language_format                    Format a source file with the appropriate formatter.
+  language_code_actions              Get code actions (quick-fix, refactor) for a file at a position.
+  language_workspace_symbols         Search all symbols across the project workspace.
+  language_document_symbols          List all symbols in a file as an outline.
+  language_rename                    Rename a symbol at position across the entire file.
+  language_workspace_diagnostics     Run diagnostics on all git-changed files in the project.
   noetica_status                     Check Noetica reachability.
   noetica_query                      Send a query to Noetica /api/chat.
   bookmark_add                       Save a shell command to the bookmark list.
@@ -607,6 +612,11 @@ TOOLS = [
     {"name": "team_runbook_list", "description": "List all runbooks: personal + team combined", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "sftp_browse", "description": "Browse remote files via SSH/SFTP", "inputSchema": {"type": "object", "properties": {"host": {"type": "string"}, "path": {"type": "string"}}, "required": ["host"]}},
     {"name": "sftp_download", "description": "Download a file from SSH remote via SCP", "inputSchema": {"type": "object", "properties": {"host": {"type": "string"}, "remote_path": {"type": "string"}, "local_dir": {"type": "string"}}, "required": ["host", "remote_path"]}},
+    {"name": "language_code_actions", "description": "Get code actions (quick-fix, refactor, organize imports) for a file at a position", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "filename": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "diagnostics": {"type": "array"}}, "required": ["filename"]}},
+    {"name": "language_workspace_symbols", "description": "Search all symbols across the project workspace", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "cwd": {"type": "string"}}}},
+    {"name": "language_document_symbols", "description": "List all symbols (functions, classes, types) in a file as an outline", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "filename": {"type": "string"}}, "required": ["filename"]}},
+    {"name": "language_rename", "description": "Rename a symbol at position across the entire file", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "filename": {"type": "string"}, "line": {"type": "integer"}, "character": {"type": "integer"}, "new_name": {"type": "string"}}, "required": ["filename", "new_name"]}},
+    {"name": "language_workspace_diagnostics", "description": "Run diagnostics on all git-changed files in the project", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}}}}},
 ]
 
 
@@ -652,6 +662,11 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
             "line": arguments.get("line", 0),
             "character": arguments.get("character", 0),
         })
+    if name == 'language_code_actions': return _synapseiq('/lsp/code-actions', {'text': arguments.get('text',''), 'filename': arguments.get('filename',''), 'range': {'start':{'line':arguments.get('line',0),'character':arguments.get('character',0)},'end':{'line':arguments.get('line',0),'character':arguments.get('character',0)}}, 'diagnostics': arguments.get('diagnostics',[])})
+    if name == 'language_workspace_symbols': return _synapseiq('/lsp/workspace-symbols', {'query': arguments.get('query',''), 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD','.'))})
+    if name == 'language_document_symbols': return _synapseiq('/lsp/workspace-symbols', {'query': '', 'cwd': str(Path(arguments.get('filename','.')).parent)})
+    if name == 'language_rename': return _synapseiq('/lsp/rename', {'text': arguments.get('text',''), 'filename': arguments.get('filename',''), 'line': arguments.get('line',0), 'character': arguments.get('character',0), 'new_name': arguments.get('new_name','')})
+    if name == 'language_workspace_diagnostics': return _synapseiq('/lsp/workspace-diagnostics', {'cwd': arguments.get('cwd', __import__('os').environ.get('PWD','.')), 'files': arguments.get('files',[])})
     if name == "noetica_status":
         return _agentd({"action": "noetica_status"})
     if name == "noetica_query":
@@ -855,7 +870,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turtleterm", "version": "0.6.0"},
+                "serverInfo": {"name": "turtleterm", "version": "0.7.0"},
             },
         }
 

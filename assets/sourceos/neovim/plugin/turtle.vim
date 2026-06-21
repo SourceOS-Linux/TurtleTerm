@@ -214,6 +214,35 @@ lua << EOFLUA
       end, 'SynapseIQ: diagnostics float')
       vim.keymap.set('n', '<Leader>f',  function() vim.lsp.buf.format({ async=true }) end,         { buffer=true, silent=true, desc='LSP format' })
 
+      -- Code actions (Leader+a)
+      vim.keymap.set({'n','v'}, '<Leader>a', function()
+        vim.lsp.buf.code_action()
+      end, {buffer=true, desc='Code action'})
+
+      -- Rename symbol (F2)
+      vim.keymap.set('n', '<F2>', function()
+        vim.lsp.buf.rename()
+      end, {buffer=true, desc='Rename symbol'})
+
+      -- Document symbols (Leader+o = outline)
+      vim.keymap.set('n', '<Leader>o', function()
+        vim.lsp.buf.document_symbol()
+      end, {buffer=true, desc='Document symbols'})
+
+      -- Workspace symbols (Leader+ws)
+      vim.keymap.set('n', '<Leader>ws', function()
+        vim.ui.input({prompt='Symbol: '}, function(query)
+          if query then vim.lsp.buf.workspace_symbol(query) end
+        end)
+      end, {buffer=true, desc='Workspace symbols'})
+
+      -- Selection range (ALT+= to expand selection)
+      if vim.lsp.buf.selection_range then
+        vim.keymap.set('n', '<M-=>', function()
+          vim.lsp.buf.selection_range()
+        end, {buffer=true, desc='Expand selection'})
+      end
+
       -- Floating diagnostics on cursor hold (non-focused, keep typing)
       api.nvim_create_autocmd('CursorHold', {
         buffer   = bufnr,
@@ -227,6 +256,14 @@ lua << EOFLUA
       if vim.lsp.inlay_hint then
         vim.lsp.inlay_hint.enable(true, { bufnr = 0 })
       end
+
+      -- Auto-show code actions lightbulb on CursorHold
+      vim.api.nvim_create_autocmd('CursorHold', {
+        buffer = 0,
+        callback = function()
+          vim.lsp.buf.code_action({apply=false, context={only={},diagnostics=vim.lsp.diagnostic.get_line_diagnostics()}})
+        end,
+      })
 
       -- Consistent diagnostic display across all buffers
       vim.diagnostic.config({

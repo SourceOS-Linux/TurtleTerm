@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TurtleTerm local agent gateway v0.4.0.
+"""TurtleTerm local agent gateway v0.9.1.
 
 Conservative local JSON gateway for TurtleTerm. Supports:
 - stdio (one request / one response)
@@ -756,7 +756,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         noetica_reachable = noetica_get("/api/status", timeout=1) is not None
         return response("pong", {
             "service": "turtle-agentd",
-            "version": "0.4.0",
+            "version": "0.9.1",
             "noetica_url": noetica_url(),
             "noetica_reachable": noetica_reachable,
         })
@@ -1786,9 +1786,12 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         # If high/critical, optionally get AI explanation
         explanation = ""
         if score >= 6 and env("ANTHROPIC_API_KEY"):
+            _persona = _load_persona_system()
+            _mems    = _load_memories_context()
+            _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
             ai = _claude_chat(
                 f"This shell command has been flagged as potentially dangerous. Explain in one sentence what it does and what could go wrong:\n`{command}`",
-                system="Be concise. One sentence only. Focus on the specific risk.", timeout=8
+                system=(_prefix + "\n\n" if _prefix else "") + "Be concise. One sentence only. Focus on the specific risk.", timeout=8
             )
             if ai: explanation = (ai.get("response") or "")[:200]
 
@@ -1827,9 +1830,12 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
                 fix_diff = ""
                 if formatted and text and env("ANTHROPIC_API_KEY"):
                     issues_text = json.dumps(formatted[:10])
+                    _persona = _load_persona_system()
+                    _mems    = _load_memories_context()
+                    _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
                     ai = _claude_chat(
                         f"Shell script:\n```sh\n{text[:3000]}\n```\n\nShellcheck issues:\n{issues_text}\n\nReturn ONLY the corrected shell script, no explanation, no markdown fences.",
-                        system="You are a shell expert. Fix exactly the reported shellcheck issues and nothing else. Return only the script.",
+                        system=(_prefix + "\n\n" if _prefix else "") + "You are a shell expert. Fix exactly the reported shellcheck issues and nothing else. Return only the script.",
                         timeout=15,
                     )
                     if ai:
@@ -1867,9 +1873,12 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             fix_diff = ""
             if issues2 and text and env("ANTHROPIC_API_KEY"):
                 issues_text = json.dumps(issues2[:10])
+                _persona = _load_persona_system()
+                _mems    = _load_memories_context()
+                _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
                 ai = _claude_chat(
                     f"Shell script:\n```sh\n{text[:3000]}\n```\n\nShellcheck issues:\n{issues_text}\n\nReturn ONLY the corrected shell script, no explanation, no markdown fences.",
-                    system="You are a shell expert. Fix exactly the reported shellcheck issues and nothing else. Return only the script.",
+                    system=(_prefix + "\n\n" if _prefix else "") + "You are a shell expert. Fix exactly the reported shellcheck issues and nothing else. Return only the script.",
                     timeout=15,
                 )
                 if ai:
@@ -2114,7 +2123,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             return response("coach_analyze", {"insights": [], "message": "Need at least 3 commands to analyze patterns."})
         commands = [e.get("command", "") for e in completed[-50:]]
         cmds_text = "\n".join(commands)
-        system = (
+        _persona = _load_persona_system()
+        _mems    = _load_memories_context()
+        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+        system = (_prefix + "\n\n" if _prefix else "") + (
             "You are an expert shell programmer acting as a terminal coach. "
             "Analyze these recent shell commands for inefficient patterns, repeated anti-patterns, "
             "or missed opportunities for better tools. "
@@ -2175,10 +2187,13 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
 
         # Also get AI improvement if complex command
         if len(text) > 30 and env("ANTHROPIC_API_KEY"):
+            _persona = _load_persona_system()
+            _mems    = _load_memories_context()
+            _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
             ai = _claude_chat(
                 f"Sanitize and improve this {shell} command for safety and correctness. "
                 f"Return ONLY the improved command, no explanation:\n{text}",
-                system=f"You are a {shell} expert. Fix quoting, escaping, and safety issues only. Return only the command.",
+                system=(_prefix + "\n\n" if _prefix else "") + f"You are a {shell} expert. Fix quoting, escaping, and safety issues only. Return only the command.",
                 timeout=8
             )
             if ai:
@@ -2296,7 +2311,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         prompt = (
             f"Branch: {branch}\n\nCommits:\n{commits}\n\nDiff stat:\n{diff_stat}\n\nDiff:\n{diff_body[:2000]}"
         )
-        system = (
+        _persona = _load_persona_system()
+        _mems    = _load_memories_context()
+        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+        system = (_prefix + "\n\n" if _prefix else "") + (
             f"You are a senior engineer writing a GitHub PR description. {style_instr} "
             "Return JSON: {\"title\": \"...\", \"body\": \"...\"}"
         )
@@ -2394,7 +2412,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         style_notes = profile.get("style_notes", [])
         entries_text = "\n".join(f"{e['original']} → {e['correction']}" for e in entries[:30])
 
-        system = (
+        _persona = _load_persona_system()
+        _mems    = _load_memories_context()
+        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+        system = (_prefix + "\n\n" if _prefix else "") + (
             "You are a shell command personalizer. "
             "The user has a personal style profile based on their past corrections. "
             f"Style: {', '.join(style_notes) or 'none'}.\n"
@@ -2467,7 +2488,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             lines.append(f"$ {cmd}  [exit {rc}]{' → ' + out.strip()[:80] if out.strip() else ''}")
 
         prompt = "\n".join(lines)
-        system = (
+        _persona = _load_persona_system()
+        _mems    = _load_memories_context()
+        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+        system = (_prefix + "\n\n" if _prefix else "") + (
             "You are a technical scribe. Given a list of terminal commands with their exit codes, "
             "write a 3-5 sentence narrative in past tense describing what the developer was working on. "
             "Be specific, use technical terms, mention tools, file names, or patterns you observe. "
@@ -2848,11 +2872,14 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         # AI-generate runbook for top pattern
         top = patterns[0]
         cmds_text = "\n".join(f"  - {c}" for c in top["commands"])
+        _persona = _load_persona_system()
+        _mems    = _load_memories_context()
+        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
         ai = _claude_chat(
             f"This sequence of shell commands was repeated {top['count']} times:\n{cmds_text}\n\n"
             "Generate a YAML runbook for TurtleTerm. Format:\n"
             "name: <short-name>\ndescription: <one line>\nsteps:\n  - name: <step>\n    command: <cmd>\n",
-            system="You are a DevOps automation expert. Generate a clean YAML runbook. No markdown fences.",
+            system=(_prefix + "\n\n" if _prefix else "") + "You are a DevOps automation expert. Generate a clean YAML runbook. No markdown fences.",
             timeout=12,
         )
         suggested_runbook = (ai.get("response") or "").strip() if ai else ""
@@ -3301,7 +3328,7 @@ def serve_http(port: int) -> int:
             if self.path in ('/health', '/healthz'):
                 body = json.dumps({
                     "status": "ok", "service": "turtle-agentd",
-                    "version": "0.4.0", "mode": "http-daemon",
+                    "version": "0.9.1", "mode": "http-daemon",
                 }).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')

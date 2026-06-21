@@ -285,6 +285,27 @@ def main(argv: list[str]) -> int:
 
     sub.add_parser("synapseiq-status", help="check SynapseIQ LSP reachability")
 
+    code_actions_p = sub.add_parser("code-actions", help="get code actions (quick-fix, refactor) for a file")
+    code_actions_p.add_argument("file", help="file to analyze")
+    code_actions_p.add_argument("--line", type=int, default=0, help="cursor line")
+    code_actions_p.add_argument("--col", type=int, default=0, help="cursor column")
+
+    workspace_symbols_p = sub.add_parser("workspace-symbols", help="search workspace symbols across project")
+    workspace_symbols_p.add_argument("query", nargs="?", default="", help="symbol name filter")
+    workspace_symbols_p.add_argument("--cwd", default=".", help="project root")
+
+    document_symbols_p = sub.add_parser("document-symbols", help="list all symbols in a file")
+    document_symbols_p.add_argument("file", help="file to outline")
+
+    rename_p = sub.add_parser("rename", help="rename a symbol across the file")
+    rename_p.add_argument("file", help="file to edit")
+    rename_p.add_argument("--line", type=int, default=0)
+    rename_p.add_argument("--col", type=int, default=0)
+    rename_p.add_argument("--new-name", required=True, help="new symbol name")
+
+    workspace_diagnostics_p = sub.add_parser("workspace-diagnostics", help="run diagnostics on all git-changed files")
+    workspace_diagnostics_p.add_argument("--cwd", default=".", help="project root")
+
     args = parser.parse_args(argv)
     if args.command == "diagnostics":
         return print_json(response("diagnostics", diagnostics(Path(args.file))))
@@ -317,6 +338,95 @@ def main(argv: list[str]) -> int:
             "reachable": status is not None,
             "status": status,
         }))
+    if args.command == "code-actions":
+        file_path = Path(args.file).resolve()
+        text = file_path.read_text(errors="replace") if file_path.exists() else ""
+        r = _synapseiq_post("/lsp/code-actions", {
+            "text": text,
+            "filename": str(file_path),
+            "range": {"start": {"line": args.line, "character": args.col}, "end": {"line": args.line, "character": args.col}},
+            "diagnostics": [],
+        }) or {}
+        actions = r.get("code_actions", [])
+        if not actions:
+            print("No code actions available.")
+        else:
+            for i, a in enumerate(actions, 1):
+                print(f"{i}. [{a.get('kind','?')}] {a.get('title','')}")
+        return 0
+    if args.command == "workspace-symbols":
+        cwd = str(Path(args.cwd).resolve())
+        r = _synapseiq_post("/lsp/workspace-symbols", {"query": args.query, "cwd": cwd}) or {}
+        symbols_list = r.get("symbols", [])
+        if not symbols_list:
+            print(f"No symbols matching '{args.query}'")
+        else:
+            for s in symbols_list:
+                loc = s.get("location", {})
+                uri = loc.get("uri", "").replace("file://", "")
+                ln  = loc.get("range", {}).get("start", {}).get("line", 0)
+                kind_map = {5: "class", 12: "function", 13: "variable", 14: "constant"}
+                kind = kind_map.get(s.get("kind", 0), "symbol")
+                print(f"  {s['name']:30} {kind:10} {uri}:{ln+1}")
+        return 0
+    if args.command == "document-symbols":
+        file_path = Path(args.file).resolve()
+        text = file_path.read_text(errors="replace") if file_path.exists() else ""
+        r = _synapseiq_post("/lsp/workspace-symbols", {"query": "", "cwd": str(file_path.parent)}) or {}
+        # Fallback: parse file directly for symbols
+        doc_symbols = []
+        import re as _re_ds
+        for i, line in enumerate(text.splitlines()):
+            m = _re_ds.match(r'^(?:export\s+)?(?:async\s+)?(?:function|class|const|let|var|def|pub fn|fn|type|interface|enum)\s+([A-Za-z_$][A-Za-z0-9_$<>]*)', line)
+            if m:
+                doc_symbols.append({"name": m.group(1), "line": i + 1, "text": line.strip()[:60]})
+        if not doc_symbols:
+            print("No symbols found.")
+        else:
+            for s in doc_symbols:
+                print(f"  L{s['line']:4}  {s['name']:30}  {s['text']}")
+        return 0
+    if args.command == "rename":
+        file_path = Path(args.file).resolve()
+        text = file_path.read_text(errors="replace") if file_path.exists() else ""
+        r = _synapseiq_post("/lsp/rename", {
+            "text": text,
+            "filename": str(file_path),
+            "line": args.line,
+            "character": args.col,
+            "new_name": args.new_name,
+        }) or {}
+        changes = r.get("changes", {})
+        edits = changes.get(str(file_path), changes.get(f"file://{file_path}", []))
+        if not edits:
+            print(f"Nothing to rename at line {args.line}:{args.col}")
+        else:
+            print(f"Would rename {len(edits)} occurrence(s) to '{args.new_name}'. Apply? [y/N] ", end="")
+            if input().strip().lower() == "y":
+                lines = text.splitlines(keepends=True)
+                for edit in sorted(edits, key=lambda e: (e["range"]["start"]["line"], e["range"]["start"]["character"]), reverse=True):
+                    l = edit["range"]["start"]["line"]
+                    cs = edit["range"]["start"]["character"]
+                    ce = edit["range"]["end"]["character"]
+                    if l < len(lines):
+                        lines[l] = lines[l][:cs] + args.new_name + lines[l][ce:]
+                file_path.write_text("".join(lines))
+                print(f"Renamed in {args.file}")
+        return 0
+    if args.command == "workspace-diagnostics":
+        cwd = str(Path(args.cwd).resolve())
+        r = _synapseiq_post("/lsp/workspace-diagnostics", {"cwd": cwd, "files": []}) or {}
+        diags = r.get("diagnostics", {})
+        checked = r.get("files_checked", 0)
+        if not diags:
+            print(f"No issues found across {checked} file(s).")
+        else:
+            for fname, issues in diags.items():
+                print(f"\n{fname}:")
+                for d in issues:
+                    ln = d.get("range", {}).get("start", {}).get("line", 0)
+                    print(f"  L{ln+1}: {d.get('message','?')}")
+        return 0
     parser.print_help(sys.stderr)
     return 2
 
