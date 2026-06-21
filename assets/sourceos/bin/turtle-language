@@ -71,6 +71,37 @@ def synapseiq_status() -> dict[str, Any] | None:
         return None
 
 
+def ensure_synapseiq() -> bool:
+    """Start SynapseIQ if not reachable. Returns True if now reachable."""
+    import subprocess
+    import time
+    if synapseiq_status() is not None:
+        return True
+    launcher = Path(__file__).with_name("turtle-synapseiq")
+    if not launcher.exists():
+        # Try PATH
+        import shutil
+        found = shutil.which("turtle-synapseiq")
+        if found:
+            launcher = Path(found)
+        else:
+            return False
+    try:
+        subprocess.Popen(
+            [sys.executable, str(launcher), "start"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        for _ in range(8):
+            time.sleep(0.35)
+            if synapseiq_status() is not None:
+                return True
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return False
+
+
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -133,7 +164,8 @@ def diagnostics(path: Path) -> dict[str, Any]:
     sha = sha256_text(text)
     base = {"file": str(path), "language": lang, "content_sha256": sha, "mutationAllowed": False}
 
-    # Prefer SynapseIQ LSP when available.
+    # Prefer SynapseIQ LSP when available — auto-start if not running.
+    ensure_synapseiq()
     synapse = synapseiq_diagnostics(str(path), text, lang)
     if synapse is not None:
         base["source"] = "synapseiq-lsp"
@@ -159,6 +191,7 @@ def symbols(path: Path) -> dict[str, Any]:
     sha = sha256_text(text)
     base = {"file": str(path), "language": lang, "content_sha256": sha, "mutationAllowed": False}
 
+    ensure_synapseiq()
     synapse = synapseiq_symbols(str(path), text, lang)
     if synapse is not None:
         base["source"] = "synapseiq-lsp"

@@ -322,6 +322,74 @@ local function turtle_nl_to_shell()
   }
 end
 
+-- Feature: CTRL+SHIFT+D — diagnose last output zone in a split pane
+local function turtle_diagnose()
+  return wezterm.action_callback(function(window, pane)
+    local last_out = ''
+    pcall(function()
+      local zones = pane:get_semantic_zones()
+      for _, z in ipairs(zones) do
+        if z.semantic_type == 'Output' then
+          last_out = pane:get_text_from_semantic_zone(z) or ''
+        end
+      end
+    end)
+    -- Find file:line pattern in output
+    local file_found = last_out:match('([%w_/%.%-]+%.[a-zA-Z][a-zA-Z0-9]*):%d+')
+    if not file_found then
+      -- Try current working directory
+      local cwd = ''
+      pcall(function() cwd = tostring(pane.current_working_dir):gsub('file://[^/]*', '') end)
+      if cwd ~= '' then
+        window:perform_action(
+          act.SpawnCommandInNewPane {
+            direction = 'Right', size = { Percent = 40 },
+            command = { args = { 'sh', '-c',
+              'clear; echo "=== SynapseIQ Diagnostics ==="; echo; echo "No file path found in last output."; echo; echo "Tip: run a compiler or linter first, then CTRL+SHIFT+D"; echo; printf "press Enter to close... "; read -r _'
+            }},
+          }, pane
+        )
+      else
+        window:toast_notification('TurtleTerm', 'No file path found in last output.', nil, 3000)
+      end
+      return
+    end
+    -- Write a small formatter script to tmp so we avoid shell-quoting hell
+    local fmt = io.open('/tmp/turtle-diag-fmt.py', 'w')
+    if fmt then
+      fmt:write([[
+import json, sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw).get('data', {})
+    diags = d.get('diagnostics', [])
+    if not diags:
+        print('  no issues found')
+    for i in diags:
+        ln = i.get('line', 0) + 1
+        sev = i.get('severity', '?')
+        msg = i.get('message', '?')
+        print(f'  line {ln}: [{sev}] {msg}')
+except Exception as e:
+    print(raw[:500])
+]])
+      fmt:close()
+    end
+    window:perform_action(
+      act.SpawnCommandInNewPane {
+        direction = 'Right', size = { Percent = 45 },
+        command = { args = { 'sh', '-c', string.format(
+          'clear; printf "=== SynapseIQ Diagnostics: %s ===\\n\\n"; '..
+          'turtle-language diagnostics %s 2>/dev/null | python3 /tmp/turtle-diag-fmt.py; '..
+          'echo; printf "press Enter to close... "; read -r _',
+          file_found, file_found
+        )}},
+      }, pane
+    )
+    window:toast_notification('TurtleTerm', 'Diagnosing: ' .. file_found, nil, 2000)
+  end)
+end
+
 -- Feature: CTRL+SPACE inline AI ghost-text completion
 -- Reads the current Input zone, runs nl-to-shell on partial text, replaces with suggestion.
 local function turtle_ai_complete()
@@ -617,6 +685,7 @@ config.keys = {
   { key = 'e', mods = 'CTRL|SHIFT',   action = turtle_explain_selection() },
   { key = 'n', mods = 'CTRL|SHIFT',   action = turtle_nl_to_shell() },
   { key = 'a', mods = 'CTRL|SHIFT',   action = turtle_atlas_context() },
+  { key = 'd', mods = 'CTRL|SHIFT',   action = turtle_diagnose() },          -- SynapseIQ diagnose
   { key = 'Space', mods = 'CTRL',     action = turtle_ai_complete() },       -- AI ghost-text complete
   { key = 'r', mods = 'CTRL',         action = turtle_history_search() },    -- History fuzzy picker
   { key = 'r', mods = 'CTRL|SHIFT',   action = turtle_history_ai_search() }, -- AI history search
@@ -682,18 +751,47 @@ end)
 
 wezterm.on('update-right-status', function(window, pane)
   local domain = turtle_domain()
-  -- Feature 3: SSH profile indicator
   local proc = ''
   pcall(function() proc = pane:get_foreground_process_name() or '' end)
   local cwd_uri = ''
   pcall(function() cwd_uri = tostring(pane.current_working_dir) or '' end)
   local is_ssh = proc:find('ssh') ~= nil or cwd_uri:find('^ssh://') ~= nil
+
   if is_ssh then
     window:set_right_status('  \xe2\x87\x84 ssh  ')  -- ⇄ ssh
-  elseif domain ~= 'host' then
-    window:set_right_status(string.format('  %s  ', domain))
+    -- Red title bar tint while inside SSH session
+    local overrides = window:get_config_overrides() or {}
+    if not overrides._ssh_frame then
+      overrides._ssh_frame = true
+      overrides.window_frame = {
+        active_titlebar_bg   = '#3a0000',
+        inactive_titlebar_bg = '#290000',
+        active_titlebar_fg   = '#ffaaaa',
+        inactive_titlebar_fg = '#cc7777',
+        border_left_width    = '0.5cell',
+        border_right_width   = '0.5cell',
+        border_bottom_height = '0.25cell',
+        border_top_height    = '0.25cell',
+        border_left_color    = '#5a0000',
+        border_right_color   = '#5a0000',
+        border_bottom_color  = '#5a0000',
+        border_top_color     = '#5a0000',
+      }
+      window:set_config_overrides(overrides)
+    end
   else
-    window:set_right_status('')
+    -- Clear SSH frame override when we leave SSH
+    local overrides = window:get_config_overrides() or {}
+    if overrides._ssh_frame then
+      overrides._ssh_frame = nil
+      overrides.window_frame = nil
+      window:set_config_overrides(overrides)
+    end
+    if domain ~= 'host' then
+      window:set_right_status(string.format('  %s  ', domain))
+    else
+      window:set_right_status('')
+    end
   end
 end)
 
@@ -866,6 +964,8 @@ wezterm.on('gui-startup', function(cmd)
   end)
   -- Signal update-left-status to show shell integration hint if not active
   wezterm.GLOBAL.check_shell_integration = true
+  -- Auto-start SynapseIQ LSP server in background (no-op if already running)
+  io.popen('turtle-synapseiq start >/dev/null 2>&1 &')
 end)
 
 return config
