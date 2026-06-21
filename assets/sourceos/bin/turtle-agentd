@@ -1640,6 +1640,346 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
                         pass
         return response("error", {"message": f"runbook not found: {name}"}, status="error")
 
+    if action in ("detect_secrets", "detect-secrets"):
+        text = request.get("text", "")
+        if not text:
+            return response("detect_secrets", {"secrets": [], "safe": True})
+        import re as _re_sec
+        # High-confidence secret patterns
+        patterns = [
+            (r'\bsk-[A-Za-z0-9\-]{20,}',                      "OpenAI API key"),
+            (r'\bsk-ant-[A-Za-z0-9\-_]{40,}',                 "Anthropic API key"),
+            (r'\bghp_[A-Za-z0-9]{36}',                         "GitHub personal access token"),
+            (r'\bgho_[A-Za-z0-9]{36}',                         "GitHub OAuth token"),
+            (r'\bAIza[A-Za-z0-9\-_]{35}',                     "Google API key"),
+            (r'\baws_access_key_id\s*=\s*[A-Z0-9]{20}',        "AWS access key ID"),
+            (r'\bAKIA[A-Z0-9]{16}',                            "AWS access key"),
+            (r'\b(?:password|passwd|secret|token|api_?key)\s*=\s*[\'"]?[A-Za-z0-9+/=_\-]{8,}[\'"]?', "Hardcoded credential"),
+            (r'\b[A-Za-z0-9+/]{40,}={0,2}\b',                 "Possible base64 secret (long)"),
+            (r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----', "Private key"),
+            (r'\bxox[baprs]-[A-Za-z0-9\-]+',                  "Slack token"),
+            (r'\bEAAC[A-Za-z0-9]{50,}',                        "Facebook access token"),
+            (r'\b[0-9a-f]{32,40}\b',                           "Possible API key/hash (hex)"),
+        ]
+        found = []
+        for pat, label in patterns:
+            # Skip the hex pattern for very common short hashes
+            if 'hex' in label and len(text) < 40:
+                continue
+            matches = _re_sec.findall(pat, text, _re_sec.IGNORECASE)
+            for m in matches:
+                val = m if isinstance(m, str) else m[0]
+                # Only flag hex if it looks like a real secret context (= or :)
+                if 'hex' in label and not _re_sec.search(r'(?:key|secret|token|hash|password)\s*[:=]\s*' + _re_sec.escape(val[:8]), text, _re_sec.IGNORECASE):
+                    continue
+                found.append({"type": label, "match": val[:20] + "..." if len(val) > 20 else val})
+        return response("detect_secrets", {
+            "secrets": found[:10],
+            "safe": len(found) == 0,
+            "count": len(found),
+        })
+
+    if action in ("pre_exec_risk", "pre-exec-risk"):
+        command = request.get("command", "").strip()
+        if not command:
+            return response("pre_exec_risk", {"risk": "unknown", "score": 0, "reasons": []})
+        import re as _re_risk
+        reasons = []
+        score = 0
+
+        # Destructive filesystem patterns
+        destructive = [
+            (r'\brm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r', "recursive force delete", 9),
+            (r'\bdd\b.*of=/', "dd write to device", 10),
+            (r'>\s*/dev/(?!null)', "write to device file", 8),
+            (r'\b(?:mkfs|format|fdisk|parted)\b', "disk formatting", 10),
+            (r'\bshred\b', "secure file deletion", 8),
+            (r'\btruncate\s+-s\s+0', "truncate to zero", 7),
+            (r':\s*>\s*[^\|&;]+', "shell truncate redirect", 6),
+            (r'\bchmod\s+[0-7]*7[0-7]{2}\s', "world-writable permissions", 5),
+            (r'\bchown\s+-R', "recursive ownership change", 4),
+        ]
+        for pat, desc, s in destructive:
+            if _re_risk.search(pat, command, _re_risk.IGNORECASE):
+                reasons.append(desc); score = max(score, s)
+
+        # Network danger patterns
+        network = [
+            (r'\bcurl\b.*\|\s*(?:bash|sh|python|ruby|perl)', "pipe URL to shell", 9),
+            (r'\bwget\b.*-O\s*-.*\|\s*(?:bash|sh)', "wget pipe to shell", 9),
+            (r'\bnc\b.*-e\b|\bncat\b.*-e\b', "netcat execute", 8),
+        ]
+        for pat, desc, s in network:
+            if _re_risk.search(pat, command, _re_risk.IGNORECASE):
+                reasons.append(desc); score = max(score, s)
+
+        # Database danger
+        db = [
+            (r'\bDROP\s+(?:DATABASE|TABLE|SCHEMA)\b', "SQL DROP", 9),
+            (r'\bTRUNCATE\s+TABLE\b', "SQL TRUNCATE", 7),
+            (r'\bDELETE\s+FROM\b(?!\s+\w+\s+WHERE)', "SQL DELETE without WHERE", 8),
+        ]
+        for pat, desc, s in db:
+            if _re_risk.search(pat, command, _re_risk.IGNORECASE):
+                reasons.append(desc); score = max(score, s)
+
+        # Production context signals
+        prod_signals = [r'\bprod(?:uction)?\b', r'\blive\b', r'--env\s+prod', r'--profile\s+prod']
+        for p in prod_signals:
+            if _re_risk.search(p, command, _re_risk.IGNORECASE):
+                reasons.append("production environment reference"); score = min(score + 2, 10); break
+
+        # Determine risk label
+        if score >= 8: risk = "critical"
+        elif score >= 6: risk = "high"
+        elif score >= 4: risk = "medium"
+        elif score >= 2: risk = "low"
+        else: risk = "safe"
+
+        # If high/critical, optionally get AI explanation
+        explanation = ""
+        if score >= 6 and env("ANTHROPIC_API_KEY"):
+            ai = _claude_chat(
+                f"This shell command has been flagged as potentially dangerous. Explain in one sentence what it does and what could go wrong:\n`{command}`",
+                system="Be concise. One sentence only. Focus on the specific risk.", timeout=8
+            )
+            if ai: explanation = (ai.get("response") or "")[:200]
+
+        return response("pre_exec_risk", {
+            "command": command, "risk": risk, "score": score,
+            "reasons": reasons, "explanation": explanation,
+        })
+
+    if action in ("shellcheck_lint", "shellcheck-lint"):
+        text = request.get("text", "")
+        shell = request.get("shell", "bash")
+        if not text or not text.strip():
+            return response("shellcheck_lint", {"issues": [], "clean": True})
+        import subprocess as _sp_sc, tempfile as _tf, os as _os_sc
+        # Try shellcheck first
+        with _tf.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(f'#!/usr/bin/env {shell}\n{text}\n')
+            tmpfile = f.name
+        try:
+            r = _sp_sc.run(
+                ['shellcheck', '--format=json', '--severity=warning', tmpfile],
+                capture_output=True, text=True, timeout=5
+            )
+            _os_sc.unlink(tmpfile)
+            if r.returncode == 0:
+                return response("shellcheck_lint", {"issues": [], "clean": True, "tool": "shellcheck"})
+            try:
+                issues = json.loads(r.stdout)
+                formatted = [{
+                    "line": i.get("line", 0), "col": i.get("column", 0),
+                    "level": i.get("level", "warning"),
+                    "message": i.get("message", ""), "code": f"SC{i.get('code','')}",
+                } for i in issues if isinstance(i, dict)]
+                return response("shellcheck_lint", {"issues": formatted, "clean": len(formatted) == 0, "tool": "shellcheck"})
+            except json.JSONDecodeError:
+                pass
+        except (FileNotFoundError, _sp_sc.TimeoutExpired):
+            try: _os_sc.unlink(tmpfile)
+            except OSError: pass
+        # Fallback: bash -n syntax check
+        with _tf.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(text); tmpfile2 = f.name
+        try:
+            r2 = _sp_sc.run(['bash', '-n', tmpfile2], capture_output=True, text=True, timeout=3)
+            _os_sc.unlink(tmpfile2)
+            if r2.returncode == 0:
+                return response("shellcheck_lint", {"issues": [], "clean": True, "tool": "bash -n"})
+            lines = r2.stderr.strip().splitlines()
+            issues2 = []
+            for line in lines:
+                import re as _re_bl
+                m = _re_bl.search(r'line (\d+)', line)
+                issues2.append({"line": int(m.group(1)) if m else 0, "col": 0, "level": "error", "message": line, "code": ""})
+            return response("shellcheck_lint", {"issues": issues2, "clean": False, "tool": "bash -n"})
+        except (FileNotFoundError, _sp_sc.TimeoutExpired):
+            try: _os_sc.unlink(tmpfile2)
+            except OSError: pass
+        return response("shellcheck_lint", {"issues": [], "clean": True, "tool": "unavailable"})
+
+    if action in ("inline_diff", "inline-diff"):
+        cwd = request.get("cwd", ".") or "."
+        command = request.get("command", "")
+        import subprocess as _sp_diff
+        # Check if we're in a git repo
+        r = _sp_diff.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, cwd=cwd, timeout=5)
+        if r.returncode != 0:
+            return response("inline_diff", {"diff": "", "available": False, "reason": "not a git repository"})
+        # Get staged + unstaged diff (what changed since last commit)
+        diff_r = _sp_diff.run(
+            ["git", "diff", "--stat", "--color=never"],
+            capture_output=True, text=True, cwd=cwd, timeout=10
+        )
+        diff_detail = _sp_diff.run(
+            ["git", "diff", "--color=never", "--unified=3"],
+            capture_output=True, text=True, cwd=cwd, timeout=10
+        )
+        stat = (diff_r.stdout or "").strip()
+        diff = (diff_detail.stdout or "")[:8000]
+        has_changes = bool(stat)
+        return response("inline_diff", {
+            "diff": diff, "stat": stat,
+            "available": True, "has_changes": has_changes,
+            "command": command,
+        })
+
+    if action in ("env_inspect", "env-inspect"):
+        import os as _os_env
+        prefix = request.get("prefix", "")
+        baseline_path = Path.home() / ".config" / "turtleterm" / "env_baseline.json"
+
+        current_env = {
+            k: v for k, v in _os_env.environ.items()
+            if not prefix or k.startswith(prefix.upper())
+        }
+        # Filter to non-trivially-long values for display
+        display_env = {k: v[:200] for k, v in sorted(current_env.items())}
+
+        # Load baseline if exists
+        baseline = {}
+        diff_added = []
+        diff_removed = []
+        diff_changed = []
+        if baseline_path.exists():
+            try:
+                baseline = json.loads(baseline_path.read_text())
+                for k in display_env:
+                    if k not in baseline:
+                        diff_added.append(k)
+                    elif baseline[k] != display_env[k]:
+                        diff_changed.append({"key": k, "was": baseline[k][:100], "now": display_env[k][:100]})
+                for k in baseline:
+                    if k not in display_env:
+                        diff_removed.append(k)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        action2 = request.get("subaction", "list")
+        if action2 == "save_baseline":
+            baseline_path.parent.mkdir(parents=True, exist_ok=True)
+            baseline_path.write_text(json.dumps(display_env, indent=2))
+            return response("env_inspect", {"saved": True, "count": len(display_env)})
+
+        return response("env_inspect", {
+            "env": display_env,
+            "count": len(display_env),
+            "has_baseline": bool(baseline),
+            "diff": {"added": diff_added, "removed": diff_removed, "changed": diff_changed},
+            "baseline_path": str(baseline_path),
+        })
+
+    if action in ("docker_list", "docker-list"):
+        import subprocess as _sp_dk
+        try:
+            r = _sp_dk.run(
+                ["docker", "ps", "--format", "{{json .}}"],
+                capture_output=True, text=True, timeout=8
+            )
+            containers = []
+            for line in (r.stdout or "").strip().splitlines():
+                try: containers.append(json.loads(line))
+                except json.JSONDecodeError: pass
+            return response("docker_list", {"containers": containers, "count": len(containers)})
+        except FileNotFoundError:
+            return response("docker_list", {"containers": [], "count": 0, "error": "docker not installed"})
+        except Exception as e:  # noqa: BLE001
+            return response("docker_list", {"containers": [], "error": str(e)})
+
+    if action in ("docker_exec", "docker-exec"):
+        container = request.get("container", "").strip()
+        cmd_to_run = request.get("command", "bash")
+        if not container:
+            return response("error", {"message": "container required"}, status="error")
+        # Write the exec command to pending queue so it appears in terminal
+        exec_cmd = f"docker exec -it {container} {cmd_to_run}"
+        pending_dir = Path.home() / ".local" / "state" / "sourceos" / "terminal"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        (pending_dir / "pending_command").write_text(exec_cmd)
+        (pending_dir / "pending_command.json").write_text(json.dumps({
+            "source": "docker_exec",
+            "description": f"Exec into {container}: {cmd_to_run}",
+        }))
+        return response("docker_exec", {"command": exec_cmd, "container": container})
+
+    if action in ("docker_logs", "docker-logs"):
+        container = request.get("container", "").strip()
+        lines = int(request.get("lines", 50))
+        if not container:
+            return response("error", {"message": "container required"}, status="error")
+        import subprocess as _sp_dkl
+        try:
+            r = _sp_dkl.run(
+                ["docker", "logs", "--tail", str(lines), container],
+                capture_output=True, text=True, timeout=10
+            )
+            return response("docker_logs", {
+                "container": container,
+                "logs": (r.stdout + r.stderr)[:10000],
+                "lines": lines,
+            })
+        except Exception as e:  # noqa: BLE001
+            return response("docker_logs", {"error": str(e)})
+
+    if action in ("ssh_profiles", "ssh-profiles"):
+        import re as _re_ssh
+        ssh_config = Path.home() / ".ssh" / "config"
+        profiles = []
+        if ssh_config.exists():
+            current: dict[str, Any] = {}
+            for line in ssh_config.read_text(errors="replace").splitlines():
+                line = line.strip()
+                if line.lower().startswith("host ") and not line.startswith("#"):
+                    if current.get("host"):
+                        profiles.append(current)
+                    host = line[5:].strip()
+                    if "*" not in host:  # skip wildcards
+                        current = {"host": host}
+                elif current and "=" not in line and line:
+                    m = _re_ssh.match(r'(\w+)\s+(.*)', line, _re_ssh.IGNORECASE)
+                    if m:
+                        current[m.group(1).lower()] = m.group(2).strip()
+            if current.get("host"):
+                profiles.append(current)
+        # Also check ~/.config/turtleterm/ssh_profiles.json for user-saved profiles
+        extra_profiles_file = Path.home() / ".config" / "turtleterm" / "ssh_profiles.json"
+        if extra_profiles_file.exists():
+            try:
+                extra = json.loads(extra_profiles_file.read_text())
+                profiles.extend(extra)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return response("ssh_profiles", {"profiles": profiles, "count": len(profiles)})
+
+    if action in ("ssh_connect", "ssh-connect"):
+        host = request.get("host", "").strip()
+        user = request.get("user", "").strip()
+        port = request.get("port", "22")
+        identity = request.get("identity", "").strip()
+        if not host:
+            return response("error", {"message": "host required"}, status="error")
+        # Build SSH command
+        parts = ["ssh"]
+        if user:
+            parts.extend(["-l", user])
+        if str(port) != "22":
+            parts.extend(["-p", str(port)])
+        if identity:
+            parts.extend(["-i", identity])
+        parts.append(host)
+        ssh_cmd = " ".join(parts)
+        pending_dir = Path.home() / ".local" / "state" / "sourceos" / "terminal"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        (pending_dir / "pending_command").write_text(ssh_cmd)
+        (pending_dir / "pending_command.json").write_text(json.dumps({
+            "source": "ssh_connect",
+            "description": f"SSH to {host}",
+        }))
+        return response("ssh_connect", {"command": ssh_cmd, "host": host})
+
     if action in ("runbook_run", "runbook-run"):
         name = request.get("name", "").strip()
         search_dirs = [

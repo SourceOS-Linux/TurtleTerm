@@ -27,6 +27,15 @@ Tools exposed (all read-only or proposal-only — no ambient shell authority):
   runbook_list                       List available runbooks from project and user directories.
   runbook_run                        Run a named runbook as a terminal plan.
   runbook_show                       Show the steps of a named runbook without running it.
+  detect_secrets                     Scan text for secrets, API keys, and credentials.
+  pre_exec_risk                      Assess risk level of a shell command before running it.
+  shellcheck_lint                    Lint a shell script with shellcheck or bash -n fallback.
+  inline_diff                        Get git diff of working tree after a file-modifying command.
+  env_inspect                        Inspect environment variables with diff vs saved baseline.
+  docker_list                        List running Docker containers (docker ps).
+  docker_exec                        Exec into a Docker container via terminal prompt injection.
+  ssh_profiles                       List SSH profiles from ~/.ssh/config.
+  ssh_connect                        Inject an SSH connect command into the terminal.
 
 Wiring to Claude Code (add to ~/.claude/settings.json mcpServers):
   {
@@ -466,6 +475,99 @@ TOOLS = [
         "description": "List saved TurtleTerm workspace layouts (from CMD+SHIFT+S saves). Returns names, tab counts, and save timestamps.",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "detect_secrets",
+        "description": "Scan text (command, script, config) for secrets, API keys, credentials, and private keys before they're pasted or executed. Returns each finding with type and redacted match.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Text to scan for secrets."},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "pre_exec_risk",
+        "description": "Assess the risk level of a shell command before running it. Returns risk score 0-10, category (safe/low/medium/high/critical), specific reasons, and optional AI explanation for high-risk commands.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to assess."},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "shellcheck_lint",
+        "description": "Lint a shell script or command with shellcheck (or bash -n fallback). Returns warnings and errors with line numbers.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Shell script or command to lint."},
+                "shell": {"type": "string", "description": "Shell dialect: bash, sh, zsh (default: bash)."},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "inline_diff",
+        "description": "Get git diff of working tree after a command that modifies files. Shows what changed since last commit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Working directory to diff in."},
+                "command": {"type": "string", "description": "Command that was just run (for context)."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "env_inspect",
+        "description": "Inspect current environment variables. Returns all vars, diff vs saved baseline (what was added/removed/changed). Use subaction='save_baseline' to snapshot current env.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prefix": {"type": "string", "description": "Filter to vars starting with this prefix (e.g. 'AWS', 'DOCKER')."},
+                "subaction": {"type": "string", "description": "Use 'save_baseline' to snapshot current env for future diffs."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "docker_list",
+        "description": "List running Docker containers (equivalent to docker ps). Returns container name, image, status, ports.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "docker_exec",
+        "description": "Exec into a Docker container by injecting 'docker exec -it NAME bash' into the terminal prompt for user confirmation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "container": {"type": "string", "description": "Container name or ID."},
+                "command": {"type": "string", "description": "Command to run in container (default: bash)."},
+            },
+            "required": ["container"],
+        },
+    },
+    {
+        "name": "ssh_profiles",
+        "description": "List SSH profiles from ~/.ssh/config and ~/.config/turtleterm/ssh_profiles.json. Returns hostname, user, port, identity file.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "ssh_connect",
+        "description": "Inject an SSH connect command into the terminal for a named host. Reads connection details from ~/.ssh/config.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "host": {"type": "string", "description": "SSH host name (from ~/.ssh/config or direct hostname)."},
+                "user": {"type": "string", "description": "SSH username (optional, falls back to config)."},
+                "port": {"type": "string", "description": "SSH port (optional, default 22)."},
+            },
+            "required": ["host"],
+        },
+    },
 ]
 
 
@@ -606,6 +708,24 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         return _agentd({"action": "runbook_run", "name": arguments.get("name", ""), "dir": arguments.get("dir", ".")})
     if name == "runbook_show":
         return _agentd({"action": "runbook_show", "name": arguments.get("name", "")})
+    if name == "detect_secrets":
+        return _agentd({"action": "detect_secrets", "text": arguments.get("text", "")})
+    if name == "pre_exec_risk":
+        return _agentd({"action": "pre_exec_risk", "command": arguments.get("command", "")})
+    if name == "shellcheck_lint":
+        return _agentd({"action": "shellcheck_lint", "text": arguments.get("text", ""), "shell": arguments.get("shell", "bash")})
+    if name == "inline_diff":
+        return _agentd({"action": "inline_diff", "cwd": arguments.get("cwd", "."), "command": arguments.get("command", "")})
+    if name == "env_inspect":
+        return _agentd({"action": "env_inspect", "prefix": arguments.get("prefix", ""), "subaction": arguments.get("subaction", "list")})
+    if name == "docker_list":
+        return _agentd({"action": "docker_list"})
+    if name == "docker_exec":
+        return _agentd({"action": "docker_exec", "container": arguments.get("container", ""), "command": arguments.get("command", "bash")})
+    if name == "ssh_profiles":
+        return _agentd({"action": "ssh_profiles"})
+    if name == "ssh_connect":
+        return _agentd({"action": "ssh_connect", "host": arguments.get("host", ""), "user": arguments.get("user", ""), "port": arguments.get("port", "22")})
     if name == "workspace_list":
         import os as _os
         ws_dir = Path.home() / ".config" / "turtleterm" / "workspaces"
@@ -646,7 +766,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turtleterm", "version": "0.3.0"},
+                "serverInfo": {"name": "turtleterm", "version": "0.4.0"},
             },
         }
 

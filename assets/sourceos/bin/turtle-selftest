@@ -483,16 +483,19 @@ def test_mcp_plan_tools() -> None:
 
     for tool in ('terminal_events_since', 'terminal_wait_for_command',
                  'bookmark_add', 'bookmark_list', 'bookmark_remove',
-                 'runbook_list', 'runbook_run', 'runbook_show'):
+                 'runbook_list', 'runbook_run', 'runbook_show',
+                 'detect_secrets', 'pre_exec_risk', 'shellcheck_lint',
+                 'inline_diff', 'env_inspect', 'docker_list', 'docker_exec',
+                 'ssh_profiles', 'ssh_connect'):
         if tool in content:
             ok(f'mcp tool: {tool}')
         else:
             fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
 
-    if '0.3.0' in content:
-        ok('mcp version 0.3.0')
+    if '0.4.0' in content:
+        ok('mcp version 0.4.0')
     else:
-        fail('mcp version 0.3.0', 'version not updated')
+        fail('mcp version 0.4.0', 'version not updated')
 
     if '_synapseiq' in content:
         ok('mcp _synapseiq helper')
@@ -684,6 +687,84 @@ def test_agentd_new_actions() -> None:
     else:
         fail("agentd runbook_list", str(r))
 
+    # G1: Secret detector
+    r = agentd({"action": "detect_secrets", "text": "export OPENAI_API_KEY=sk-proj-abcdef1234567890abcdef1234567890"})
+    if r and r.get("status") == "ok":
+        d = r.get("data", {})
+        if not d.get("safe") and d.get("count", 0) > 0:
+            ok("agentd detect_secrets", f"caught {d['count']} secret(s): {d['secrets'][0]['type']}")
+        else:
+            fail("agentd detect_secrets", f"missed obvious OpenAI key — {d}")
+    else:
+        fail("agentd detect_secrets", str(r))
+
+    r2 = agentd({"action": "detect_secrets", "text": "echo hello world"})
+    if r2 and r2.get("data", {}).get("safe"):
+        ok("agentd detect_secrets (safe text)")
+    else:
+        fail("agentd detect_secrets (safe text)", str(r2))
+
+    # G2: Pre-exec risk
+    r = agentd({"action": "pre_exec_risk", "command": "rm -rf /tmp/test"})
+    if r and r.get("status") == "ok":
+        d = r.get("data", {})
+        if d.get("score", 0) >= 6:
+            ok("agentd pre_exec_risk", f"score={d['score']} risk={d['risk']} reasons={d.get('reasons',[])[0] if d.get('reasons') else '?'}")
+        else:
+            fail("agentd pre_exec_risk", f"expected high score for rm -rf, got {d}")
+    else:
+        fail("agentd pre_exec_risk", str(r))
+
+    r2 = agentd({"action": "pre_exec_risk", "command": "ls -la"})
+    if r2 and r2.get("data", {}).get("risk") in ("safe", "low"):
+        ok("agentd pre_exec_risk (safe cmd)")
+    else:
+        fail("agentd pre_exec_risk (safe cmd)", str(r2))
+
+    # G4: Shellcheck lint
+    r = agentd({"action": "shellcheck_lint", "text": "if [ $x -eq 1\nthen\n  echo hi\n", "shell": "bash"})
+    if r and r.get("status") == "ok":
+        d = r.get("data", {})
+        ok("agentd shellcheck_lint", f"tool={d.get('tool','?')} issues={len(d.get('issues',[]))} clean={d.get('clean')}")
+    else:
+        fail("agentd shellcheck_lint", str(r))
+
+    # G5: Inline diff (git repo check)
+    r = agentd({"action": "inline_diff", "cwd": str(Path.home() / "dev" / "TurtleTerm")})
+    if r and r.get("status") == "ok":
+        d = r.get("data", {})
+        ok("agentd inline_diff", f"available={d.get('available')} has_changes={d.get('has_changes')}")
+    else:
+        fail("agentd inline_diff", str(r))
+
+    # G6: Env inspect
+    r = agentd({"action": "env_inspect", "prefix": "HOME"})
+    if r and r.get("status") == "ok":
+        d = r.get("data", {})
+        if d.get("env") and "HOME" in d.get("env", {}):
+            ok("agentd env_inspect", f"{d.get('count',0)} vars, HOME={d['env'].get('HOME','?')[:30]}")
+        else:
+            fail("agentd env_inspect", f"HOME not found in env — {list(d.get('env',{}).keys())[:5]}")
+    else:
+        fail("agentd env_inspect", str(r))
+
+    # G7: Docker list (graceful if Docker not running)
+    r = agentd({"action": "docker_list"})
+    if r and r.get("status") == "ok":
+        d = r.get("data", {})
+        if "error" in d and "not installed" in d["error"]:
+            skip("agentd docker_list", "docker not installed")
+        else:
+            ok("agentd docker_list", f"{d.get('count',0)} containers")
+    else:
+        fail("agentd docker_list", str(r))
+
+    # G8: SSH profiles
+    r = agentd({"action": "ssh_profiles"})
+    if r and r.get("status") == "ok":
+        d = r.get("data", {})
+        ok("agentd ssh_profiles", f"{d.get('count',0)} profiles from ~/.ssh/config")
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -691,7 +772,7 @@ def test_agentd_new_actions() -> None:
 
 def main() -> int:
     if not AS_JSON:
-        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.5.0{RESET}\n')
+        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.6.0{RESET}\n')
 
     test_agentd()
     test_agentctl()

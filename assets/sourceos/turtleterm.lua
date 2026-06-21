@@ -714,6 +714,178 @@ function turtle_bookmark_browse(window, pane)
   )
 end
 
+-- G2: Pre-execution risk assessment — show AI risk analysis before running
+function turtle_pre_exec_risk(window, pane)
+  -- Get the current input buffer
+  local buf = ''
+  pcall(function()
+    local zones = pane:get_semantic_zones()
+    for _, z in ipairs(zones) do
+      if z.semantic_type == 'Input' then
+        local t = pane:get_text_from_semantic_zone(z)
+        if t and t:match('%S') then buf = t:match('^%s*(.-)%s*$') end
+      end
+    end
+  end)
+  if buf == '' then
+    -- Fall back to clipboard
+    pcall(function() buf = wezterm.get_clipboard() end)
+  end
+  if buf == '' then
+    window:toast_notification('TurtleTerm', 'No command in buffer to assess', nil, 2000)
+    return
+  end
+  local ok_r, r_out, _ = wezterm.run_child_process({
+    'turtle-agentctl', '--stdio', 'pre-exec-risk', buf:sub(1, 500)
+  })
+  if not ok_r or not r_out then
+    window:toast_notification('TurtleTerm', 'Risk assessment unavailable', nil, 2000)
+    return
+  end
+  local rdata = {}
+  pcall(function() rdata = wezterm.json_parse(r_out) end)
+  local d = rdata.data or {}
+  local risk  = d.risk or 'unknown'
+  local score = d.score or 0
+  local reasons = d.reasons or {}
+  local explanation = d.explanation or ''
+
+  local icon = ({ safe = '\xe2\x9c\x85', low = '\xf0\x9f\x9f\xa1', medium = '\xf0\x9f\x9f\xa0', high = '\xf0\x9f\x94\xb4', critical = '\xe2\x9b\x94' })[risk] or '\xe2\x9d\x93'
+  local body = string.format('Risk: %s (score %s/10)\n%s%s',
+    risk:upper(), score,
+    #reasons > 0 and ('Issues: ' .. table.concat(reasons, ', '):sub(1, 120) .. '\n') or '',
+    explanation ~= '' and ('AI: ' .. explanation:sub(1, 180)) or '')
+  window:toast_notification(icon .. '  Command Risk Assessment', body, nil, 10000)
+end
+
+-- G6: Environment variable inspector with diff against saved baseline
+function turtle_env_inspector(window, pane)
+  local ok_e, e_out, _ = wezterm.run_child_process({
+    'turtle-agentctl', '--stdio', 'env-inspect'
+  })
+  if not ok_e or not e_out then
+    window:toast_notification('TurtleTerm', 'env-inspect failed', nil, 2000)
+    return
+  end
+  local edata = {}
+  pcall(function() edata = wezterm.json_parse(e_out) end)
+  local env_map = (edata.data and edata.data.env) or {}
+  local diff    = (edata.data and edata.data.diff) or {}
+  -- Build choices: show diff items first (added/changed), then the rest
+  local choices = {}
+  for _, k in ipairs(diff.added or {}) do
+    local v = env_map[k] or ''
+    table.insert(choices, { id = k .. '=' .. v, label = string.format('[+NEW] %-25s = %s', k, v:sub(1,50)) })
+  end
+  for _, c in ipairs(diff.changed or {}) do
+    table.insert(choices, { id = c.key .. '=' .. (env_map[c.key] or ''), label = string.format('[~CHG] %-25s = %s', c.key, (env_map[c.key] or ''):sub(1,50)) })
+  end
+  for k, v in pairs(env_map) do
+    local is_diff = false
+    for _, c in ipairs(diff.added or {}) do if c == k then is_diff = true; break end end
+    for _, c in ipairs(diff.changed or {}) do if c.key == k then is_diff = true; break end end
+    if not is_diff then
+      table.insert(choices, { id = k .. '=' .. v, label = string.format('      %-25s = %s', k, v:sub(1,60)) })
+    end
+  end
+  if #choices == 0 then
+    window:toast_notification('TurtleTerm', 'No environment variables found', nil, 2000)
+    return
+  end
+  window:perform_action(
+    wezterm.action.InputSelector({
+      title = '\xf0\x9f\x94\x8d  Environment Variables  (' .. #choices .. ' vars)',
+      choices = choices,
+      fuzzy = true,
+      fuzzy_description = 'Filter vars... (selection copies key=value)',
+      action = wezterm.action_callback(function(w2, _, id, _)
+        if id then
+          wezterm.set_clipboard(id)
+          w2:toast_notification('TurtleTerm', 'Copied: ' .. id:sub(1, 80), nil, 1500)
+        end
+      end),
+    }),
+    pane
+  )
+end
+
+-- G7: Docker container quick-exec picker
+function turtle_docker_picker(window, pane)
+  local ok_d, d_out, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'docker-list'})
+  if not ok_d or not d_out then
+    window:toast_notification('TurtleTerm', 'Docker not available', nil, 2000)
+    return
+  end
+  local ddata = {}
+  pcall(function() ddata = wezterm.json_parse(d_out) end)
+  local containers = (ddata.data and ddata.data.containers) or {}
+  if #containers == 0 then
+    window:toast_notification('TurtleTerm', 'No running containers (docker ps returned empty)', nil, 3000)
+    return
+  end
+  local choices = {}
+  for _, c in ipairs(containers) do
+    local name  = c.Names or c.ID or '?'
+    local image = c.Image or ''
+    local status = c.Status or ''
+    table.insert(choices, { id = name, label = string.format('%-30s  %s  (%s)', name, image:sub(1,30), status:sub(1,20)) })
+  end
+  window:perform_action(
+    wezterm.action.InputSelector({
+      title = '\xf0\x9f\x90\xb3  Docker Containers — select to exec bash',
+      choices = choices,
+      fuzzy = true,
+      action = wezterm.action_callback(function(w2, p2, id, _)
+        if id then
+          local ok2, _, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'docker-exec', id})
+          -- pending_command will fire on next update tick
+          w2:toast_notification('TurtleTerm', 'Exec: docker exec -it ' .. id .. ' bash', nil, 3000)
+        end
+      end),
+    }),
+    pane
+  )
+end
+
+-- G8: SSH profile picker from ~/.ssh/config
+function turtle_ssh_picker(window, pane)
+  local ok_s, s_out, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'ssh-profiles'})
+  if not ok_s or not s_out then
+    window:toast_notification('TurtleTerm', 'SSH profiles unavailable', nil, 2000)
+    return
+  end
+  local sdata = {}
+  pcall(function() sdata = wezterm.json_parse(s_out) end)
+  local profiles = (sdata.data and sdata.data.profiles) or {}
+  if #profiles == 0 then
+    window:toast_notification('TurtleTerm', 'No SSH hosts found in ~/.ssh/config', nil, 3000)
+    return
+  end
+  local choices = {}
+  for _, p in ipairs(profiles) do
+    local host = p.host or '?'
+    local hn   = p.hostname or ''
+    local user = p.user or ''
+    local port = p.port or '22'
+    local label = string.format('%-25s  %s%s%s', host, hn ~= '' and (hn .. '  ') or '', user ~= '' and (user .. '@') or '', port ~= '22' and (':' .. port) or '')
+    table.insert(choices, { id = host, label = label })
+  end
+  window:perform_action(
+    wezterm.action.InputSelector({
+      title = '\xf0\x9f\x94\x91  SSH Profiles — select to connect',
+      choices = choices,
+      fuzzy = true,
+      action = wezterm.action_callback(function(w2, p2, id, _)
+        if id then
+          local ok2, _, _ = wezterm.run_child_process({'turtle-agentctl', '--stdio', 'ssh-connect', id})
+          w2:toast_notification('TurtleTerm', 'Connecting: ssh ' .. id, nil, 2000)
+        end
+      end),
+    }),
+    pane
+  )
+end
+
 -- Feature: CTRL+SHIFT+P — preview file (image via imgcat, code via bat/cat)
 local function turtle_preview_file()
   return wezterm.action_callback(function(window, pane)
@@ -1630,6 +1802,14 @@ config.keys = {
   { key = 'm', mods = 'CTRL|SHIFT', action = turtle_plan() },         -- Agent planner: set a goal
   { key = 'n', mods = 'CMD|SHIFT',  action = turtle_plan_next() },    -- Advance to next plan step
   { key = 'i', mods = 'CTRL|SHIFT', action = turtle_theme_picker() }, -- Theme picker (i = interface)
+  -- G2: Pre-exec risk assessment
+  { key = 'z', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_pre_exec_risk(w, p) end) },
+  -- G6: Env var inspector
+  { key = 'v', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_env_inspector(w, p) end) },
+  -- G7: Docker picker
+  { key = 'd', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_docker_picker(w, p) end) },
+  -- G8: SSH profile picker
+  { key = 'h', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_ssh_picker(w, p) end) },
   { key = 's', mods = 'CMD|SHIFT',  action = turtle_workspace_save()    },  -- Save workspace
   { key = 'o', mods = 'CMD|SHIFT',  action = turtle_workspace_restore() },  -- Restore workspace
   {
@@ -1874,6 +2054,25 @@ wezterm.on('update-left-status', function(window, pane)
   -- SynapseIQ diagnostic count — auto-fire on non-zero exit when file paths detected in output
   if exit_content ~= (wezterm.GLOBAL.last_checked_exit or '') then
     wezterm.GLOBAL.last_checked_exit = exit_content
+
+    -- G3: macOS notification for long-running commands
+    if wezterm.GLOBAL._turtle_cmd_start_time then
+      local elapsed = os.time() - wezterm.GLOBAL._turtle_cmd_start_time
+      wezterm.GLOBAL._turtle_cmd_start_time = nil
+      if elapsed >= 10 then  -- only notify for commands that took ≥10 seconds
+        local exit_label = (tonumber(exit_content) or 0) == 0 and 'succeeded' or 'failed'
+        local cmd_label  = wezterm.GLOBAL._turtle_last_cmd or 'Command'
+        -- macOS notification via osascript
+        pcall(function()
+          wezterm.run_child_process({
+            'osascript', '-e',
+            string.format('display notification "%s in %ds" with title "TurtleTerm" subtitle "%s"',
+              exit_label, elapsed, cmd_label:sub(1, 40):gsub('"', '\\"'))
+          })
+        end)
+      end
+    end
+
     local exit_num = tonumber(exit_content) or 0
     if exit_num ~= 0 then
       local last_out = ''
@@ -1932,6 +2131,28 @@ wezterm.on('update-left-status', function(window, pane)
     else
       wezterm.GLOBAL.last_diag_count = nil
     end
+    -- G5: Auto-show git diff after commands that likely modified files
+    if tonumber(exit_content) == 0 then
+      local mod_patterns = { '^git ', '^sed ', '^patch ', '^cp ', '^mv ', '^cat.*>', '^echo.*>', '^tee ', '^touch ', '^mkdir ', '^yarn ', '^npm ', '^pip ' }
+      local last_cmd = wezterm.GLOBAL._turtle_last_cmd or ''
+      local is_modifying = false
+      for _, pat in ipairs(mod_patterns) do
+        if last_cmd:match(pat) then is_modifying = true; break end
+      end
+      if is_modifying then
+        local ok_d, d_out, _ = wezterm.run_child_process({
+          'turtle-agentctl', '--stdio', 'inline-diff', last_cmd
+        })
+        if ok_d and d_out then
+          local ddata = {}
+          pcall(function() ddata = wezterm.json_parse(d_out) end)
+          local stat = (ddata.data and ddata.data.stat) or ''
+          if stat ~= '' then
+            window:toast_notification('\xf0\x9f\x93\x8b  Git Changes', stat:sub(1, 250), nil, 5000)
+          end
+        end
+      end
+    end
   end
   if wezterm.GLOBAL.last_diag_count then
     table.insert(parts, ' \xe2\xac\xa1 ' .. wezterm.GLOBAL.last_diag_count)  -- ⬡ N issues
@@ -1986,7 +2207,36 @@ wezterm.on('update-left-status', function(window, pane)
         end
       end
 
-      pane:send_text(cmd_text)
+      -- G1: Secret detection on command injection
+      if cmd_text ~= '' then
+        local ok_sd, sd_out, _ = wezterm.run_child_process({
+          'turtle-agentctl', '--stdio', 'detect-secrets', cmd_text:sub(1, 500)
+        })
+        if ok_sd and sd_out then
+          local sd = {}
+          pcall(function() sd = wezterm.json_parse(sd_out) end)
+          if sd.data and not sd.data.safe and (sd.data.count or 0) > 0 then
+            local types = {}
+            for _, s in ipairs(sd.data.secrets or {}) do table.insert(types, s.type) end
+            window:toast_notification(
+              '\xe2\x9a\xa0\xef\xb8\x8f  TurtleTerm Secret Detected',
+              string.format('%d potential secret(s): %s\nCommand NOT injected. Check your clipboard.',
+                sd.data.count, table.concat(types, ', '):sub(1, 100)),
+              nil, 10000
+            )
+            return  -- block injection
+          end
+        end
+      end
+
+      -- G3: Record command start time for long-running job notification
+      wezterm.GLOBAL._turtle_cmd_start_time = os.time()
+      wezterm.GLOBAL._turtle_last_cmd = cmd_text:sub(1, 50)
+      if is_plan_step then
+        -- already set above, but also arm plan waiting flag (already done)
+      end
+
+      window:perform_action(act.SendString(cmd_text), pane)
       if not is_plan_step then
         window:toast_notification('TurtleTerm Agent', 'Command ready (press Enter): ' .. cmd_text:sub(1, 60), nil, 4000)
       end
