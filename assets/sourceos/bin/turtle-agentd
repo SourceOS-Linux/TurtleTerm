@@ -32,6 +32,10 @@ from urllib import request as urlrequest
 
 SCHEMA = "sourceos.turtle.agentd.response.v0"
 
+# W1-B: Per-session AI conversation memory (caps at 20 turns per session)
+_SESSION_MEMORY: dict[str, list[dict[str, Any]]] = {}
+_SESSION_MEMORY_MAX_TURNS = 20
+
 # Patterns that should never appear in receipts or logs.
 _SECRET_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(sk-ant-[A-Za-z0-9\-_]{20,})", re.IGNORECASE),
@@ -423,17 +427,22 @@ def noetica_chat(text: str, session_id: str | None = None, context: dict[str, An
     return noetica_post("/api/chat", payload, timeout=5)
 
 
-def _claude_chat(text: str, system: str | None = None, model: str | None = None, timeout: int = 15) -> dict[str, Any] | None:
+def _claude_chat(text: str, system: str | None = None, model: str | None = None, timeout: int = 15, messages: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
     """Call Anthropic Messages API directly. Returns None if ANTHROPIC_API_KEY is unset or call fails."""
     api_key = env("ANTHROPIC_API_KEY")
     if not api_key:
         return None
     base = env("ANTHROPIC_API_URL", "https://api.anthropic.com")
     model = model or env("TURTLE_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+    if messages:
+        # Multi-turn: append current user message to history
+        full_messages = messages + [{"role": "user", "content": text}]
+    else:
+        full_messages = [{"role": "user", "content": text}]
     payload: dict[str, Any] = {
         "model": model,
         "max_tokens": 1024,
-        "messages": [{"role": "user", "content": text}],
+        "messages": full_messages,
     }
     if system:
         payload["system"] = system
@@ -460,6 +469,19 @@ def _claude_chat(text: str, system: str | None = None, model: str | None = None,
                 return {"raw": raw[:500], "source": "claude"}
     except (urlerror.URLError, OSError, TimeoutError):
         return None
+
+
+def _session_memory_append(session_id: str, role: str, content: str) -> None:
+    """Append a message to session memory, evicting oldest if over cap."""
+    mem = _SESSION_MEMORY.setdefault(session_id, [])
+    mem.append({"role": role, "content": content[:2000]})
+    while len(mem) > _SESSION_MEMORY_MAX_TURNS * 2:  # *2 for user+assistant pairs
+        mem.pop(0)
+
+
+def _session_memory_get(session_id: str) -> list[dict[str, Any]]:
+    """Return conversation history for a session (for multi-turn AI calls)."""
+    return list(_SESSION_MEMORY.get(session_id, []))
 
 
 def smart_chat(
@@ -609,17 +631,44 @@ def surface_by_id(surface_id: str | None) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 def _detect_project_type(cwd: str) -> str:
-    """Detect project type from directory contents."""
+    """Detect project type and active environment managers from directory contents."""
     checks = [
         ("package.json", "Node.js/npm"), ("pyproject.toml", "Python"),
         ("setup.py", "Python"), ("Cargo.toml", "Rust"), ("go.mod", "Go"),
         ("Gemfile", "Ruby"), ("pom.xml", "Java/Maven"), ("Makefile", "Make"),
+        ("build.gradle", "Java/Gradle"), ("CMakeLists.txt", "C++/CMake"),
+        ("Dockerfile", "Docker"), ("docker-compose.yml", "Docker Compose"),
+        ("terraform.tf", "Terraform"), (".terraform", "Terraform"),
     ]
+    env_managers = []
     p = Path(cwd)
+    project_type = ""
     for fname, label in checks:
         if (p / fname).exists():
-            return label
-    return ""
+            project_type = label
+            break
+
+    # Detect active version/env managers
+    if (p / ".nvmrc").exists() or (p / ".node-version").exists():
+        env_managers.append("nvm")
+    if (p / ".mise.toml").exists() or (p / ".tool-versions").exists():
+        env_managers.append("mise")
+    if (p / ".python-version").exists():
+        env_managers.append("pyenv")
+    if (p / ".envrc").exists():
+        env_managers.append("direnv")
+    if (p / "Pipfile").exists():
+        env_managers.append("pipenv")
+    if (p / "poetry.lock").exists():
+        env_managers.append("poetry")
+    # Monorepo detection
+    if (p / "pnpm-workspace.yaml").exists() or (p / "lerna.json").exists():
+        env_managers.append("monorepo")
+
+    parts = [project_type] if project_type else []
+    if env_managers:
+        parts.append("+" + "+".join(env_managers))
+    return " ".join(parts)
 
 
 def _adaptive_plan_step(goal: str, step_idx: int, step: dict[str, Any], step_output: str) -> dict[str, Any]:
@@ -986,7 +1035,8 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         system_prompt = (
             "You are a terminal intelligence assistant. Explain what the following terminal output "
             "or selected text means, in 2-4 concise sentences. Identify errors, key data, or "
-            "actionable next steps if relevant. Be direct and technical."
+            "actionable next steps if relevant. Be direct and technical. "
+            "At the end of your response, if a fix or corrected command is applicable, add a line: FIX: <the corrected command>"
         )
         ctx_suffix = ""
         if git.get("git_branch"):
@@ -1009,10 +1059,24 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
                 or ai_resp.get("content")
                 or ai_resp.get("raw")
             )
+        # Extract fix command if AI provided one
+        fix_command = ""
+        if explanation:
+            import re as _re_fix
+            fix_match = _re_fix.search(r'^FIX:\s*(.+)$', explanation, _re_fix.MULTILINE)
+            if fix_match:
+                fix_command = fix_match.group(1).strip()
+                # Remove the FIX line from the explanation
+                explanation = _re_fix.sub(r'\nFIX:.*$', '', explanation, flags=_re_fix.MULTILINE).strip()
+        sid = request.get("session_id") or env("SOURCEOS_TERMINAL_SESSION_ID", "default")
+        _session_memory_append(sid, "user", f"Explain this terminal output:\n{text[:500]}")
+        if explanation:
+            _session_memory_append(sid, "assistant", explanation[:500])
         source = (ai_resp or {}).get("source", "unknown") if ai_resp else "none"
         return response("explain_selection", {
             "text": text[:200],
             "explanation": explanation or "(no AI backend reachable — set ANTHROPIC_API_KEY or start Noetica on :8080)",
+            "fix_command": fix_command,
             "source": source,
             "ai_response": ai_resp,
         })
@@ -1042,12 +1106,19 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         if session_ctx:
             ctx_suffix += f"\n\n{session_ctx}"
         user_prompt = f"Request: {text}{ctx_suffix}"
-        ai_resp = smart_chat(
-            user_prompt,
-            system=system_prompt,
-            session_id=env("SOURCEOS_TERMINAL_SESSION_ID"),
-            context=context,
-        )
+        sid = request.get("session_id") or env("SOURCEOS_TERMINAL_SESSION_ID", "default")
+        hist = _session_memory_get(sid)
+        ai_resp = _claude_chat(user_prompt, system=system_prompt, messages=hist if hist else None)
+        if ai_resp is None:
+            ai_resp = smart_chat(
+                user_prompt,
+                system=system_prompt,
+                session_id=env("SOURCEOS_TERMINAL_SESSION_ID"),
+                context=context,
+            )
+        if ai_resp:
+            _session_memory_append(sid, "user", text[:300])
+            _session_memory_append(sid, "assistant", (ai_resp.get("response") or "")[:300])
         command = None
         if ai_resp:
             raw = (
@@ -1404,6 +1475,206 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         _emit_plan_event("plan_aborted", goal=goal)
         return response("plan_abort", {"status": "aborted"})
 
+    if action in ("events_since", "terminal_events_since"):
+        since_ts = float(request.get("since", 0))
+        sid_filter = request.get("session_id") or None
+        type_filter: list[str] | None = request.get("event_types") or None
+        events = read_ndjson(event_stream_path(), limit=500)
+        matching = []
+        for ev in events:
+            ts = ev.get("ts") or ev.get("timestamp") or 0
+            if ts <= since_ts:
+                continue
+            if sid_filter and ev.get("session_id") != sid_filter:
+                continue
+            if type_filter and ev.get("event_type") not in type_filter:
+                continue
+            matching.append(ev)
+        last_ts = matching[-1].get("ts", 0) if matching else since_ts
+        return response("events_since", {"events": matching[-100:], "count": len(matching), "latest_ts": last_ts})
+
+    if action in ("wait_for_command", "terminal_wait_for_command"):
+        timeout_s = min(float(request.get("timeout", 30.0)), 120.0)
+        sid_filter = request.get("session_id") or None
+        import time as _time_wfc
+        deadline = _time_wfc.monotonic() + timeout_s
+        last_seen_ts: float = request.get("since", 0.0)
+        while _time_wfc.monotonic() < deadline:
+            events = read_ndjson(event_stream_path(), limit=200)
+            completed = [
+                e for e in events
+                if e.get("event_type") == "command.completed"
+                and (e.get("ts") or 0) > last_seen_ts
+                and (not sid_filter or e.get("session_id") == sid_filter)
+            ]
+            if completed:
+                ev = completed[-1]
+                return response("wait_for_command", {
+                    "event": ev,
+                    "exit_code": ev.get("exit_code"),
+                    "command": ev.get("command"),
+                    "session_id": ev.get("session_id"),
+                    "timed_out": False,
+                })
+            _time_wfc.sleep(0.5)
+        return response("wait_for_command", {"timed_out": True, "timeout_s": timeout_s})
+
+    if action == "bookmark_add":
+        cmd = request.get("command", "").strip()
+        if not cmd:
+            return response("error", {"message": "command required"}, status="error")
+        bfile = Path.home() / ".config" / "turtleterm" / "bookmarks.json"
+        bfile.parent.mkdir(parents=True, exist_ok=True)
+        bookmarks: list[dict[str, Any]] = []
+        if bfile.exists():
+            try:
+                bookmarks = json.loads(bfile.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        if any(b.get("cmd") == cmd for b in bookmarks):
+            return response("bookmark_add", {"cmd": cmd, "already_exists": True})
+        import time as _time_bm
+        bookmarks.append({"cmd": cmd, "added": int(_time_bm.time()), "note": request.get("note", "")})
+        bfile.write_text(json.dumps(bookmarks, indent=2))
+        return response("bookmark_add", {"cmd": cmd, "total": len(bookmarks)})
+
+    if action == "bookmark_list":
+        bfile = Path.home() / ".config" / "turtleterm" / "bookmarks.json"
+        bookmarks = []
+        if bfile.exists():
+            try:
+                bookmarks = json.loads(bfile.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return response("bookmark_list", {"bookmarks": bookmarks, "count": len(bookmarks)})
+
+    if action == "bookmark_remove":
+        cmd = request.get("command", "").strip()
+        bfile = Path.home() / ".config" / "turtleterm" / "bookmarks.json"
+        bookmarks = []
+        if bfile.exists():
+            try:
+                bookmarks = json.loads(bfile.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        original_len = len(bookmarks)
+        bookmarks = [b for b in bookmarks if b.get("cmd") != cmd]
+        bfile.write_text(json.dumps(bookmarks, indent=2))
+        return response("bookmark_remove", {"removed": original_len - len(bookmarks), "remaining": len(bookmarks)})
+
+    if action in ("semantic_history", "semantic-history"):
+        query = request.get("query", "").strip()
+        commands: list[str] = request.get("commands", [])
+        limit = min(int(request.get("limit", 30)), 50)
+        if not commands:
+            return response("semantic_history", {"ranked": [], "query": query})
+        if not query:
+            return response("semantic_history", {"ranked": commands[:limit], "query": query})
+        # Ask AI to rank
+        cmd_block = "\n".join(f"{i+1}. {c}" for i, c in enumerate(commands[:50]))
+        system = (
+            "You are a shell history ranking assistant. "
+            "Given a user query and a numbered list of shell commands, "
+            "return ONLY a JSON array of the 20 most relevant commands in ranked order. "
+            "No explanation, no markdown, just the JSON array of strings."
+        )
+        user_text = f"Query: {query}\n\nCommands:\n{cmd_block}"
+        ai_resp = _claude_chat(user_text, system=system, timeout=10)
+        ranked = commands[:limit]
+        if ai_resp:
+            import re as _re_hist
+            raw = ai_resp.get("response") or ""
+            m = _re_hist.search(r'\[.*\]', raw, _re_hist.DOTALL)
+            if m:
+                try:
+                    ranked = json.loads(m.group(0))[:limit]
+                except json.JSONDecodeError:
+                    pass
+        return response("semantic_history", {"ranked": ranked, "query": query})
+
+    if action in ("runbook_list", "runbook-list"):
+        search_dirs = [
+            Path(request.get("dir", ".")) / ".turtle" / "runbooks",
+            Path.home() / ".config" / "turtleterm" / "runbooks",
+        ]
+        runbooks = []
+        for d in search_dirs:
+            if d.exists():
+                for f in sorted(d.glob("*.yaml")) + sorted(d.glob("*.yml")):
+                    try:
+                        import importlib.util as _ilu  # noqa: F401
+                        # Try yaml, fall back to simple parse
+                        try:
+                            import yaml as _yaml
+                            data = _yaml.safe_load(f.read_text())
+                        except ImportError:
+                            data = {"name": f.stem, "description": "", "steps": []}
+                        runbooks.append({
+                            "name": data.get("name", f.stem),
+                            "description": data.get("description", ""),
+                            "steps": len(data.get("steps", [])),
+                            "file": str(f),
+                        })
+                    except Exception:  # noqa: BLE001
+                        runbooks.append({"name": f.stem, "file": str(f), "steps": 0})
+        return response("runbook_list", {"runbooks": runbooks, "count": len(runbooks)})
+
+    if action in ("runbook_show", "runbook-show"):
+        name = request.get("name", "").strip()
+        search_dirs = [
+            Path(request.get("dir", ".")) / ".turtle" / "runbooks",
+            Path.home() / ".config" / "turtleterm" / "runbooks",
+        ]
+        for d in search_dirs:
+            for ext in (".yaml", ".yml"):
+                f = d / (name + ext)
+                if f.exists():
+                    try:
+                        try:
+                            import yaml as _yaml2
+                            data = _yaml2.safe_load(f.read_text())
+                        except ImportError:
+                            return response("runbook_show", {"raw": f.read_text()})
+                        return response("runbook_show", {"runbook": data})
+                    except Exception:  # noqa: BLE001
+                        pass
+        return response("error", {"message": f"runbook not found: {name}"}, status="error")
+
+    if action in ("runbook_run", "runbook-run"):
+        name = request.get("name", "").strip()
+        search_dirs = [
+            Path(request.get("dir", ".")) / ".turtle" / "runbooks",
+            Path.home() / ".config" / "turtleterm" / "runbooks",
+        ]
+        rb_data: dict[str, Any] | None = None
+        for d in search_dirs:
+            for ext in (".yaml", ".yml"):
+                f = d / (name + ext)
+                if f.exists():
+                    try:
+                        try:
+                            import yaml as _yaml3
+                            rb_data = _yaml3.safe_load(f.read_text())
+                        except ImportError:
+                            return response("error", {"message": "PyYAML not installed: pip install pyyaml"}, status="error")
+                        break
+                    except Exception:  # noqa: BLE001
+                        pass
+            if rb_data:
+                break
+        if not rb_data:
+            return response("error", {"message": f"runbook not found: {name}"}, status="error")
+        # Delegate to plan_execute with runbook steps
+        steps = rb_data.get("steps", [])
+        goal  = rb_data.get("description", name)
+        plan_request = {
+            "action": "plan_execute",
+            "goal": goal,
+            "steps": [{"command": s.get("cmd", s) if isinstance(s, dict) else str(s),
+                        "description": s.get("desc", "") if isinstance(s, dict) else ""} for s in steps],
+        }
+        return handle_request(plan_request)
+
     return response("error", {"message": f"unknown action: {action}"}, status="error")
 
 
@@ -1494,16 +1765,79 @@ def serve_http(port: int) -> int:
     return 0
 
 
+def _install_launchd() -> int:
+    """Install a launchd plist so agentd auto-starts on login (macOS only)."""
+    import platform, shutil
+    if platform.system() != "Darwin":
+        print(json.dumps({"status": "error", "message": "launchd only available on macOS"}))
+        return 1
+    agentd_path = shutil.which("turtle-agentd") or str(Path(__file__).resolve())
+    plist_dir  = Path.home() / "Library" / "LaunchAgents"
+    plist_path = plist_dir / "ai.sourceos.turtle-agentd.plist"
+    plist_dir.mkdir(parents=True, exist_ok=True)
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.sourceos.turtle-agentd</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{agentd_path}</string>
+        <string>--http</string>
+        <string>7722</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{Path.home()}/.local/state/sourceos/turtle-agentd.log</string>
+    <key>StandardErrorPath</key>
+    <string>{Path.home()}/.local/state/sourceos/turtle-agentd.err</string>
+</dict>
+</plist>"""
+    plist_path.write_text(plist_content)
+    import subprocess as _sp_ld
+    _sp_ld.run(["launchctl", "load", "-w", str(plist_path)], check=False)
+    print(json.dumps({
+        "status": "ok", "message": "launchd plist installed",
+        "plist": str(plist_path),
+        "hint": "turtle-agentd will now auto-start on login and restart if it crashes",
+    }, indent=2))
+    return 0
+
+
+def _uninstall_launchd() -> int:
+    plist_path = Path.home() / "Library" / "LaunchAgents" / "ai.sourceos.turtle-agentd.plist"
+    if not plist_path.exists():
+        print(json.dumps({"status": "error", "message": "plist not found"}))
+        return 1
+    import subprocess as _sp_ld2
+    _sp_ld2.run(["launchctl", "unload", str(plist_path)], check=False)
+    plist_path.unlink()
+    print(json.dumps({"status": "ok", "message": "launchd plist removed"}))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="TurtleTerm local agent gateway v0")
     parser.add_argument("--stdio", action="store_true", help="read one JSON request from stdin and write one JSON response")
     parser.add_argument("--socket", default=str(default_socket_path()), help="Unix socket path for daemon mode")
     parser.add_argument("--http", type=int, nargs="?", const=7722, metavar="PORT",
                         help="Start persistent HTTP daemon on PORT (default: 7722)")
+    parser.add_argument("--install-launchd", action="store_true",
+                        help="Install launchd plist for auto-start on login (macOS only)")
+    parser.add_argument("--uninstall-launchd", action="store_true",
+                        help="Remove the launchd plist")
     args = parser.parse_args(argv)
 
     if args.http is not None:
         return serve_http(args.http)
+    if args.install_launchd:
+        return _install_launchd()
+    if args.uninstall_launchd:
+        return _uninstall_launchd()
     if args.stdio:
         return serve_stdio()
     return serve_socket(Path(args.socket))

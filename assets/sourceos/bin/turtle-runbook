@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""turtle-runbook — Git-native runbook runner for TurtleTerm.
+
+Runbooks are YAML files stored in .turtle/runbooks/ (project) or
+~/.config/turtleterm/runbooks/ (user-global).
+
+Format:
+  name: deploy-staging
+  description: Deploy app to staging
+  steps:
+    - cmd: npm run build
+      desc: Build production bundle
+    - cmd: docker build -t app:staging .
+      desc: Build Docker image
+
+Usage:
+  turtle-runbook list              List available runbooks
+  turtle-runbook show NAME         Show runbook steps
+  turtle-runbook run NAME          Run as a plan (injects steps to terminal)
+  turtle-runbook create NAME       Interactive runbook creation wizard
+"""
+from __future__ import annotations
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+
+def agentd(payload: dict) -> dict | None:
+    try:
+        r = subprocess.run(
+            [sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=15,
+        )
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def cmd_list(args: list[str]) -> int:
+    d = args[0] if args else "."
+    r = agentd({"action": "runbook_list", "dir": d})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr)
+        return 1
+    runbooks = r.get("data", {}).get("runbooks", [])
+    if not runbooks:
+        print("No runbooks found.")
+        print(f"Create one in .turtle/runbooks/ or ~/.config/turtleterm/runbooks/")
+        return 0
+    print(f"{'NAME':<30}  {'STEPS':>5}  DESCRIPTION")
+    print("-" * 70)
+    for rb in runbooks:
+        print(f"{rb['name']:<30}  {rb.get('steps',0):>5}  {rb.get('description','')[:35]}")
+    return 0
+
+
+def cmd_show(args: list[str]) -> int:
+    if not args:
+        print("Usage: turtle-runbook show NAME", file=sys.stderr)
+        return 1
+    r = agentd({"action": "runbook_show", "name": args[0]})
+    if not r or r.get("status") != "ok":
+        print(f"Error: {(r or {}).get('data', {}).get('message', 'not found')}", file=sys.stderr)
+        return 1
+    rb = r.get("data", {}).get("runbook", {})
+    print(f"\n  {rb.get('name', args[0])}")
+    print(f"  {rb.get('description', '')}\n")
+    for i, step in enumerate(rb.get("steps", []), 1):
+        cmd  = step.get("cmd", step) if isinstance(step, dict) else str(step)
+        desc = step.get("desc", "") if isinstance(step, dict) else ""
+        print(f"  {i:2}.  {desc or cmd}")
+        if desc:
+            print(f"       $ {cmd}")
+    print()
+    return 0
+
+
+def cmd_run(args: list[str]) -> int:
+    if not args:
+        print("Usage: turtle-runbook run NAME", file=sys.stderr)
+        return 1
+    name = args[0]
+    print(f"Submitting runbook '{name}' as plan...")
+    r = agentd({"action": "runbook_run", "name": name})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr)
+        return 1
+    if r.get("status") != "ok":
+        msg = (r.get("data") or {}).get("message", "unknown error")
+        print(f"Error: {msg}", file=sys.stderr)
+        return 1
+    plan = r.get("data", {})
+    print(f"Plan created: {plan.get('goal', name)}")
+    print(f"  Steps: {len(plan.get('steps', []))}")
+    print(f"  First command will appear in terminal — press Enter to execute.")
+    return 0
+
+
+def cmd_create(args: list[str]) -> int:
+    if not args:
+        print("Usage: turtle-runbook create NAME", file=sys.stderr)
+        return 1
+    name = args[0]
+    print(f"Creating runbook: {name}")
+    description = input("Description: ").strip()
+    steps = []
+    print("Enter steps (empty cmd to finish):")
+    while True:
+        cmd = input(f"  Step {len(steps)+1} cmd: ").strip()
+        if not cmd:
+            break
+        desc = input(f"  Step {len(steps)+1} desc: ").strip()
+        steps.append({"cmd": cmd, "desc": desc})
+    if not steps:
+        print("No steps entered, runbook not saved.")
+        return 1
+    rb_dir = Path(".turtle") / "runbooks"
+    rb_dir.mkdir(parents=True, exist_ok=True)
+    rb_file = rb_dir / f"{name}.yaml"
+    lines = [f"name: {name}", f"description: {description}", "steps:"]
+    for s in steps:
+        lines.append(f"  - cmd: {s['cmd']}")
+        if s["desc"]:
+            lines.append(f"    desc: {s['desc']}")
+    rb_file.write_text("\n".join(lines) + "\n")
+    print(f"Saved: {rb_file}")
+    print(f"Run with: turtle-runbook run {name}")
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    subcmd = args[0]
+    rest   = args[1:]
+    if subcmd == "list":
+        return cmd_list(rest)
+    if subcmd == "show":
+        return cmd_show(rest)
+    if subcmd == "run":
+        return cmd_run(rest)
+    if subcmd == "create":
+        return cmd_create(rest)
+    print(f"Unknown command: {subcmd}. Use: list, show, run, create", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

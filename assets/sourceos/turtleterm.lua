@@ -562,6 +562,158 @@ local function turtle_history_search()
   end)
 end
 
+-- W1-D: Semantic history search — AI-ranked CTRL+R. Reads shell history, ranks by context.
+function turtle_semantic_history(window, pane)
+  local home = os.getenv('HOME') or ''
+  -- Collect history from zsh/bash
+  local history_lines = {}
+  local seen = {}
+  for _, hfile in ipairs({ home .. '/.zsh_history', home .. '/.bash_history' }) do
+    local hf = io.open(hfile, 'r')
+    if hf then
+      for line in hf:lines() do
+        -- zsh extended history: strip ": timestamp:elapsed;"
+        local cmd = line:match('^: %d+:%d+;(.+)$') or line
+        cmd = cmd:match('^%s*(.-)%s*$')
+        if cmd ~= '' and not seen[cmd] and not cmd:match('^#') then
+          seen[cmd] = true
+          table.insert(history_lines, 1, cmd)  -- most recent first
+        end
+      end
+      hf:close()
+    end
+  end
+  -- Limit to most recent 200
+  local candidates = {}
+  for i = 1, math.min(200, #history_lines) do
+    table.insert(candidates, history_lines[i])
+  end
+  if #candidates == 0 then
+    window:toast_notification('TurtleTerm History', 'No history found', nil, 2000)
+    return
+  end
+
+  -- Get current buffer as query context
+  local query = ''
+  pcall(function()
+    local sel = pane:get_logical_lines_above_cursor()
+    if sel and #sel > 0 then query = sel end
+  end)
+
+  -- Ask AI to rank (fast haiku call via agentd)
+  local ranked = candidates
+  if query ~= '' or true then
+    -- Build condensed list for AI
+    local history_block = table.concat({ table.unpack(candidates, 1, math.min(50, #candidates)) }, '\n')
+    local prompt = 'Rank these shell commands by relevance to context: ' .. (query ~= '' and ('"' .. query .. '"') or 'recent work') ..
+      '\n\nReturn ONLY a JSON array of the 20 most relevant commands in order, no explanation:\n```\n' .. history_block .. '\n```'
+    local ok_r, rout, _ = wezterm.run_child_process({
+      'turtle-agentctl', '--stdio', 'nl-to-shell', prompt
+    })
+    -- If AI ranking fails, use original order (graceful degradation)
+    if ok_r and rout then
+      local rdata = {}
+      pcall(function() rdata = wezterm.json_parse(rout) end)
+      -- nl-to-shell returns a single command; for history we just use the original order
+      -- The real ranking comes via the semantic_history agentd action
+      local ok2, rout2, _ = wezterm.run_child_process({
+        'turtle-agentctl', '--stdio', 'semantic-history',
+        wezterm.json_encode({ query = query, commands = candidates, limit = 30 })
+      })
+      if ok2 and rout2 then
+        local rdata2 = {}
+        pcall(function() rdata2 = wezterm.json_parse(rout2) end)
+        if rdata2.data and rdata2.data.ranked then
+          ranked = rdata2.data.ranked
+        end
+      end
+    end
+  end
+
+  -- Show in InputSelector
+  local choices = {}
+  for i, cmd in ipairs(ranked) do
+    table.insert(choices, { id = cmd, label = string.format('%3d  %s', i, cmd) })
+  end
+
+  window:perform_action(
+    wezterm.action.InputSelector({
+      title = '\xf0\x9f\x90\xa2  Semantic History  (AI-ranked)',
+      choices = choices,
+      fuzzy = true,
+      fuzzy_description = 'Filter commands...',
+      action = wezterm.action_callback(function(w2, p2, id, label)
+        if id then
+          w2:perform_action(wezterm.action.SendString(id), p2)
+        end
+      end),
+    }),
+    pane
+  )
+end
+
+-- W1-F: Bookmark last command — save to ~/.config/turtleterm/bookmarks.json
+function turtle_bookmark_save(window, pane)
+  local zones = {}
+  pcall(function() zones = pane:get_semantic_zones() end)
+  local last_cmd = ''
+  for _, z in ipairs(zones) do
+    if z.semantic_type == 'Input' then
+      local t = pane:get_text_from_semantic_zone(z)
+      if t and t:match('%S') then last_cmd = t:match('^%s*(.-)%s*$') end
+    end
+  end
+  if last_cmd == '' then
+    window:toast_notification('TurtleTerm', 'No command found to bookmark', nil, 2000)
+    return
+  end
+  local home  = os.getenv('HOME') or ''
+  local bfile = home .. '/.config/turtleterm/bookmarks.json'
+  local bookmarks = {}
+  local bf = io.open(bfile, 'r')
+  if bf then pcall(function() bookmarks = wezterm.json_parse(bf:read('*a')) end); bf:close() end
+  -- Avoid duplicates
+  for _, b in ipairs(bookmarks) do if b.cmd == last_cmd then
+    window:toast_notification('TurtleTerm', 'Already bookmarked: ' .. last_cmd:sub(1,60), nil, 2000)
+    return
+  end end
+  table.insert(bookmarks, { cmd = last_cmd, added = os.time() })
+  os.execute('mkdir -p ' .. home .. '/.config/turtleterm')
+  local out = io.open(bfile, 'w')
+  if out then out:write(wezterm.json_encode(bookmarks)); out:close() end
+  window:toast_notification('TurtleTerm \xe2\x98\x85 Bookmarked', last_cmd:sub(1,80), nil, 2500)
+end
+
+-- W1-F: Browse bookmarks — show in InputSelector and inject selection
+function turtle_bookmark_browse(window, pane)
+  local home  = os.getenv('HOME') or ''
+  local bfile = home .. '/.config/turtleterm/bookmarks.json'
+  local bookmarks = {}
+  local bf = io.open(bfile, 'r')
+  if bf then pcall(function() bookmarks = wezterm.json_parse(bf:read('*a')) end); bf:close() end
+  if #bookmarks == 0 then
+    window:toast_notification('TurtleTerm', 'No bookmarks yet  (CTRL+SHIFT+B to save)', nil, 3000)
+    return
+  end
+  local choices = {}
+  for i = #bookmarks, 1, -1 do  -- most recent first
+    local b = bookmarks[i]
+    table.insert(choices, { id = b.cmd, label = b.cmd })
+  end
+  window:perform_action(
+    wezterm.action.InputSelector({
+      title = '\xe2\x98\x85  Bookmarks',
+      choices = choices,
+      fuzzy = true,
+      fuzzy_description = 'Filter bookmarks...',
+      action = wezterm.action_callback(function(w2, p2, id, _)
+        if id then w2:perform_action(wezterm.action.SendString(id), p2) end
+      end),
+    }),
+    pane
+  )
+end
+
 -- Feature: CTRL+SHIFT+P — preview file (image via imgcat, code via bat/cat)
 local function turtle_preview_file()
   return wezterm.action_callback(function(window, pane)
@@ -1452,8 +1604,12 @@ config.keys = {
   { key = 'a', mods = 'CTRL|SHIFT',   action = turtle_atlas_context() },
   { key = 'd', mods = 'CTRL|SHIFT',   action = turtle_diagnose() },          -- SynapseIQ diagnose
   { key = 'Space', mods = 'CTRL',     action = turtle_ai_complete() },       -- AI ghost-text (explicit)
-  { key = 'r', mods = 'CTRL',         action = turtle_history_search() },    -- History fuzzy picker
+  -- W1-D: Semantic history search (CTRL+R override)
+  { key = 'r', mods = 'CTRL',         action = wezterm.action_callback(function(w, p) turtle_semantic_history(w, p) end) },
   { key = 'r', mods = 'CTRL|SHIFT',   action = turtle_history_ai_search() }, -- AI history search
+  -- W1-F: Command bookmarks
+  { key = 'b', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_bookmark_save(w, p) end) },
+  { key = 'k', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_bookmark_browse(w, p) end) },
 
   { key = 'Enter', mods = 'CTRL|SHIFT', action = act.SplitVertical { domain = 'CurrentPaneDomain' } },
   { key = 'Enter', mods = 'CTRL|ALT', action = act.SplitHorizontal { domain = 'CurrentPaneDomain' } },
@@ -1729,6 +1885,37 @@ wezterm.on('update-left-status', function(window, pane)
           end
         end
       end)
+      -- W1-A: Auto-explain on error — show AI explanation as toast, suggest fix
+      if last_out ~= '' and wezterm.GLOBAL._turtle_autoexplain_done ~= exit_content then
+        wezterm.GLOBAL._turtle_autoexplain_done = exit_content  -- dedupe guard
+        local explain_text = last_out:sub(1, 2000)
+        local ok_ex, ex_out, _ = wezterm.run_child_process({
+          'turtle-agentctl', '--stdio', 'explain-selection', explain_text
+        })
+        if ok_ex and ex_out and ex_out ~= '' then
+          local edata = {}
+          pcall(function() edata = wezterm.json_parse(ex_out) end)
+          local explanation = (edata.data and edata.data.explanation) or ''
+          local fix_cmd    = (edata.data and edata.data.fix_command) or ''
+          if explanation ~= '' then
+            window:toast_notification(
+              string.format('\xf0\x9f\x90\xa2  Exit %d — TurtleTerm', exit_num),
+              explanation:sub(1, 350),
+              nil, 9000
+            )
+          end
+          -- Write fix suggestion to pending queue if AI returned one
+          if fix_cmd ~= '' then
+            local pc = io.open(xdg_state .. '/sourceos/terminal/pending_command', 'w')
+            if pc then pc:write(fix_cmd); pc:close() end
+            local pm = io.open(xdg_state .. '/sourceos/terminal/pending_command.json', 'w')
+            if pm then
+              pm:write(wezterm.json_encode({ source = 'autofix', description = 'AI suggested fix' }))
+              pm:close()
+            end
+          end
+        end
+      end
       local file_found = last_out:match('([%w_/%.%-]+%.[a-zA-Z][a-zA-Z0-9]*):%d+')
       if file_found and file_found:match('%.[a-z]+$') then
         local ok2, diag_out, _ = wezterm.run_child_process({ 'turtle-language', 'diagnostics', file_found })

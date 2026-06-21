@@ -481,15 +481,23 @@ def test_mcp_plan_tools() -> None:
         else:
             fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
 
-    # Check _synapseiq helper and version 0.2.0
+    for tool in ('terminal_events_since', 'terminal_wait_for_command',
+                 'bookmark_add', 'bookmark_list', 'bookmark_remove',
+                 'runbook_list', 'runbook_run', 'runbook_show'):
+        if tool in content:
+            ok(f'mcp tool: {tool}')
+        else:
+            fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
+
+    if '0.3.0' in content:
+        ok('mcp version 0.3.0')
+    else:
+        fail('mcp version 0.3.0', 'version not updated')
+
     if '_synapseiq' in content:
         ok('mcp _synapseiq helper')
     else:
         fail('mcp _synapseiq helper', 'not found')
-    if '0.2.0' in content:
-        ok('mcp version 0.2.0')
-    else:
-        fail('mcp version 0.2.0', 'version not updated')
 
 
 def test_neovim_plugin() -> None:
@@ -530,6 +538,7 @@ def test_completions() -> None:
     for fname, needle in [
         ('turtle-agentctl-completions.zsh',  '_turtle_agentctl'),
         ('turtle-agentctl-completions.bash', '_turtle_agentctl_completions'),
+        ('turtle-agentctl-completions.fish', 'turtle-agentctl'),
     ]:
         p = shell_dir / fname
         if p.exists():
@@ -592,6 +601,90 @@ def test_lua_config() -> None:
         skip('lua config checks', 'turtleterm.lua not found')
 
 
+def test_update_notifier() -> None:
+    """W2-F — Check for newer TurtleTerm version via GitHub API."""
+    import urllib.request as _ur
+    import urllib.error as _ue
+    try:
+        with _ur.urlopen(
+            "https://api.github.com/repos/SourceOS-Linux/TurtleTerm/releases/latest",
+            timeout=4,
+        ) as resp:
+            data = json.loads(resp.read())
+            tag = data.get("tag_name", "")
+            # strip prefix like 'turtle-term-v' or 'v'
+            latest = tag.lstrip("v")
+            for prefix in ("turtle-term-v", "turtle-term-"):
+                if latest.startswith(prefix):
+                    latest = latest[len(prefix):]
+            current = "0.5.0"
+            def _ver(v: str) -> tuple:
+                try: return tuple(int(x) for x in v.split("."))
+                except ValueError: return (0,)
+            if latest and _ver(latest) > _ver(current):
+                skip("update notifier", f"upstream release {latest} available (dev is ahead to {current})")
+            else:
+                ok("update notifier", f"dev v{current} ≥ latest release v{latest}")
+    except (_ue.URLError, OSError):
+        skip("update notifier", "GitHub API not reachable (offline or rate-limited)")
+
+
+def test_runbook_script() -> None:
+    """W1-C — turtle-runbook script exists and responds to help."""
+    import subprocess as _sp
+    rb = Path(__file__).parent / "turtle-runbook"
+    if not rb.exists():
+        fail("turtle-runbook script", f"not found at {rb}")
+        return
+    ok("turtle-runbook script", str(rb))
+    r = _sp.run([sys.executable, str(rb), "--help"], capture_output=True, text=True, timeout=5)
+    if "list" in r.stdout and "run" in r.stdout:
+        ok("turtle-runbook --help", "list/run/show/create documented")
+    else:
+        fail("turtle-runbook --help", f"unexpected output: {r.stdout[:100]}")
+
+
+def test_agentd_new_actions() -> None:
+    """W1-B/C/D/F — Test new agentd actions added in supremacy sprint."""
+    # Bookmark round-trip
+    r = agentd({"action": "bookmark_add", "command": "__selftest_bookmark__"})
+    if r and r.get("status") == "ok":
+        ok("agentd bookmark_add")
+    else:
+        fail("agentd bookmark_add", str(r))
+
+    r = agentd({"action": "bookmark_list"})
+    if r and r.get("status") == "ok":
+        bmarks = r.get("data", {}).get("bookmarks", [])
+        if any(b.get("cmd") == "__selftest_bookmark__" for b in bmarks):
+            ok("agentd bookmark_list", f"{len(bmarks)} bookmarks")
+        else:
+            fail("agentd bookmark_list", "selftest bookmark not found")
+    else:
+        fail("agentd bookmark_list", str(r))
+
+    r = agentd({"action": "bookmark_remove", "command": "__selftest_bookmark__"})
+    if r and r.get("status") == "ok":
+        ok("agentd bookmark_remove", f"removed={r.get('data',{}).get('removed',0)}")
+    else:
+        fail("agentd bookmark_remove", str(r))
+
+    # Semantic history (no API key — should return graceful fallback)
+    r = agentd({"action": "semantic_history", "query": "list files", "commands": ["ls -la", "find . -name '*.py'", "git status"], "limit": 3})
+    if r and r.get("status") == "ok":
+        ranked = r.get("data", {}).get("ranked", [])
+        ok("agentd semantic_history", f"{len(ranked)} results (fallback ok without API key)")
+    else:
+        fail("agentd semantic_history", str(r))
+
+    # Runbook list (should return empty list gracefully)
+    r = agentd({"action": "runbook_list", "dir": "/tmp"})
+    if r and r.get("status") == "ok":
+        ok("agentd runbook_list", f"{r.get('data',{}).get('count',0)} runbooks in /tmp")
+    else:
+        fail("agentd runbook_list", str(r))
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -610,6 +703,9 @@ def main() -> int:
     test_plan_subsystem()
     test_mcp_plan_tools()
     test_completions()
+    test_agentd_new_actions()
+    test_runbook_script()
+    test_update_notifier()
     test_neovim_plugin()
     test_language_binary()
     test_lua_config()

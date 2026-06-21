@@ -11,6 +11,8 @@ Tools exposed (all read-only or proposal-only — no ambient shell authority):
   terminal_propose                   Propose a command (records but does not execute).
   terminal_receipts                  List receipt file paths for a session.
   terminal_execute_with_confirmation Inject a command into the terminal for human confirmation.
+  terminal_events_since              Return terminal events after a given timestamp (streaming moat).
+  terminal_wait_for_command          Wait for the next command to complete and return its result.
   language_diagnostics               Diagnostics for a file via SynapseIQ LSP or fallback.
   language_symbols                   Symbol list for a file via SynapseIQ LSP or fallback.
   language_hover                     Hover info (type/docs) for a symbol at a position.
@@ -19,6 +21,12 @@ Tools exposed (all read-only or proposal-only — no ambient shell authority):
   language_format                    Format a source file with the appropriate formatter.
   noetica_status                     Check Noetica reachability.
   noetica_query                      Send a query to Noetica /api/chat.
+  bookmark_add                       Save a shell command to the bookmark list.
+  bookmark_list                      List all saved TurtleTerm command bookmarks.
+  bookmark_remove                    Remove a command from TurtleTerm bookmarks.
+  runbook_list                       List available runbooks from project and user directories.
+  runbook_run                        Run a named runbook as a terminal plan.
+  runbook_show                       Show the steps of a named runbook without running it.
 
 Wiring to Claude Code (add to ~/.claude/settings.json mcpServers):
   {
@@ -359,6 +367,101 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "terminal_events_since",
+        "description": (
+            "Return terminal events (commands run, exits, plan steps) that occurred after a given timestamp. "
+            "Poll this repeatedly to watch terminal state — no competitor exposes this to AI agents. "
+            "Returns NDJSON events with type, session_id, command, exit_code, timestamp."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since_ms": {"type": "number", "description": "Epoch milliseconds. Returns events newer than this. Use 0 for all recent events (last 100)."},
+                "session_id": {"type": "string", "description": "Filter to a specific terminal session. Omit for all sessions."},
+                "event_types": {"type": "array", "items": {"type": "string"}, "description": "Filter to specific event types, e.g. ['command.completed', 'plan.step_started']."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "terminal_wait_for_command",
+        "description": (
+            "Wait up to timeout_ms for the next command to complete in the terminal, then return its exit code and output. "
+            "Use after terminal_execute_with_confirmation to observe the result without polling. "
+            "Times out gracefully and returns partial state."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "timeout_ms": {"type": "number", "description": "Maximum wait time in milliseconds (default 30000, max 120000)."},
+                "session_id": {"type": "string", "description": "Terminal session to monitor. Omit for current session."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "bookmark_add",
+        "description": "Save a shell command to the user's TurtleTerm bookmark list (~/.config/turtleterm/bookmarks.json).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The shell command to bookmark."},
+                "note": {"type": "string", "description": "Optional annotation for this bookmark."},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "bookmark_list",
+        "description": "List all saved TurtleTerm command bookmarks.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "bookmark_remove",
+        "description": "Remove a command from TurtleTerm bookmarks by exact command text.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The exact command text to remove."},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "runbook_list",
+        "description": "List available runbooks from .turtle/runbooks/ (project) and ~/.config/turtleterm/runbooks/ (user). Runbooks are YAML workflow definitions that run as plans.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dir": {"type": "string", "description": "Project directory to search for .turtle/runbooks/. Defaults to current directory."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "runbook_run",
+        "description": "Run a named runbook as a terminal plan. Looks for it in .turtle/runbooks/ or ~/.config/turtleterm/runbooks/. Steps are injected to the terminal sequentially.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Runbook name (without .yaml extension)."},
+                "dir": {"type": "string", "description": "Project directory to search in. Defaults to current directory."},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "runbook_show",
+        "description": "Show the steps of a named runbook without running it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Runbook name (without .yaml extension)."},
+            },
+            "required": ["name"],
+        },
+    },
+    {
         "name": "workspace_list",
         "description": "List saved TurtleTerm workspace layouts (from CMD+SHIFT+S saves). Returns names, tab counts, and save timestamps.",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
@@ -473,6 +576,36 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         return _agentd({"action": "plan_next"})
     if name == "plan_abort":
         return _agentd({"action": "plan_abort"})
+    if name == "terminal_events_since":
+        since_ms = float(arguments.get("since_ms", 0)) / 1000.0  # convert to seconds
+        session_id = arguments.get("session_id", "")
+        event_types = arguments.get("event_types", [])
+        return _agentd({
+            "action": "events_since",
+            "since": since_ms,
+            "session_id": session_id or None,
+            "event_types": event_types or None,
+        })
+    if name == "terminal_wait_for_command":
+        timeout_ms = min(int(arguments.get("timeout_ms", 30000)), 120000)
+        session_id = arguments.get("session_id", "")
+        return _agentd({
+            "action": "wait_for_command",
+            "timeout": timeout_ms / 1000.0,
+            "session_id": session_id or None,
+        })
+    if name == "bookmark_add":
+        return _agentd({"action": "bookmark_add", "command": arguments.get("command", ""), "note": arguments.get("note", "")})
+    if name == "bookmark_list":
+        return _agentd({"action": "bookmark_list"})
+    if name == "bookmark_remove":
+        return _agentd({"action": "bookmark_remove", "command": arguments.get("command", "")})
+    if name == "runbook_list":
+        return _agentd({"action": "runbook_list", "dir": arguments.get("dir", ".")})
+    if name == "runbook_run":
+        return _agentd({"action": "runbook_run", "name": arguments.get("name", ""), "dir": arguments.get("dir", ".")})
+    if name == "runbook_show":
+        return _agentd({"action": "runbook_show", "name": arguments.get("name", "")})
     if name == "workspace_list":
         import os as _os
         ws_dir = Path.home() / ".config" / "turtleterm" / "workspaces"
@@ -513,7 +646,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turtleterm", "version": "0.2.0"},
+                "serverInfo": {"name": "turtleterm", "version": "0.3.0"},
             },
         }
 
