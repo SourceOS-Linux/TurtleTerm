@@ -64,4 +64,10 @@ dhat-heap.json
 /winget-pkgs
 /assets/flatpak/generated-sources.json
 /__pycache__/
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+*.swo
+.vscode/
 /nix/result

@@ -178,7 +178,131 @@ def main(argv: list[str]) -> int:
     sub.add_parser("plan-status", help="show the current plan and step index")
     sub.add_parser("plan-abort", help="cancel the active plan")
 
-    args = parser.parse_args(argv)
+    # G-series bookmark/history
+    bm_add_p = sub.add_parser("bookmark-add")
+    bm_add_p.add_argument("label", nargs="?", default="")
+    bm_add_p.add_argument("command", nargs=argparse.REMAINDER)
+    sub.add_parser("bookmark-list")
+    bm_rm_p = sub.add_parser("bookmark-remove")
+    bm_rm_p.add_argument("id", nargs="?", default="")
+    sem_hist_p = sub.add_parser("semantic-history")
+    sem_hist_p.add_argument("query", nargs=argparse.REMAINDER)
+
+    # G-series security
+    sec_p = sub.add_parser("detect-secrets")
+    sec_p.add_argument("text", nargs=argparse.REMAINDER)
+    risk_p = sub.add_parser("pre-exec-risk")
+    risk_p.add_argument("command", nargs=argparse.REMAINDER)
+    sc_p = sub.add_parser("shellcheck-lint")
+    sc_p.add_argument("text", nargs=argparse.REMAINDER)
+    sub.add_parser("inline-diff")
+    sub.add_parser("env-inspect")
+
+    # G-series docker/ssh
+    sub.add_parser("docker-list")
+    de_p = sub.add_parser("docker-exec")
+    de_p.add_argument("container_id", nargs="?")
+    de_p.add_argument("cmd", nargs=argparse.REMAINDER)
+    dl_p = sub.add_parser("docker-logs")
+    dl_p.add_argument("container_id", nargs="?")
+    sub.add_parser("ssh-profiles")
+    ssh_c_p = sub.add_parser("ssh-connect")
+    ssh_c_p.add_argument("host", nargs="?")
+
+    # G-series events
+    ev_p = sub.add_parser("events-since")
+    ev_p.add_argument("since", nargs="?")
+    ev_p.add_argument("session_id", nargs="?")
+    wfc_p = sub.add_parser("wait-for-command")
+    wfc_p.add_argument("session_id", nargs="?")
+
+    # Runbooks
+    sub.add_parser("runbook-list")
+    rb_run_p = sub.add_parser("runbook-run")
+    rb_run_p.add_argument("name", nargs="?")
+    rb_show_p = sub.add_parser("runbook-show")
+    rb_show_p.add_argument("name", nargs="?")
+
+    # G9-G14
+    al_p = sub.add_parser("alias-learn")
+    al_p.add_argument("original", nargs="?")
+    al_p.add_argument("correction", nargs=argparse.REMAINDER)
+    sub.add_parser("alias-list")
+    aa_p = sub.add_parser("alias-apply")
+    aa_p.add_argument("command", nargs=argparse.REMAINDER)
+    sub.add_parser("git-context")
+    sub.add_parser("session-narrate")
+    sub.add_parser("stop-share")
+    sp_p = sub.add_parser("share-session")
+    sp_p.add_argument("port", nargs="?", type=int, default=7723)
+    sp_p.add_argument("--role", default="writer")
+    sub.add_parser("sync-push")
+    sub.add_parser("sync-pull")
+    v2s_p = sub.add_parser("voice-to-shell")
+    v2s_p.add_argument("duration", nargs="?", type=int, default=4)
+    sub.add_parser("coach-analyze")
+    sps_p = sub.add_parser("smart-paste-sanitize")
+    sps_p.add_argument("text", nargs=argparse.REMAINDER)
+    dvs_p = sub.add_parser("dep-vuln-scan")
+    dvs_p.add_argument("command", nargs=argparse.REMAINDER)
+    sub.add_parser("session-to-pr")
+
+    # T1
+    ma_p = sub.add_parser("memory-add")
+    ma_p.add_argument("key", nargs="?")
+    ma_p.add_argument("value", nargs=argparse.REMAINDER)
+    ml_p = sub.add_parser("memory-list")
+    ml_p.add_argument("query", nargs="?")
+    mf_p = sub.add_parser("memory-forget")
+    mf_p.add_argument("key", nargs="?")
+    ms_p = sub.add_parser("memory-search")
+    ms_p.add_argument("query", nargs=argparse.REMAINDER)
+    pset_p = sub.add_parser("persona-set")
+    pset_p.add_argument("--role")
+    pset_p.add_argument("--stack")
+    pset_p.add_argument("--style")
+    pset_p.add_argument("--tools")
+    pset_p.add_argument("--notes")
+    sub.add_parser("persona-get")
+    sub.add_parser("persona-marketplace-list")
+    pmi_p = sub.add_parser("persona-marketplace-install")
+    pmi_p.add_argument("id", nargs="?")
+
+    # T2
+    sub.add_parser("workflow-detect")
+    ws_p = sub.add_parser("workflow-save")
+    ws_p.add_argument("name", nargs="?")
+    ws_p.add_argument("content", nargs=argparse.REMAINDER)
+    ft_p = sub.add_parser("file-tree")
+    ft_p.add_argument("cwd", nargs="?")
+    sub.add_parser("perf-stats")
+    pr_p = sub.add_parser("perf-record")
+    pr_p.add_argument("command", nargs="?")
+    pr_p.add_argument("wall_ms", nargs="?", type=int, default=0)
+    oe_p = sub.add_parser("output-export")
+    oe_p.add_argument("--format", default="markdown")
+    oe_p.add_argument("--filename", default="turtle-output")
+    oe_p.add_argument("--content", nargs=argparse.REMAINDER)
+    os_p = sub.add_parser("output-search")
+    os_p.add_argument("query", nargs=argparse.REMAINDER)
+
+    # T3
+    sub.add_parser("plugin-list")
+    pi_p = sub.add_parser("plugin-install")
+    pi_p.add_argument("name", nargs="?")
+    pi_p.add_argument("source", nargs="?")
+    tcs_p = sub.add_parser("team-config-set")
+    tcs_p.add_argument("remote", nargs="?")
+    sub.add_parser("team-sync-pull")
+    sub.add_parser("team-runbook-list")
+    sfb_p = sub.add_parser("sftp-browse")
+    sfb_p.add_argument("host", nargs="?")
+    sfb_p.add_argument("path", nargs="?", default="/")
+    sfd_p = sub.add_parser("sftp-download")
+    sfd_p.add_argument("host", nargs="?")
+    sfd_p.add_argument("remote_path", nargs="?")
+
+    args, _remainder = parser.parse_known_args(argv)
 
     if args.command == "ping":
         request = {"action": "ping"}
@@ -279,6 +403,235 @@ def main(argv: list[str]) -> int:
             print(json.dumps({"status": "error", "message": "policy-evaluate-local requires a command"}))
             return 2
         request = {"action": "policy_evaluate_local", "command": joined_cmd}
+    elif args.command == "bookmark-add":
+        request = {"action": "bookmark_add", "label": getattr(args, "label", ""), "command": join_remainder(getattr(args, "command", []))}
+    elif args.command == "bookmark-list":
+        request = {"action": "bookmark_list"}
+    elif args.command == "bookmark-remove":
+        request = {"action": "bookmark_remove", "id": getattr(args, "id", "")}
+    elif args.command == "semantic-history":
+        request = {"action": "semantic_history", "query": join_remainder(getattr(args, "query", []))}
+    elif args.command == "detect-secrets":
+        request = {"action": "detect_secrets", "text": join_remainder(getattr(args, "text", []))}
+    elif args.command == "pre-exec-risk":
+        request = {"action": "pre_exec_risk", "command": join_remainder(getattr(args, "command", []))}
+    elif args.command == "shellcheck-lint":
+        request = {"action": "shellcheck_lint", "text": join_remainder(getattr(args, "text", []))}
+    elif args.command == "inline-diff":
+        request = {"action": "inline_diff", "cwd": os.getcwd()}
+    elif args.command == "env-inspect":
+        request = {"action": "env_inspect", "cwd": os.getcwd()}
+    elif args.command == "docker-list":
+        request = {"action": "docker_list"}
+    elif args.command == "docker-exec":
+        request = {"action": "docker_exec", "container_id": getattr(args, "container_id", ""), "cmd": join_remainder(getattr(args, "cmd", []))}
+    elif args.command == "docker-logs":
+        request = {"action": "docker_logs", "container_id": getattr(args, "container_id", "")}
+    elif args.command == "ssh-profiles":
+        request = {"action": "ssh_profiles"}
+    elif args.command == "ssh-connect":
+        request = {"action": "ssh_connect", "host": getattr(args, "host", "")}
+    elif args.command == "events-since":
+        request = {"action": "events_since", "since": getattr(args, "since", ""), "session_id": getattr(args, "session_id", None)}
+    elif args.command == "wait-for-command":
+        request = {"action": "wait_for_command", "session_id": getattr(args, "session_id", None)}
+    elif args.command == "runbook-list":
+        request = {"action": "runbook_list"}
+    elif args.command == "runbook-run":
+        request = {"action": "runbook_run", "name": getattr(args, "name", "")}
+    elif args.command == "runbook-show":
+        request = {"action": "runbook_show", "name": getattr(args, "name", "")}
+    elif args.command == "alias-learn":
+        request = {"action": "alias_learn", "original": getattr(args, "original", ""), "correction": join_remainder(getattr(args, "correction", []))}
+    elif args.command == "alias-list":
+        request = {"action": "alias_list"}
+    elif args.command == "alias-apply":
+        request = {"action": "alias_apply", "command": join_remainder(getattr(args, "command", []))}
+    elif args.command == "git-context":
+        request = {"action": "git_context", "cwd": os.getcwd()}
+    elif args.command == "session-narrate":
+        request = {"action": "session_narrate"}
+    elif args.command == "share-session":
+        request = {"action": "share_session", "port": getattr(args, "port", 7723), "role": getattr(args, "role", "writer")}
+    elif args.command == "stop-share":
+        request = {"action": "stop_share"}
+    elif args.command == "sync-push":
+        request = {"action": "sync_push", "remote": ""}
+    elif args.command == "sync-pull":
+        request = {"action": "sync_pull"}
+    elif args.command == "voice-to-shell":
+        request = {"action": "voice_to_shell", "duration": getattr(args, "duration", 4)}
+    elif args.command == "coach-analyze":
+        request = {"action": "coach_analyze"}
+    elif args.command == "smart-paste-sanitize":
+        request = {"action": "smart_paste_sanitize", "text": join_remainder(getattr(args, "text", []))}
+    elif args.command == "dep-vuln-scan":
+        request = {"action": "dep_vuln_scan", "command": join_remainder(getattr(args, "command", []))}
+    elif args.command == "session-to-pr":
+        request = {"action": "session_to_pr", "cwd": os.getcwd()}
+    elif args.command == "memory-add":
+        request = {"action": "memory_add", "key": getattr(args, "key", ""), "value": join_remainder(getattr(args, "value", []))}
+    elif args.command == "memory-list":
+        request = {"action": "memory_list", "query": getattr(args, "query", "") or ""}
+    elif args.command == "memory-forget":
+        request = {"action": "memory_forget", "key": getattr(args, "key", "")}
+    elif args.command == "memory-search":
+        request = {"action": "memory_search", "query": join_remainder(getattr(args, "query", []))}
+    elif args.command == "persona-set":
+        request = {"action": "persona_set", "role": getattr(args, "role", ""), "stack": getattr(args, "stack", ""), "style": getattr(args, "style", ""), "preferred_tools": getattr(args, "tools", ""), "notes": getattr(args, "notes", "")}
+    elif args.command == "persona-get":
+        request = {"action": "persona_get"}
+    elif args.command == "persona-marketplace-list":
+        request = {"action": "persona_marketplace_list"}
+    elif args.command == "persona-marketplace-install":
+        request = {"action": "persona_marketplace_install", "id": getattr(args, "id", "")}
+    elif args.command == "workflow-detect":
+        request = {"action": "workflow_detect"}
+    elif args.command == "workflow-save":
+        request = {"action": "workflow_save", "name": getattr(args, "name", ""), "content": join_remainder(getattr(args, "content", []))}
+    elif args.command == "file-tree":
+        request = {"action": "file_tree", "cwd": getattr(args, "cwd", None) or os.getcwd()}
+    elif args.command == "perf-stats":
+        request = {"action": "perf_stats"}
+    elif args.command == "perf-record":
+        request = {"action": "perf_record", "command": getattr(args, "command", ""), "wall_ms": getattr(args, "wall_ms", 0)}
+    elif args.command == "output-export":
+        content_parts = getattr(args, "content", []) or []
+        request = {"action": "output_export", "content": join_remainder(content_parts), "format": getattr(args, "format", "markdown"), "filename": getattr(args, "filename", "turtle-output")}
+    elif args.command == "output-search":
+        request = {"action": "output_search", "query": join_remainder(getattr(args, "query", []))}
+    elif args.command == "plugin-list":
+        request = {"action": "plugin_list"}
+    elif args.command == "plugin-install":
+        request = {"action": "plugin_install", "name": getattr(args, "name", ""), "source": getattr(args, "source", "")}
+    elif args.command == "team-config-set":
+        request = {"action": "team_config_set", "remote": getattr(args, "remote", "")}
+    elif args.command == "team-sync-pull":
+        request = {"action": "team_sync_pull"}
+    elif args.command == "team-runbook-list":
+        request = {"action": "team_runbook_list"}
+    elif args.command == "sftp-browse":
+        request = {"action": "sftp_browse", "host": getattr(args, "host", ""), "path": getattr(args, "path", "/")}
+    elif args.command == "sftp-download":
+        request = {"action": "sftp_download", "host": getattr(args, "host", ""), "remote_path": getattr(args, "remote_path", "")}
+    elif args.command is None and _remainder:
+        # Passthrough: unknown subcommand treated as action name
+        # Converts CLI → JSON payload for agentd
+        raw_action = _remainder[0]
+        pos_args   = [a for a in _remainder[1:] if not a.startswith('-')]
+        flag_args  = [a for a in _remainder[1:] if a.startswith('-')]
+
+        # Build payload from flags: --key value pairs
+        payload: dict[str, Any] = {"action": raw_action}
+        i = 0
+        while i < len(flag_args):
+            if flag_args[i].startswith('--') and i + 1 < len(flag_args) and not flag_args[i+1].startswith('--'):
+                k = flag_args[i].lstrip('-').replace('-', '_')
+                payload[k] = flag_args[i+1]
+                i += 2
+            else:
+                i += 1
+
+        # Map positional args to known field names by action
+        _pos_map: dict[str, list[str]] = {
+            # existing
+            "explain_selection":     ["text"],
+            "explain-selection":     ["text"],
+            "nl_to_shell":           ["text"],
+            "nl-to-shell":           ["text"],
+            "atlas_context":         ["cwd"],
+            "atlas-context":         ["cwd"],
+            # G-series
+            "bookmark_add":          ["label", "command"],
+            "bookmark-add":          ["label", "command"],
+            "bookmark_remove":       ["id"],
+            "bookmark-remove":       ["id"],
+            "semantic_history":      ["query"],
+            "semantic-history":      ["query"],
+            "detect_secrets":        ["text"],
+            "detect-secrets":        ["text"],
+            "pre_exec_risk":         ["command"],
+            "pre-exec-risk":         ["command"],
+            "shellcheck_lint":       ["text"],
+            "shellcheck-lint":       ["text"],
+            "inline_diff":           ["cwd"],
+            "inline-diff":           ["cwd"],
+            "env_inspect":           ["cwd"],
+            "env-inspect":           ["cwd"],
+            "docker_exec":           ["container_id", "cmd"],
+            "docker-exec":           ["container_id", "cmd"],
+            "docker_logs":           ["container_id"],
+            "docker-logs":           ["container_id"],
+            "ssh_connect":           ["host"],
+            "ssh-connect":           ["host"],
+            "events_since":          ["since"],
+            "events-since":          ["since"],
+            # G9-G14
+            "alias_learn":           ["original", "correction"],
+            "alias-learn":           ["original", "correction"],
+            "alias_apply":           ["command"],
+            "alias-apply":           ["command"],
+            "git_context":           ["cwd"],
+            "git-context":           ["cwd"],
+            "voice_to_shell":        ["duration"],
+            "voice-to-shell":        ["duration"],
+            # T1-T3
+            "memory_add":            ["key", "value"],
+            "memory-add":            ["key", "value"],
+            "memory_forget":         ["key"],
+            "memory-forget":         ["key"],
+            "memory_search":         ["query"],
+            "memory-search":         ["query"],
+            "persona_marketplace_install": ["id"],
+            "persona-marketplace-install": ["id"],
+            "file_tree":             ["cwd"],
+            "file-tree":             ["cwd"],
+            "output_export":         ["content"],
+            "output-export":         ["content"],
+            "output_search":         ["query"],
+            "output-search":         ["query"],
+            "plugin_install":        ["name", "source"],
+            "plugin-install":        ["name", "source"],
+            "sftp_browse":           ["host", "path"],
+            "sftp-browse":           ["host", "path"],
+            "sftp_download":         ["host", "remote_path"],
+            "sftp-download":         ["host", "remote_path"],
+            "workflow_save":         ["name", "content"],
+            "workflow-save":         ["name", "content"],
+            "session_to_pr":         ["cwd", "style"],
+            "session-to-pr":         ["cwd", "style"],
+            "dep_vuln_scan":         ["command"],
+            "dep-vuln-scan":         ["command"],
+            "smart_paste_sanitize":  ["text"],
+            "smart-paste-sanitize":  ["text"],
+            "coach_analyze":         ["focus"],
+            "coach-analyze":         ["focus"],
+            "sync_push":             ["remote"],
+            "sync-push":             ["remote"],
+            "share_session":         ["port", "role"],
+            "share-session":         ["port", "role"],
+            "team_config_set":       ["remote"],
+            "team-config-set":       ["remote"],
+            "runbook_run":           ["name"],
+            "runbook-run":           ["name"],
+            "runbook_show":          ["name"],
+            "runbook-show":          ["name"],
+        }
+        field_names = _pos_map.get(raw_action, ["text"])
+        for idx, val in enumerate(pos_args):
+            if idx < len(field_names):
+                payload[field_names[idx]] = val
+            else:
+                # append to last known field as space-joined
+                payload[field_names[-1]] = payload.get(field_names[-1], "") + " " + val
+
+        # Special: add cwd for actions that benefit from it
+        if raw_action in ("git-context", "git_context", "file-tree", "file_tree",
+                          "inline-diff", "inline_diff", "env-inspect", "env_inspect",
+                          "session-to-pr", "session_to_pr") and "cwd" not in payload:
+            payload["cwd"] = os.getcwd()
+
+        request = payload
     else:
         parser.print_help(sys.stderr)
         return 2
