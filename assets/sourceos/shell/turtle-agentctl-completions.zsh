@@ -74,6 +74,31 @@ _turtle_agentctl() {
         (history-index)   # no args
             ;;
         (history-search)  _message 'query: search all past session history' ;;
+        (copilot-start)   # no args ;;
+        (copilot-stop)    # no args ;;
+        (copilot-status)  # no args ;;
+        (copilot-chat)    _message 'message: what to ask the co-pilot' ;;
+        (copilot-suggest) # no args ;;
+        (copilot-backends) # no args ;;
+        (gh-repo-create)  _message 'name: repository name [--private] [--org NAME]' ;;
+        (gh-repo-fork)    # no args ;;
+        (gh-repo-view)    _message '[OWNER/REPO]' ;;
+        (gh-pr-checkout)  _message 'number: PR number to checkout' ;;
+        (gh-pr-merge)     _message 'number: PR number [--squash|--rebase]' ;;
+        (gh-pr-close)     _message 'number: PR number' ;;
+        (gh-pr-comment)   _message 'number: PR number --body "comment text"' ;;
+        (gh-issue-list)   _message '[--state open|closed]' ;;
+        (gh-issue-close)  _message 'number: issue number' ;;
+        (gh-issue-comment) _message 'number: issue number --body "text"' ;;
+        (gh-release-list) # no args ;;
+        (gh-release-ai-changelog) _message 'tag: release tag [--since-tag v1.0.0]' ;;
+        (gh-workflow-list) # no args ;;
+        (gh-secret-list)  # no args ;;
+        (gh-label-list)   # no args ;;
+        (gh-label-create) _message 'name: label name [--color HEX]' ;;
+        (gh-search)       _message 'kind: repos|issues|prs  query: search terms' ;;
+        (gh-status)       # no args ;;
+        (gh-api)          _message 'endpoint: e.g. repos/owner/repo [--method GET]' ;;
       esac ;;
   esac
 }
@@ -221,6 +246,33 @@ _turtle_agentctl_cmds() {
     # Cross-session history
     'history-index:Index all past session command history for semantic search'
     'history-search:Search all past terminal session history'
+    # Copilot
+    'copilot-start:Start the self-hosted AI co-pilot watcher'
+    'copilot-stop:Stop the co-pilot watcher'
+    'copilot-status:Get co-pilot status, backend, and recent suggestions'
+    'copilot-chat:Multi-turn conversation with the AI co-pilot'
+    'copilot-suggest:Get latest proactive suggestions from the co-pilot'
+    'copilot-backends:List available AI backends and their status'
+    # gh parity
+    'gh-repo-create:Create a repository on Gitea (primary) or GitHub'
+    'gh-repo-fork:Fork the current repository'
+    'gh-repo-view:View repository details'
+    'gh-pr-checkout:Checkout a PR branch locally'
+    'gh-pr-merge:Merge a PR (merge/squash/rebase)'
+    'gh-pr-close:Close a PR without merging'
+    'gh-pr-comment:Add a comment to a PR'
+    'gh-issue-list:List issues on the repo'
+    'gh-issue-close:Close an issue'
+    'gh-issue-comment:Add a comment to an issue'
+    'gh-release-list:List releases on the repo'
+    'gh-release-ai-changelog:AI-generated release changelog from git commits'
+    'gh-workflow-list:List GitHub Actions / Gitea Actions workflows'
+    'gh-secret-list:List repository secrets (names only)'
+    'gh-label-list:List repository labels'
+    'gh-label-create:Create a repository label'
+    'gh-search:Search repos/issues/PRs/code with optional AI re-ranking'
+    'gh-status:Show forge status: open PRs, issues, co-pilot state'
+    'gh-api:Raw Gitea or GitHub API call'
   )
   _describe 'turtle-agentctl command' cmds
 }

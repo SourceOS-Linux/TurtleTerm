@@ -591,6 +591,175 @@ def _forge_owner_repo(cwd: str = ".") -> tuple[str, str]:
     return "", ""
 
 
+# ── Copilot helpers ──────────────────────────────────────────────────────────
+
+def _copilot_config() -> dict:
+    cfg_path = Path.home() / ".config" / "turtleterm" / "copilot.json"
+    defaults = {
+        "backend": "claude",
+        "model": "claude-sonnet-4-6",
+        "endpoint": None,
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "proactive": True,
+        "auto_explain_errors": True,
+        "auto_suggest_slow": True,
+        "slow_threshold_ms": 10000,
+        "context_lines": 20,
+        "enabled": False,
+    }
+    if cfg_path.exists():
+        try:
+            saved = json.loads(cfg_path.read_text())
+            defaults.update(saved)
+        except Exception:
+            pass
+    return defaults
+
+def _copilot_backend_chat(prompt: str, system: str = "", config: dict | None = None) -> str:
+    """Route to configured backend: claude / ollama / noetica / openai-compat."""
+    cfg = config or _copilot_config()
+    backend = cfg.get("backend", "claude")
+    model   = cfg.get("model", "claude-sonnet-4-6")
+
+    if backend == "claude":
+        _persona = _load_persona_system()
+        _mems    = _load_memories_context()
+        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+        full_system = (_prefix + "\n\n" if _prefix else "") + (system or "You are a helpful terminal co-pilot.")
+        ai = _claude_chat(prompt, system=full_system, timeout=15)
+        return (ai.get("response") or "").strip() if ai else ""
+
+    if backend in ("ollama", "openai"):
+        import urllib.request as _ur_cp, urllib.error as _ue_cp
+        endpoint = cfg.get("endpoint") or "http://localhost:11434"
+        endpoint = endpoint.rstrip("/")
+        # Use OpenAI-compatible chat endpoint
+        url = f"{endpoint}/v1/chat/completions"
+        api_key = env(cfg.get("api_key_env") or "OPENAI_API_KEY", "ollama")
+        payload = json.dumps({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system or "You are a helpful terminal co-pilot."},
+                {"role": "user",   "content": prompt},
+            ],
+            "max_tokens": 512,
+            "temperature": 0.3,
+        }).encode()
+        req = _ur_cp.Request(url, data=payload, headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        })
+        try:
+            with _ur_cp.urlopen(req, timeout=20) as r:
+                data = json.loads(r.read())
+                return (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        except Exception as e:
+            return f"[ollama error: {e}]"
+
+    if backend == "noetica":
+        import urllib.request as _ur_noe
+        endpoint = cfg.get("endpoint") or "http://127.0.0.1:8080"
+        url = f"{endpoint.rstrip('/')}/api/chat"
+        payload = json.dumps({"message": prompt, "stream": False}).encode()
+        req = _ur_noe.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        try:
+            with _ur_noe.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+                return (data.get("response") or data.get("text") or "").strip()
+        except Exception as e:
+            return f"[noetica error: {e}]"
+
+    return ""
+
+# Global copilot watcher state
+_COPILOT_THREAD: "threading.Thread | None" = None
+_COPILOT_RUNNING = False
+
+def _copilot_watcher(config: dict) -> None:
+    """Background thread: watch event stream, generate proactive suggestions."""
+    global _COPILOT_RUNNING
+    import threading as _thr_cp, time as _t_cp
+    suggestions_path = Path.home() / ".config" / "turtleterm" / "copilot_suggestions.ndjson"
+    last_event_count = 0
+    conversation: list[dict] = []  # persistent multi-turn thread
+
+    while _COPILOT_RUNNING:
+        try:
+            events = read_ndjson(event_stream_path(), limit=200)
+            current_count = len(events)
+            new_events = events[last_event_count:]
+            last_event_count = current_count
+
+            for evt in new_events:
+                if not _COPILOT_RUNNING:
+                    break
+                evt_type = evt.get("event_type", "")
+                cmd = evt.get("command", "")
+                rc  = evt.get("exit_code", 0)
+                out = evt.get("output_preview", "")[:500]
+                wall_ms = evt.get("wall_ms", 0)
+
+                suggestion = None
+                trigger = None
+
+                if evt_type == "command.completed" and rc != 0 and config.get("auto_explain_errors"):
+                    # Proactive error explanation
+                    prompt = f"Command failed (exit {rc}):\n$ {cmd}\n\nOutput:\n{out}\n\nIn 2 sentences: what went wrong and how to fix it."
+                    reply = _copilot_backend_chat(prompt, system="You are a terminal co-pilot. Be concise and specific.", config=config)
+                    if reply:
+                        suggestion = {"type": "error_explain", "command": cmd, "exit_code": rc, "suggestion": reply}
+                        trigger = "auto_error"
+
+                elif evt_type == "command.completed" and wall_ms > config.get("slow_threshold_ms", 10000) and config.get("auto_suggest_slow"):
+                    # Slow command tip
+                    prompt = f"Command took {wall_ms}ms:\n$ {cmd}\n\nIn 1 sentence: is there a faster alternative?"
+                    reply = _copilot_backend_chat(prompt, system="You are a terminal performance expert. Be very concise.", config=config)
+                    if reply:
+                        suggestion = {"type": "perf_tip", "command": cmd, "wall_ms": wall_ms, "suggestion": reply}
+                        trigger = "slow_command"
+
+                if suggestion:
+                    import datetime as _dt_cp
+                    entry = {**suggestion, "ts": _dt_cp.datetime.utcnow().isoformat(), "trigger": trigger}
+                    with open(suggestions_path, "a") as f:
+                        f.write(json.dumps(entry) + "\n")
+
+            _t_cp.sleep(2)
+        except Exception:
+            _t_cp.sleep(5)
+
+    _COPILOT_RUNNING = False
+
+
+def _forge_api(endpoint: str, method: str = "GET", payload: dict | None = None, prefer_gitea: bool = True, timeout: int = 15) -> dict:
+    """Unified forge API: Gitea primary, GitHub fallback."""
+    if prefer_gitea and env("GITEA_URL"):
+        r = _gitea(endpoint, method=method, payload=payload, timeout=timeout)
+        if r.get("ok"):
+            return {**r, "forge": "gitea"}
+    # GitHub fallback
+    import urllib.request as _ur_gh2, urllib.error as _ue_gh2
+    gh_token = env("GITHUB_TOKEN", "")
+    owner, repo = _forge_owner_repo(".")
+    # Map Gitea endpoint patterns to GitHub
+    gh_endpoint = endpoint
+    base_url = f"https://api.github.com/{gh_endpoint.lstrip('/')}"
+    data = json.dumps(payload).encode() if payload else None
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if gh_token:
+        headers["Authorization"] = f"Bearer {gh_token}"
+    req = _ur_gh2.Request(base_url, data=data, method=method, headers=headers)
+    try:
+        with _ur_gh2.urlopen(req, timeout=timeout) as r2:
+            return {"ok": True, "data": json.loads(r2.read() or b"{}"), "forge": "github"}
+    except _ue_gh2.HTTPError as e:
+        try: body = json.loads(e.read())
+        except: body = {}
+        return {"ok": False, "status": e.code, "error": body.get("message", str(e)), "forge": "github"}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "forge": "none"}
+
+
 # ---------------------------------------------------------------------------
 # Session context helpers
 # ---------------------------------------------------------------------------
@@ -3987,6 +4156,455 @@ done
                     cmd_order = {c: i for i, c in enumerate(ranked_cmds)}
                     results.sort(key=lambda r: cmd_order.get(r["cmd"], 999))
         return response("history_search", {"results": results[:limit], "count": len(results), "query": query})
+
+    # ------------------------------------------------------------------
+    # Self-hosted Co-pilot Daemon
+    # ------------------------------------------------------------------
+    if action in ("copilot_start", "copilot-start"):
+        global _COPILOT_THREAD, _COPILOT_RUNNING
+        import threading as _thr_cop
+        if _COPILOT_RUNNING and _COPILOT_THREAD and _COPILOT_THREAD.is_alive():
+            return response("copilot_start", {"started": False, "reason": "already running", "backend": _copilot_config().get("backend")})
+        cfg = _copilot_config()
+        cfg["enabled"] = True
+        cfg_path = Path.home() / ".config" / "turtleterm" / "copilot.json"
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json.dumps(cfg, indent=2))
+        _COPILOT_RUNNING = True
+        _COPILOT_THREAD = _thr_cop.Thread(target=_copilot_watcher, args=(cfg,), daemon=True, name="turtle-copilot")
+        _COPILOT_THREAD.start()
+        return response("copilot_start", {"started": True, "backend": cfg.get("backend"), "model": cfg.get("model"), "proactive": cfg.get("proactive"), "pid": os.getpid()})
+
+    if action in ("copilot_stop", "copilot-stop"):
+        _COPILOT_RUNNING = False
+        cfg_path = Path.home() / ".config" / "turtleterm" / "copilot.json"
+        if cfg_path.exists():
+            try:
+                cfg = json.loads(cfg_path.read_text())
+                cfg["enabled"] = False
+                cfg_path.write_text(json.dumps(cfg, indent=2))
+            except Exception:
+                pass
+        return response("copilot_stop", {"stopped": True})
+
+    if action in ("copilot_status", "copilot-status"):
+        cfg = _copilot_config()
+        suggestions_path = Path.home() / ".config" / "turtleterm" / "copilot_suggestions.ndjson"
+        recent = []
+        if suggestions_path.exists():
+            lines = suggestions_path.read_text().splitlines()
+            for line in lines[-5:]:
+                try: recent.append(json.loads(line))
+                except: pass
+        running = _COPILOT_RUNNING and bool(_COPILOT_THREAD and _COPILOT_THREAD.is_alive())
+        return response("copilot_status", {
+            "running": running,
+            "enabled": cfg.get("enabled", False),
+            "backend": cfg.get("backend", "claude"),
+            "model": cfg.get("model"),
+            "endpoint": cfg.get("endpoint"),
+            "proactive": cfg.get("proactive"),
+            "auto_explain_errors": cfg.get("auto_explain_errors"),
+            "recent_suggestions": recent,
+            "suggestions_count": len(suggestions_path.read_text().splitlines()) if suggestions_path.exists() else 0,
+        })
+
+    if action in ("copilot_chat", "copilot-chat"):
+        message  = request.get("message", "").strip()
+        thread_id = request.get("thread_id", "default")
+        clear    = bool(request.get("clear", False))
+        if not message:
+            return response("copilot_chat", {"reply": "", "reason": "message required"})
+        # Load/save conversation thread
+        threads_dir = Path.home() / ".config" / "turtleterm" / "copilot_threads"
+        threads_dir.mkdir(parents=True, exist_ok=True)
+        thread_path = threads_dir / f"{thread_id}.json"
+        thread: list[dict] = []
+        if not clear and thread_path.exists():
+            try: thread = json.loads(thread_path.read_text())
+            except: thread = []
+        # Build context from thread history
+        history_text = "\n".join(f"User: {m['user']}\nCopilot: {m['reply']}" for m in thread[-8:])
+        prompt = (f"Conversation history:\n{history_text}\n\n" if history_text else "") + f"User: {message}"
+        # Get git + session context
+        git_ctx = _git_module_level("log", "--oneline", "-3") or ""
+        system = (
+            "You are a personal terminal co-pilot embedded in TurtleTerm. "
+            "You have access to the user's terminal session history and git context. "
+            "Be concise, practical, and specific. When suggesting commands, use code blocks."
+            + (f"\n\nRecent git context:\n{git_ctx}" if git_ctx else "")
+        )
+        reply = _copilot_backend_chat(prompt, system=system, config=_copilot_config())
+        thread.append({"user": message, "reply": reply})
+        if len(thread) > 50:
+            thread = thread[-50:]
+        thread_path.write_text(json.dumps(thread))
+        return response("copilot_chat", {"reply": reply, "thread_id": thread_id, "turns": len(thread)})
+
+    if action in ("copilot_configure", "copilot-configure"):
+        cfg = _copilot_config()
+        for key in ("backend", "model", "endpoint", "api_key_env", "proactive", "auto_explain_errors", "auto_suggest_slow", "slow_threshold_ms"):
+            if key in request:
+                cfg[key] = request[key]
+        cfg_path = Path.home() / ".config" / "turtleterm" / "copilot.json"
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json.dumps(cfg, indent=2))
+        return response("copilot_configure", {"saved": True, "config": cfg})
+
+    if action in ("copilot_suggest", "copilot-suggest"):
+        # Get latest suggestion(s)
+        suggestions_path = Path.home() / ".config" / "turtleterm" / "copilot_suggestions.ndjson"
+        limit = int(request.get("limit", 5))
+        unread_only = bool(request.get("unread_only", True))
+        suggestions = []
+        if suggestions_path.exists():
+            lines = suggestions_path.read_text().splitlines()
+            for line in reversed(lines):
+                try:
+                    s = json.loads(line)
+                    if not unread_only or not s.get("read"):
+                        suggestions.append(s)
+                        if len(suggestions) >= limit:
+                            break
+                except: pass
+        return response("copilot_suggest", {"suggestions": list(reversed(suggestions)), "total": len(suggestions)})
+
+    if action in ("copilot_backends", "copilot-backends"):
+        # Probe all available backends
+        backends = []
+        # Claude
+        if env("ANTHROPIC_API_KEY"):
+            backends.append({"id": "claude", "available": True, "note": "ANTHROPIC_API_KEY set"})
+        else:
+            backends.append({"id": "claude", "available": False, "note": "ANTHROPIC_API_KEY not set"})
+        # Ollama
+        try:
+            import urllib.request as _ur_ol
+            with _ur_ol.urlopen("http://localhost:11434/api/tags", timeout=2) as r:
+                tags = json.loads(r.read())
+                models = [m.get("name") for m in tags.get("models", [])]
+                backends.append({"id": "ollama", "available": True, "models": models, "endpoint": "http://localhost:11434"})
+        except Exception:
+            backends.append({"id": "ollama", "available": False, "note": "not running — start with: ollama serve"})
+        # Noetica
+        try:
+            import urllib.request as _ur_noe2
+            with _ur_noe2.urlopen("http://127.0.0.1:8080/health", timeout=2) as r:
+                h = json.loads(r.read())
+                backends.append({"id": "noetica", "available": True, "version": h.get("version"), "endpoint": "http://127.0.0.1:8080"})
+        except Exception:
+            backends.append({"id": "noetica", "available": False, "note": "not running — start with: dev-backend.sh"})
+        return response("copilot_backends", {"backends": backends, "current": _copilot_config().get("backend")})
+
+    # ------------------------------------------------------------------
+    # gh-parity forge actions
+    # ------------------------------------------------------------------
+
+    # ── gh repo ──────────────────────────────────────────────────────────────
+    if action in ("gh_repo_create", "gh-repo-create"):
+        name   = request.get("name", "").strip()
+        desc   = request.get("description", "")
+        private= bool(request.get("private", False))
+        org    = request.get("org", "")
+        if not name:
+            return response("gh_repo_create", {"created": False, "reason": "name required"})
+        payload = {"name": name, "description": desc, "private": private, "auto_init": True}
+        endpoint = f"orgs/{org}/repos" if org else "user/repos"
+        # Gitea
+        if env("GITEA_URL"):
+            r = _gitea(endpoint, method="POST", payload=payload)
+            if r.get("ok"):
+                d2 = r.get("data", {})
+                return response("gh_repo_create", {"created": True, "name": name, "url": d2.get("html_url"), "forge": "gitea"})
+        # GitHub
+        r = _forge_api(endpoint, method="POST", payload=payload, prefer_gitea=False)
+        if r.get("ok"):
+            d2 = r.get("data", {})
+            return response("gh_repo_create", {"created": True, "name": name, "url": d2.get("html_url"), "forge": "github"})
+        return response("gh_repo_create", {"created": False, "reason": r.get("error","")})
+
+    if action in ("gh_repo_fork", "gh-repo-fork"):
+        cwd = request.get("cwd", ".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        if not owner:
+            return response("gh_repo_fork", {"forked": False, "reason": "no remote"})
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/forks", method="POST", payload={})
+            if r.get("ok"):
+                return response("gh_repo_fork", {"forked": True, "url": r.get("data",{}).get("html_url",""), "forge": "gitea"})
+        r = _forge_api(f"repos/{owner}/{repo}/forks", method="POST", payload={}, prefer_gitea=False)
+        d2 = r.get("data", {})
+        return response("gh_repo_fork", {"forked": r.get("ok",False), "url": d2.get("html_url",""), "forge": r.get("forge","")})
+
+    if action in ("gh_repo_view", "gh-repo-view"):
+        cwd = request.get("cwd", ".") or "."
+        repo_name = request.get("repo", "")
+        if repo_name and "/" in repo_name:
+            owner, repo = repo_name.split("/", 1)
+        else:
+            owner, repo = _forge_owner_repo(cwd)
+        if not owner:
+            return response("gh_repo_view", {"found": False, "reason": "no remote"})
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}")
+            if r.get("ok"):
+                d2 = r.get("data",{})
+                return response("gh_repo_view", {"found": True, "name": d2.get("name"), "description": d2.get("description"), "stars": d2.get("stars_count",0), "forks": d2.get("forks_count",0), "open_issues": d2.get("open_issues_count",0), "url": d2.get("html_url"), "default_branch": d2.get("default_branch","main"), "forge": "gitea"})
+        r = _forge_api(f"repos/{owner}/{repo}", prefer_gitea=False)
+        d2 = r.get("data",{})
+        return response("gh_repo_view", {"found": r.get("ok",False), "name": d2.get("name"), "description": d2.get("description"), "stars": d2.get("stargazers_count",0), "forks": d2.get("forks_count",0), "url": d2.get("html_url"), "default_branch": d2.get("default_branch","main"), "forge": "github"})
+
+    # ── gh pr ─────────────────────────────────────────────────────────────────
+    if action in ("gh_pr_checkout", "gh-pr-checkout"):
+        pr_num = str(request.get("number", "")).strip()
+        cwd    = request.get("cwd", ".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        if not pr_num:
+            return response("gh_pr_checkout", {"checked_out": False, "reason": "PR number required"})
+        # Fetch PR branch from Gitea
+        branch = pr_num
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/pulls/{pr_num}")
+            if r.get("ok"):
+                branch = r.get("data",{}).get("head",{}).get("label", f"pr-{pr_num}")
+                if ":" in branch:
+                    branch = branch.split(":")[-1]
+        result = _git_module_level("fetch", "origin", f"pull/{pr_num}/head:pr-{pr_num}", cwd=cwd)
+        checkout = _git_module_level("checkout", f"pr-{pr_num}", cwd=cwd)
+        return response("gh_pr_checkout", {"checked_out": True, "branch": f"pr-{pr_num}", "number": pr_num})
+
+    if action in ("gh_pr_merge", "gh-pr-merge"):
+        pr_num = str(request.get("number", "")).strip()
+        cwd    = request.get("cwd", ".") or "."
+        method_merge = request.get("merge_method", "merge")  # merge|squash|rebase
+        owner, repo  = _forge_owner_repo(cwd)
+        if not pr_num:
+            return response("gh_pr_merge", {"merged": False, "reason": "PR number required"})
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/pulls/{pr_num}/merge", method="POST", payload={"Do": method_merge, "merge_message_field": ""})
+            return response("gh_pr_merge", {"merged": r.get("ok",False), "forge": "gitea", "reason": r.get("error","")})
+        r = _forge_api(f"repos/{owner}/{repo}/pulls/{pr_num}/merge", method="PUT", payload={"merge_method": method_merge}, prefer_gitea=False)
+        return response("gh_pr_merge", {"merged": r.get("ok",False), "forge": "github", "reason": r.get("error","")})
+
+    if action in ("gh_pr_close", "gh-pr-close"):
+        pr_num = str(request.get("number","")).strip()
+        cwd    = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/pulls/{pr_num}", method="PATCH", payload={"state": "closed"})
+        else:
+            r = _forge_api(f"repos/{owner}/{repo}/pulls/{pr_num}", method="PATCH", payload={"state": "closed"}, prefer_gitea=False)
+        return response("gh_pr_close", {"closed": r.get("ok",False), "number": pr_num})
+
+    if action in ("gh_pr_comment", "gh-pr-comment"):
+        pr_num  = str(request.get("number","")).strip()
+        body    = request.get("body","").strip()
+        cwd     = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        if not body:
+            return response("gh_pr_comment", {"posted": False, "reason": "body required"})
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/issues/{pr_num}/comments", method="POST", payload={"body": body})
+        else:
+            r = _forge_api(f"repos/{owner}/{repo}/issues/{pr_num}/comments", method="POST", payload={"body": body}, prefer_gitea=False)
+        return response("gh_pr_comment", {"posted": r.get("ok",False), "number": pr_num})
+
+    # ── gh issue ──────────────────────────────────────────────────────────────
+    if action in ("gh_issue_close", "gh-issue-close"):
+        num  = str(request.get("number","")).strip()
+        cwd  = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/issues/{num}", method="PATCH", payload={"state": "closed"})
+        else:
+            r = _forge_api(f"repos/{owner}/{repo}/issues/{num}", method="PATCH", payload={"state": "closed"}, prefer_gitea=False)
+        return response("gh_issue_close", {"closed": r.get("ok",False), "number": num})
+
+    if action in ("gh_issue_list", "gh-issue-list"):
+        cwd   = request.get("cwd",".") or "."
+        state = request.get("state","open")
+        limit = int(request.get("limit",20))
+        owner, repo = _forge_owner_repo(cwd)
+        if not owner:
+            return response("gh_issue_list", {"issues":[], "reason":"no remote"})
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/issues?state={state}&type=issues&limit={limit}")
+            issues = [{"number": i.get("number"), "title": i.get("title"), "state": i.get("state"), "user": i.get("user",{}).get("login"), "url": i.get("html_url"), "labels": [l.get("name") for l in i.get("labels",[])]} for i in (r.get("data") or [])] if r.get("ok") else []
+            return response("gh_issue_list", {"issues": issues, "count": len(issues), "forge": "gitea"})
+        r = _forge_api(f"repos/{owner}/{repo}/issues?state={state}&per_page={limit}", prefer_gitea=False)
+        issues = [{"number": i.get("number"), "title": i.get("title"), "state": i.get("state"), "user": i.get("user",{}).get("login"), "url": i.get("html_url")} for i in (r.get("data") or [])] if r.get("ok") else []
+        return response("gh_issue_list", {"issues": issues, "count": len(issues), "forge": "github"})
+
+    if action in ("gh_issue_comment", "gh-issue-comment"):
+        num  = str(request.get("number","")).strip()
+        body = request.get("body","").strip()
+        cwd  = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/issues/{num}/comments", method="POST", payload={"body": body})
+        else:
+            r = _forge_api(f"repos/{owner}/{repo}/issues/{num}/comments", method="POST", payload={"body": body}, prefer_gitea=False)
+        return response("gh_issue_comment", {"posted": r.get("ok",False)})
+
+    # ── gh release ────────────────────────────────────────────────────────────
+    if action in ("gh_release_list", "gh-release-list"):
+        cwd = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/releases?limit=10")
+            rels = [{"id": x.get("id"), "tag": x.get("tag_name"), "name": x.get("name"), "draft": x.get("draft"), "prerelease": x.get("prerelease"), "url": x.get("html_url")} for x in (r.get("data") or [])] if r.get("ok") else []
+            return response("gh_release_list", {"releases": rels, "forge": "gitea"})
+        r = _forge_api(f"repos/{owner}/{repo}/releases?per_page=10", prefer_gitea=False)
+        rels = [{"id": x.get("id"), "tag": x.get("tag_name"), "name": x.get("name"), "url": x.get("html_url")} for x in (r.get("data") or [])] if r.get("ok") else []
+        return response("gh_release_list", {"releases": rels, "forge": "github"})
+
+    if action in ("gh_release_ai_changelog", "gh-release-ai-changelog"):
+        cwd    = request.get("cwd",".") or "."
+        since  = request.get("since_tag","")
+        target = request.get("tag","")
+        log_cmd = ["log", "--oneline", f"{since}..HEAD"] if since else ["log", "--oneline", "-20"]
+        commits = _git_module_level(*log_cmd, cwd=cwd)
+        if not commits:
+            return response("gh_release_ai_changelog", {"changelog": "", "reason": "no commits"})
+        _persona = _load_persona_system(); _mems = _load_memories_context()
+        _prefix = "\n\n".join(x for x in [_persona, _mems] if x)
+        system = (_prefix + "\n\n" if _prefix else "") + (
+            "Generate a clean release changelog in markdown. "
+            "Group commits by type: Features, Bug Fixes, Improvements, Chores. "
+            "Use bullet points. Be concise but specific."
+        )
+        ai = _claude_chat(f"Commits for {target or 'new release'}:\n{commits}", system=system, timeout=15)
+        changelog = (ai.get("response") or "").strip() if ai else ""
+        return response("gh_release_ai_changelog", {"changelog": changelog, "commits": commits})
+
+    # ── gh workflow ───────────────────────────────────────────────────────────
+    if action in ("gh_workflow_list", "gh-workflow-list"):
+        cwd = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/actions/workflows")
+            wfs = [{"id": w.get("id"), "name": w.get("name"), "state": w.get("state")} for w in r.get("data",{}).get("workflows", r.get("data",[]) if isinstance(r.get("data"),list) else [])] if r.get("ok") else []
+            return response("gh_workflow_list", {"workflows": wfs, "forge": "gitea"})
+        r = _forge_api(f"repos/{owner}/{repo}/actions/workflows", prefer_gitea=False)
+        wfs = [{"id": w.get("id"), "name": w.get("name"), "state": w.get("state")} for w in r.get("data",{}).get("workflows",[])] if r.get("ok") else []
+        return response("gh_workflow_list", {"workflows": wfs, "forge": "github"})
+
+    # ── gh label ──────────────────────────────────────────────────────────────
+    if action in ("gh_label_list", "gh-label-list"):
+        cwd = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/labels")
+            labels = [{"id": l.get("id"), "name": l.get("name"), "color": l.get("color")} for l in (r.get("data") or [])] if r.get("ok") else []
+            return response("gh_label_list", {"labels": labels, "forge": "gitea"})
+        r = _forge_api(f"repos/{owner}/{repo}/labels", prefer_gitea=False)
+        labels = [{"id": l.get("id"), "name": l.get("name"), "color": l.get("color")} for l in (r.get("data") or [])] if r.get("ok") else []
+        return response("gh_label_list", {"labels": labels, "forge": "github"})
+
+    if action in ("gh_label_create", "gh-label-create"):
+        name   = request.get("name","").strip()
+        color  = request.get("color","#0075ca").lstrip("#")
+        cwd    = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        payload = {"name": name, "color": color}
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/labels", method="POST", payload=payload)
+        else:
+            r = _forge_api(f"repos/{owner}/{repo}/labels", method="POST", payload=payload, prefer_gitea=False)
+        return response("gh_label_create", {"created": r.get("ok",False), "name": name})
+
+    # ── gh secret ────────────────────────────────────────────────────────────
+    if action in ("gh_secret_list", "gh-secret-list"):
+        cwd = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        # Gitea does not expose secret values — list names only
+        if env("GITEA_URL"):
+            r = _gitea(f"repos/{owner}/{repo}/actions/secrets")
+            secrets = [{"name": s.get("name"), "created": s.get("created_at")} for s in r.get("data",{}).get("secrets", r.get("data",[]) if isinstance(r.get("data"),list) else [])] if r.get("ok") else []
+            return response("gh_secret_list", {"secrets": secrets, "note": "values not exposed", "forge": "gitea"})
+        r = _forge_api(f"repos/{owner}/{repo}/actions/secrets", prefer_gitea=False)
+        secrets = [{"name": s.get("name")} for s in r.get("data",{}).get("secrets",[])] if r.get("ok") else []
+        return response("gh_secret_list", {"secrets": secrets, "forge": "github"})
+
+    # ── gh search ────────────────────────────────────────────────────────────
+    if action in ("gh_search", "gh-search"):
+        query   = request.get("query","").strip()
+        kind    = request.get("kind","repos")  # repos|issues|prs|code
+        limit   = int(request.get("limit",10))
+        use_ai  = bool(request.get("ai_rank",True))
+        if not query:
+            return response("gh_search", {"results":[], "reason":"query required"})
+        results = []
+        if env("GITEA_URL"):
+            if kind == "repos":
+                r = _gitea(f"repos/search?q={query}&limit={limit}")
+                results = [{"name": x.get("full_name"), "desc": x.get("description",""), "stars": x.get("stars_count",0), "url": x.get("html_url")} for x in r.get("data",{}).get("data", r.get("data",[]) if isinstance(r.get("data"),list) else [])] if r.get("ok") else []
+            elif kind in ("issues","prs"):
+                issue_type = "pulls" if kind=="prs" else "issues"
+                r = _gitea(f"repos/search?q={query}&limit=5")
+                # Search across matched repos
+                for repo_item in (r.get("data",{}).get("data",[]) if r.get("ok") else [])[:3]:
+                    fn = repo_item.get("full_name","")
+                    if "/" in fn:
+                        o2, r2 = fn.split("/",1)
+                        ri = _gitea(f"repos/{o2}/{r2}/{issue_type}?q={query}&limit=5")
+                        for item in (ri.get("data") or []):
+                            results.append({"title": item.get("title"), "number": item.get("number"), "url": item.get("html_url"), "repo": fn})
+        else:
+            # GitHub search API
+            gh_kind = {"repos":"repositories","issues":"issues","prs":"issues","code":"code"}.get(kind,"repositories")
+            r = _forge_api(f"search/{gh_kind}?q={query}&per_page={limit}", prefer_gitea=False)
+            items = r.get("data",{}).get("items",[]) if r.get("ok") else []
+            results = [{"name": i.get("full_name") or i.get("title"), "desc": i.get("description","") or i.get("body","")[:80], "url": i.get("html_url")} for i in items]
+        # AI re-rank
+        if use_ai and results and len(results) > 3 and env("ANTHROPIC_API_KEY"):
+            _persona = _load_persona_system()
+            system = (_persona + "\n\n" if _persona else "") + "Re-rank these search results by relevance to the query. Return JSON array of names/titles only, most relevant first."
+            items_text = "\n".join(f"- {r.get('name') or r.get('title','')}" for r in results[:10])
+            ai = _claude_chat(f"Query: {query}\n\nResults:\n{items_text}", system=system, timeout=8)
+            if ai:
+                import re as _re_sr
+                try:
+                    m = _re_sr.search(r'\[.*?\]', ai.get("response",""), _re_sr.DOTALL)
+                    if m:
+                        ranked = json.loads(m.group())
+                        order = {n: i for i, n in enumerate(ranked)}
+                        results.sort(key=lambda x: order.get(x.get("name") or x.get("title",""), 999))
+                except Exception: pass
+        return response("gh_search", {"results": results, "count": len(results), "query": query, "kind": kind})
+
+    # ── gh status ────────────────────────────────────────────────────────────
+    if action in ("gh_status", "gh-status"):
+        cwd = request.get("cwd",".") or "."
+        owner, repo = _forge_owner_repo(cwd)
+        result = {"forge": "none", "repo": f"{owner}/{repo}" if owner else ""}
+        if env("GITEA_URL"):
+            # Gitea: get open PRs + issues assigned to current user
+            me = _gitea("user")
+            user = me.get("data",{}).get("login","") if me.get("ok") else ""
+            result["gitea_user"] = user
+            result["gitea_url"] = env("GITEA_URL")
+            if owner:
+                open_prs = _gitea(f"repos/{owner}/{repo}/pulls?state=open&limit=5")
+                result["open_prs"] = len(open_prs.get("data") or []) if open_prs.get("ok") else 0
+                open_issues = _gitea(f"repos/{owner}/{repo}/issues?state=open&type=issues&limit=5")
+                result["open_issues"] = len(open_issues.get("data") or []) if open_issues.get("ok") else 0
+            result["forge"] = "gitea"
+        else:
+            result["note"] = "Set GITEA_URL to connect to Gitea sovereign forge"
+        return response("gh_status", result)
+
+    # ── gh api (raw passthrough) ──────────────────────────────────────────────
+    if action in ("gh_api", "gh-api"):
+        endpoint = request.get("endpoint","").lstrip("/")
+        method   = request.get("method","GET").upper()
+        payload  = request.get("payload", None)
+        raw_gitea = bool(request.get("gitea", bool(env("GITEA_URL"))))
+        if raw_gitea and env("GITEA_URL"):
+            r = _gitea(endpoint, method=method, payload=payload)
+        else:
+            r = _forge_api(endpoint, method=method, payload=payload, prefer_gitea=False)
+        return response("gh_api", {"ok": r.get("ok"), "data": r.get("data"), "forge": r.get("forge","?"), "error": r.get("error","")})
 
     return response("error", {"message": f"unknown action: {action}"}, status="error")
 

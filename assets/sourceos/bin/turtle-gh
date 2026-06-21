@@ -1,0 +1,514 @@
+#!/usr/bin/env python3
+"""turtle-gh — gh CLI parity with Gitea-sovereign as primary forge.
+
+Gitea is the primary surface (GITEA_URL + GITEA_TOKEN).
+GitHub is the fallback. AI superpowers baked in throughout.
+
+Usage:
+  turtle-gh repo create NAME [--private]    Create a repository
+  turtle-gh repo fork                       Fork current repo
+  turtle-gh repo view [OWNER/REPO]          View repo details
+  turtle-gh repo clone OWNER/REPO           Clone a repo
+
+  turtle-gh pr create [--title T] [--ai]    Create PR (AI writes body)
+  turtle-gh pr list [--state open|closed]   List PRs
+  turtle-gh pr view NUMBER                  View a PR
+  turtle-gh pr checkout NUMBER              Checkout a PR branch
+  turtle-gh pr merge NUMBER [--squash]      Merge a PR
+  turtle-gh pr close NUMBER                 Close a PR
+  turtle-gh pr comment NUMBER --body TEXT   Add comment
+  turtle-gh pr diff NUMBER                  Show PR diff
+
+  turtle-gh issue create --title T [--ai]   Create issue (AI suggests labels)
+  turtle-gh issue list [--state open]       List issues
+  turtle-gh issue view NUMBER               View an issue
+  turtle-gh issue close NUMBER              Close issue
+  turtle-gh issue comment NUMBER --body T   Add comment
+
+  turtle-gh release create --tag v1.0.0 [--ai-changelog]  Create release
+  turtle-gh release list                    List releases
+
+  turtle-gh gist create FILE [--public]     Create snippet/gist
+  turtle-gh gist list                       List snippets
+
+  turtle-gh run list                        List CI runs
+  turtle-gh run watch [ID]                  Watch a CI run
+  turtle-gh run cancel ID                   Cancel a run
+
+  turtle-gh workflow list                   List workflows
+  turtle-gh workflow run NAME               Trigger a workflow
+
+  turtle-gh secret list                     List secrets
+  turtle-gh secret set NAME VALUE           Set a secret
+
+  turtle-gh label list                      List labels
+  turtle-gh label create NAME --color HEX  Create label
+
+  turtle-gh search repos QUERY [--ai]       Search repos (AI-ranked)
+  turtle-gh search issues QUERY             Search issues
+  turtle-gh search prs QUERY               Search PRs
+
+  turtle-gh status                          Show forge status + open items
+  turtle-gh auth status                     Show auth/connection status
+
+  turtle-gh api ENDPOINT [--method GET]     Raw API call
+
+Environment:
+  GITEA_URL    http://org-gitea:3000   Gitea primary forge
+  GITEA_TOKEN  your-gitea-token
+  GITHUB_TOKEN your-github-token       Fallback
+"""
+from __future__ import annotations
+import json, os, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'; BLUE='\033[34m'
+
+def agentd(payload: dict, timeout: int = 30) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def d(r) -> dict: return (r or {}).get("data", {})
+def run(*a: str, **kw) -> subprocess.CompletedProcess: return subprocess.run(list(a), capture_output=True, text=True, **kw)
+def forge_icon() -> str: return f"{CYAN}[Gitea]{RESET}" if os.environ.get("GITEA_URL") else f"{GRAY}[GitHub]{RESET}"
+
+def get_flag(args: list[str], flag: str, default: str = "") -> str:
+    if flag in args:
+        idx = args.index(flag)
+        return args[idx+1] if idx+1 < len(args) else default
+    return default
+
+def has_flag(args: list[str], *flags: str) -> bool:
+    return any(f in args for f in flags)
+
+def positional(args: list[str]) -> list[str]:
+    result = []
+    skip_next = False
+    for i, a in enumerate(args):
+        if skip_next: skip_next = False; continue
+        if a.startswith("--"):
+            skip_next = True
+            continue
+        result.append(a)
+    return result
+
+def print_prs(prs: list[dict]) -> None:
+    for pr in prs:
+        state_color = GREEN if pr.get("state") == "open" else GRAY
+        print(f"  {state_color}#{pr.get('number'):4}{RESET}  {pr.get('title','')[:55]}  {GRAY}@{pr.get('user','?')}{RESET}")
+
+def print_issues(issues: list[dict]) -> None:
+    for i in issues:
+        labels = ", ".join(i.get("labels") or [])
+        print(f"  {GREEN}#{i.get('number'):4}{RESET}  {i.get('title','')[:55]}  {GRAY}{labels}{RESET}")
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); return 0
+
+    sub  = args[0]
+    rest = args[1:]
+
+    # ══ repo ══════════════════════════════════════════════════════════════════
+    if sub == "repo":
+        cmd = rest[0] if rest else "view"
+        pos = positional(rest[1:])
+
+        if cmd == "create":
+            name    = pos[0] if pos else input("Repo name: ").strip()
+            private = has_flag(rest, "--private")
+            org     = get_flag(rest, "--org")
+            print(f"Creating {'private' if private else 'public'} repo: {name}  {forge_icon()}")
+            r = agentd({"action": "gh-repo-create", "name": name, "private": private, "org": org})
+            data = d(r)
+            if data.get("created"):
+                print(f"  {GREEN}✓{RESET}  {data.get('url','')}")
+            else:
+                print(f"  {RED}Failed: {data.get('reason','?')}{RESET}"); return 1
+
+        elif cmd == "fork":
+            print(f"Forking current repo  {forge_icon()}")
+            r = agentd({"action": "gh-repo-fork"})
+            data = d(r)
+            print(f"  {'✓' if data.get('forked') else '✗'}  {data.get('url','')}")
+
+        elif cmd == "view":
+            repo_name = pos[0] if pos else ""
+            r = agentd({"action": "gh-repo-view", "repo": repo_name})
+            data = d(r)
+            if not data.get("found"):
+                print(f"Repo not found  {forge_icon()}"); return 1
+            print(f"\n{BOLD}{data.get('name','')}{RESET}  {forge_icon()}")
+            print(f"  {data.get('description','')}")
+            print(f"  ★ {data.get('stars',0)}  🍴 {data.get('forks',0)}  🐛 {data.get('open_issues',0)} open issues")
+            print(f"  Branch: {data.get('default_branch','main')}")
+            print(f"  {BLUE}{data.get('url','')}{RESET}")
+
+        elif cmd == "clone":
+            repo = pos[0] if pos else ""
+            if not repo:
+                print("Usage: turtle-gh repo clone OWNER/REPO"); return 1
+            gitea_url = os.environ.get("GITEA_URL","").rstrip("/")
+            if gitea_url:
+                clone_url = f"{gitea_url}/{repo}.git"
+            else:
+                clone_url = f"https://github.com/{repo}.git"
+            print(f"Cloning {clone_url}")
+            result = subprocess.run(["git", "clone", clone_url])
+            return result.returncode
+
+        return 0
+
+    # ══ pr ════════════════════════════════════════════════════════════════════
+    if sub == "pr":
+        cmd = rest[0] if rest else "list"
+        pos = positional(rest[1:])
+
+        if cmd == "create":
+            title  = get_flag(rest, "--title")
+            base   = get_flag(rest, "--base", "main")
+            body   = get_flag(rest, "--body", "")
+            use_ai = has_flag(rest, "--ai", "--auto")
+            if use_ai and not body:
+                print("Generating AI PR body from session history...")
+                ai_r = agentd({"action": "session-to-pr", "style": "detailed"})
+                ai_d = d(ai_r)
+                body  = ai_d.get("body","")
+                title = title or ai_d.get("title","")
+            r = agentd({"action": "gitea-pr-create", "title": title, "body": body, "base": base})
+            data = d(r)
+            if data.get("created"):
+                print(f"  {GREEN}✓ PR #{data['number']}{RESET}: {data['title']}")
+                print(f"  {BLUE}{data.get('url','')}{RESET}")
+            else:
+                print(f"  {RED}Failed: {data.get('reason','?')}{RESET}"); return 1
+
+        elif cmd == "list":
+            state = get_flag(rest, "--state", "open")
+            r = agentd({"action": "gitea-pr-list", "state": state})
+            prs = d(r).get("prs",[])
+            forge = d(r).get("forge","?")
+            print(f"\n{BOLD}PRs ({state}) — {forge_icon()}{RESET}")
+            if not prs: print(f"  {GRAY}None{RESET}")
+            else: print_prs(prs)
+
+        elif cmd == "checkout":
+            num = pos[0] if pos else get_flag(rest, "--number")
+            if not num: print("Usage: turtle-gh pr checkout NUMBER"); return 1
+            r = agentd({"action": "gh-pr-checkout", "number": num})
+            data = d(r)
+            if data.get("checked_out"):
+                print(f"  {GREEN}✓ Checked out PR #{num} as {data.get('branch','')}{RESET}")
+            else:
+                print(f"  {RED}Failed: {data.get('reason','?')}{RESET}"); return 1
+
+        elif cmd == "merge":
+            num    = pos[0] if pos else ""
+            method = "squash" if has_flag(rest,"--squash") else ("rebase" if has_flag(rest,"--rebase") else "merge")
+            if not num: print("Usage: turtle-gh pr merge NUMBER"); return 1
+            # AI pre-merge review
+            if has_flag(rest,"--review"):
+                print("Running AI pre-merge review...")
+                rev_r = agentd({"action": "explain-selection", "text": f"PR #{num} about to be merged.", "context": "pre-merge review: flag any concerns"})
+                print(f"  Review: {d(rev_r).get('explanation','')[:200]}")
+                if not input("Proceed with merge? [y/N] ").strip().lower().startswith("y"):
+                    print("Aborted."); return 1
+            r = agentd({"action": "gh-pr-merge", "number": num, "merge_method": method})
+            data = d(r)
+            print(f"  {'✓ Merged' if data.get('merged') else 'Failed'} PR #{num}  ({method})")
+
+        elif cmd == "close":
+            num = pos[0] if pos else ""
+            r = agentd({"action": "gh-pr-close", "number": num})
+            print(f"  {'✓ Closed' if d(r).get('closed') else 'Failed'} PR #{num}")
+
+        elif cmd == "comment":
+            num  = pos[0] if pos else ""
+            body = get_flag(rest, "--body")
+            if not body: body = input("Comment: ").strip()
+            r = agentd({"action": "gh-pr-comment", "number": num, "body": body})
+            print(f"  {'✓ Commented' if d(r).get('posted') else 'Failed'}")
+
+        elif cmd == "diff":
+            num = pos[0] if pos else ""
+            if num:
+                result = run("gh", "pr", "diff", num)
+                if result.returncode == 0:
+                    print(result.stdout)
+                else:
+                    print(f"  {GRAY}(gh CLI not available — use turtle-review {num}){RESET}")
+
+        return 0
+
+    # ══ issue ═════════════════════════════════════════════════════════════════
+    if sub == "issue":
+        cmd = rest[0] if rest else "list"
+        pos = positional(rest[1:])
+
+        if cmd == "create":
+            title  = get_flag(rest, "--title")
+            body   = get_flag(rest, "--body","")
+            use_ai = has_flag(rest, "--ai")
+            if not title: title = input("Issue title: ").strip()
+            if use_ai:
+                print("AI suggesting labels and body...")
+                ai_r = agentd({"action": "explain-selection", "text": title, "context": "suggest GitHub labels for this issue: bug/feature/docs/chore/security"})
+                body = body or d(ai_r).get("explanation","")[:500]
+            r = agentd({"action": "gitea-issue-create", "title": title, "body": body})
+            data = d(r)
+            if data.get("created"):
+                print(f"  {GREEN}✓ Issue #{data['number']}{RESET}: {title}")
+                print(f"  {BLUE}{data.get('url','')}{RESET}")
+            else:
+                print(f"  {RED}Failed: {data.get('reason','?')}{RESET}"); return 1
+
+        elif cmd == "list":
+            state = get_flag(rest, "--state","open")
+            r = agentd({"action": "gh-issue-list", "state": state})
+            issues = d(r).get("issues",[])
+            print(f"\n{BOLD}Issues ({state}) — {forge_icon()}{RESET}")
+            if not issues: print(f"  {GRAY}None{RESET}")
+            else: print_issues(issues)
+
+        elif cmd == "close":
+            num = pos[0] if pos else ""
+            r = agentd({"action": "gh-issue-close", "number": num})
+            print(f"  {'✓ Closed' if d(r).get('closed') else 'Failed'} issue #{num}")
+
+        elif cmd == "comment":
+            num  = pos[0] if pos else ""
+            body = get_flag(rest, "--body")
+            if not body: body = input("Comment: ").strip()
+            r = agentd({"action": "gh-issue-comment", "number": num, "body": body})
+            print(f"  {'✓ Commented' if d(r).get('posted') else 'Failed'}")
+
+        return 0
+
+    # ══ release ═══════════════════════════════════════════════════════════════
+    if sub == "release":
+        cmd = rest[0] if rest else "list"
+        pos = positional(rest[1:])
+
+        if cmd == "create":
+            tag   = get_flag(rest, "--tag") or (pos[0] if pos else "")
+            name  = get_flag(rest, "--name", tag)
+            notes = get_flag(rest, "--notes","")
+            ai_cl = has_flag(rest, "--ai-changelog","--ai")
+            if not tag: tag = input("Release tag (e.g. v1.2.0): ").strip()
+            if ai_cl or not notes:
+                print("Generating AI changelog...")
+                since = get_flag(rest,"--since-tag","")
+                cl_r = agentd({"action": "gh-release-ai-changelog", "tag": tag, "since_tag": since})
+                notes = d(cl_r).get("changelog","") or notes
+                if notes:
+                    print(f"\n{GRAY}--- Changelog preview ---{RESET}")
+                    print(notes[:400])
+                    print(f"{GRAY}-------------------------{RESET}\n")
+            confirm = input(f"Create release {tag}? [Y/n] ").strip().lower()
+            if confirm == "n": print("Aborted."); return 0
+            r = agentd({"action": "gitea-release-create", "tag": tag, "name": name, "body": notes})
+            data = d(r)
+            if data.get("created"):
+                print(f"  {GREEN}✓ Release {tag}{RESET}  {BLUE}{data.get('url','')}{RESET}")
+            else:
+                print(f"  {RED}Failed: {data.get('reason','?')}{RESET}"); return 1
+
+        elif cmd == "list":
+            r = agentd({"action": "gh-release-list"})
+            rels = d(r).get("releases",[])
+            print(f"\n{BOLD}Releases — {forge_icon()}{RESET}")
+            for rel in rels:
+                draft = f"  {YELLOW}[draft]{RESET}" if rel.get("draft") else ""
+                pre   = f"  {GRAY}[pre]{RESET}" if rel.get("prerelease") else ""
+                print(f"  {rel.get('tag','?'):15}  {rel.get('name','')[:40]}{draft}{pre}")
+
+        return 0
+
+    # ══ gist ══════════════════════════════════════════════════════════════════
+    if sub == "gist":
+        cmd = rest[0] if rest else "list"
+        pos = positional(rest[1:])
+
+        if cmd == "create":
+            file_path = pos[0] if pos else ""
+            public = has_flag(rest, "--public")
+            if file_path and Path(file_path).exists():
+                content = Path(file_path).read_text()
+                fname = Path(file_path).name
+            else:
+                content = sys.stdin.read()
+                fname = "snippet.txt"
+            r = agentd({"action": "gitea-snippet-create", "content": content, "filename": fname, "public": public})
+            data = d(r)
+            if data.get("created"):
+                print(f"  {GREEN}✓ Snippet:{RESET}  {BLUE}{data.get('url','')}{RESET}  ({data.get('via','gitea')})")
+            else:
+                print(f"  {RED}Failed: {data.get('reason','?')}{RESET}"); return 1
+
+        return 0
+
+    # ══ run ═══════════════════════════════════════════════════════════════════
+    if sub == "run":
+        cmd = rest[0] if rest else "list"
+        pos = positional(rest[1:])
+
+        if cmd == "list":
+            r = agentd({"action": "gitea-ci-runs"})
+            runs = d(r).get("runs",[])
+            print(f"\n{BOLD}CI Runs — {forge_icon()}{RESET}")
+            for run_item in runs:
+                status = run_item.get("status","?")
+                concl  = run_item.get("conclusion","")
+                icon   = {("completed","success"): f"{GREEN}✓{RESET}", ("failure",""): f"{RED}✗{RESET}"}.get((status,concl), f"{YELLOW}⟳{RESET}")
+                print(f"  {icon}  {str(run_item.get('id','?')):10}  {run_item.get('name','?'):28}  {status}")
+
+        elif cmd == "watch":
+            run_id = pos[0] if pos else ""
+            if not run_id:
+                r = agentd({"action": "gitea-ci-runs", "limit": 1})
+                runs = d(r).get("runs",[])
+                run_id = str(runs[0].get("id","")) if runs else ""
+            if not run_id: print("No run ID found"); return 1
+            print(f"Watching run {run_id}...")
+            r = agentd({"action": "gitea-ci-watch", "run_id": run_id}, timeout=300)
+            data = d(r)
+            icon = f"{GREEN}✓{RESET}" if data.get("conclusion") == "success" else f"{RED}✗{RESET}"
+            print(f"  {icon}  {data.get('status','?')} / {data.get('conclusion','?')}  ({data.get('elapsed_s',0)}s)")
+            return 0 if data.get("conclusion") == "success" else 1
+
+        return 0
+
+    # ══ workflow ══════════════════════════════════════════════════════════════
+    if sub == "workflow":
+        cmd = rest[0] if rest else "list"
+        if cmd == "list":
+            r = agentd({"action": "gh-workflow-list"})
+            workflows = d(r).get("workflows",[])
+            print(f"\n{BOLD}Workflows — {forge_icon()}{RESET}")
+            for wf in workflows:
+                state = wf.get("state","?")
+                icon  = f"{GREEN}●{RESET}" if state == "active" else f"{GRAY}○{RESET}"
+                print(f"  {icon}  {wf.get('id','?'):8}  {wf.get('name','?')}")
+        return 0
+
+    # ══ secret ════════════════════════════════════════════════════════════════
+    if sub == "secret":
+        cmd = rest[0] if rest else "list"
+        pos = positional(rest[1:])
+        if cmd == "list":
+            r = agentd({"action": "gh-secret-list"})
+            secrets = d(r).get("secrets",[])
+            note = d(r).get("note","")
+            print(f"\n{BOLD}Secrets — {forge_icon()}{RESET}  {GRAY}{note}{RESET}")
+            for s in secrets:
+                print(f"  {s.get('name','?'):30}  {GRAY}{s.get('created','')[:10]}{RESET}")
+        return 0
+
+    # ══ label ═════════════════════════════════════════════════════════════════
+    if sub == "label":
+        cmd = rest[0] if rest else "list"
+        pos = positional(rest[1:])
+        if cmd == "list":
+            r = agentd({"action": "gh-label-list"})
+            labels = d(r).get("labels",[])
+            print(f"\n{BOLD}Labels — {forge_icon()}{RESET}")
+            for l in labels:
+                print(f"  #{l.get('color','000000')}  {l.get('name','?')}")
+        elif cmd == "create":
+            name  = pos[0] if pos else get_flag(rest,"--name")
+            color = get_flag(rest,"--color","0075ca")
+            r = agentd({"action": "gh-label-create", "name": name, "color": color})
+            print(f"  {'✓ Created' if d(r).get('created') else 'Failed'} label: {name}")
+        return 0
+
+    # ══ search ════════════════════════════════════════════════════════════════
+    if sub == "search":
+        kind  = rest[0] if rest else "repos"
+        query = " ".join(positional(rest[1:]))
+        use_ai = has_flag(rest, "--ai")
+        if not query: print("Usage: turtle-gh search repos|issues|prs QUERY"); return 1
+        print(f"\nSearching {kind}: {query}  {forge_icon()}")
+        r = agentd({"action": "gh-search", "query": query, "kind": kind, "ai_rank": use_ai})
+        results = d(r).get("results",[])
+        if not results: print(f"  {GRAY}No results{RESET}")
+        for item in results:
+            name = item.get("name") or item.get("title","?")
+            desc = item.get("desc","")[:60]
+            stars = f"★{item.get('stars',0)}" if item.get("stars") else ""
+            print(f"  {BOLD}{name}{RESET}  {GRAY}{stars}  {desc}{RESET}")
+            if item.get("url"): print(f"  {BLUE}{item['url']}{RESET}")
+        return 0
+
+    # ══ status ════════════════════════════════════════════════════════════════
+    if sub == "status":
+        r = agentd({"action": "gh-status"})
+        data = d(r)
+        print(f"\n{BOLD}Forge Status — {forge_icon()}{RESET}")
+        if data.get("gitea_url"):
+            print(f"  Gitea    : {GREEN}{data.get('gitea_url','')}{RESET}  user={data.get('gitea_user','?')}")
+        print(f"  Repo     : {data.get('repo','?')}")
+        if "open_prs" in data: print(f"  Open PRs : {data['open_prs']}")
+        if "open_issues" in data: print(f"  Issues   : {data['open_issues']}")
+        if data.get("note"): print(f"  {GRAY}{data['note']}{RESET}")
+        # Also show copilot status
+        cop_r = agentd({"action": "copilot-status"})
+        cop   = d(cop_r)
+        running = cop.get("running",False)
+        icon   = f"{GREEN}●{RESET}" if running else f"{GRAY}○{RESET}"
+        print(f"  Copilot  : {icon}  {'running' if running else 'stopped'}  (backend: {cop.get('backend','?')})")
+        return 0
+
+    # ══ auth ══════════════════════════════════════════════════════════════════
+    if sub == "auth":
+        cmd = rest[0] if rest else "status"
+        if cmd == "status":
+            gitea_url   = os.environ.get("GITEA_URL","")
+            gitea_token = os.environ.get("GITEA_TOKEN","")
+            gh_token    = os.environ.get("GITHUB_TOKEN","")
+            print(f"\n{BOLD}Auth Status{RESET}")
+            print(f"  GITEA_URL    : {CYAN if gitea_url else GRAY}{gitea_url or '(not set)'}{RESET}")
+            print(f"  GITEA_TOKEN  : {GREEN+'set' if gitea_token else GRAY+'(not set)'}{RESET}")
+            print(f"  GITHUB_TOKEN : {GREEN+'set' if gh_token else GRAY+'(not set)'}{RESET}")
+            if gitea_url:
+                status_r = agentd({"action": "gitea-status"})
+                data = d(status_r)
+                if data.get("online"):
+                    print(f"  Gitea        : {GREEN}✓ online{RESET}  v{data.get('version','?')}  user={data.get('user','?')}")
+                else:
+                    print(f"  Gitea        : {RED}✗ offline{RESET}  {data.get('error','')}")
+        elif cmd == "token":
+            tok = os.environ.get("GITEA_TOKEN") or os.environ.get("GITHUB_TOKEN","")
+            if tok: print(tok)
+            else: print("(no token set)", file=sys.stderr); return 1
+        return 0
+
+    # ══ api ═══════════════════════════════════════════════════════════════════
+    if sub == "api":
+        endpoint = rest[0] if rest else ""
+        method   = get_flag(rest,"--method","GET").upper()
+        payload_str = get_flag(rest,"--input","")
+        payload  = json.loads(payload_str) if payload_str else None
+        if not endpoint: print("Usage: turtle-gh api ENDPOINT [--method GET] [--input '{...}']"); return 1
+        r = agentd({"action": "gh-api", "endpoint": endpoint, "method": method, "payload": payload})
+        data = d(r)
+        forge = data.get("forge","?")
+        print(f"  {forge_icon()}  {method} /{endpoint}")
+        print(json.dumps(data.get("data",{}), indent=2))
+        return 0
+
+    # ── passthrough: try gh CLI if unknown subcommand ─────────────────────────
+    gh_result = run("gh", sub, *rest)
+    if gh_result.returncode == 0:
+        print(gh_result.stdout, end="")
+        return 0
+
+    print(f"Unknown: {sub}. See --help.", file=sys.stderr)
+    return 1
+
+if __name__ == "__main__": raise SystemExit(main())

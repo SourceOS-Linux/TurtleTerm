@@ -369,6 +369,57 @@ def main(argv: list[str]) -> int:
     hsch_p.add_argument("--success-only", action="store_true")
     hsch_p.add_argument("--limit", type=int, default=20)
 
+    # Copilot
+    sub.add_parser("copilot-start")
+    sub.add_parser("copilot-stop")
+    sub.add_parser("copilot-status")
+    cop_chat_p = sub.add_parser("copilot-chat")
+    cop_chat_p.add_argument("message", nargs=argparse.REMAINDER)
+    sub.add_parser("copilot-suggest")
+    sub.add_parser("copilot-backends")
+    # gh parity
+    repo_create_p = sub.add_parser("gh-repo-create")
+    repo_create_p.add_argument("name", nargs="?", default="")
+    repo_create_p.add_argument("--private", action="store_true")
+    repo_create_p.add_argument("--org", default="")
+    sub.add_parser("gh-repo-fork")
+    repo_view_p = sub.add_parser("gh-repo-view")
+    repo_view_p.add_argument("repo", nargs="?", default="")
+    pr_checkout_p = sub.add_parser("gh-pr-checkout")
+    pr_checkout_p.add_argument("number", nargs="?", default="")
+    pr_merge_p = sub.add_parser("gh-pr-merge")
+    pr_merge_p.add_argument("number", nargs="?", default="")
+    pr_merge_p.add_argument("--squash", action="store_true")
+    pr_close_p = sub.add_parser("gh-pr-close")
+    pr_close_p.add_argument("number", nargs="?", default="")
+    pr_comment_p = sub.add_parser("gh-pr-comment")
+    pr_comment_p.add_argument("number", nargs="?", default="")
+    pr_comment_p.add_argument("--body", default="")
+    issue_list_p = sub.add_parser("gh-issue-list")
+    issue_list_p.add_argument("--state", default="open")
+    issue_close_p = sub.add_parser("gh-issue-close")
+    issue_close_p.add_argument("number", nargs="?", default="")
+    issue_comment_p = sub.add_parser("gh-issue-comment")
+    issue_comment_p.add_argument("number", nargs="?", default="")
+    issue_comment_p.add_argument("--body", default="")
+    sub.add_parser("gh-release-list")
+    gh_cl_p = sub.add_parser("gh-release-ai-changelog")
+    gh_cl_p.add_argument("tag", nargs="?", default="")
+    gh_cl_p.add_argument("--since-tag", default="")
+    sub.add_parser("gh-workflow-list")
+    sub.add_parser("gh-secret-list")
+    sub.add_parser("gh-label-list")
+    label_create_p = sub.add_parser("gh-label-create")
+    label_create_p.add_argument("name", nargs="?", default="")
+    label_create_p.add_argument("--color", default="0075ca")
+    search_p = sub.add_parser("gh-search")
+    search_p.add_argument("kind", nargs="?", default="repos")
+    search_p.add_argument("query", nargs=argparse.REMAINDER)
+    sub.add_parser("gh-status")
+    gh_api_p = sub.add_parser("gh-api")
+    gh_api_p.add_argument("endpoint", nargs="?", default="")
+    gh_api_p.add_argument("--method", default="GET")
+
     args, _remainder = parser.parse_known_args(argv)
 
     if args.command == "ping":
@@ -645,6 +696,57 @@ def main(argv: list[str]) -> int:
         request = {"action": "history_index"}
     elif args.command == "history-search":
         request = {"action": "history_search", "query": getattr(args, "query", ""), "limit": getattr(args, "limit", 20), "success_only": getattr(args, "success_only", False)}
+    elif args.command == "copilot-start":
+        request = {"action": "copilot_start"}
+    elif args.command == "copilot-stop":
+        request = {"action": "copilot_stop"}
+    elif args.command == "copilot-status":
+        request = {"action": "copilot_status"}
+    elif args.command == "copilot-chat":
+        request = {"action": "copilot_chat", "message": join_remainder(getattr(args, "message", []))}
+    elif args.command == "copilot-suggest":
+        request = {"action": "copilot_suggest"}
+    elif args.command == "copilot-backends":
+        request = {"action": "copilot_backends"}
+    elif args.command == "gh-repo-create":
+        request = {"action": "gh_repo_create", "name": getattr(args, "name", ""), "private": getattr(args, "private", False), "org": getattr(args, "org", "")}
+    elif args.command == "gh-repo-fork":
+        request = {"action": "gh_repo_fork", "cwd": os.getcwd()}
+    elif args.command == "gh-repo-view":
+        request = {"action": "gh_repo_view", "repo": getattr(args, "repo", ""), "cwd": os.getcwd()}
+    elif args.command == "gh-pr-checkout":
+        request = {"action": "gh_pr_checkout", "number": getattr(args, "number", ""), "cwd": os.getcwd()}
+    elif args.command == "gh-pr-merge":
+        merge_method = "squash" if getattr(args, "squash", False) else "merge"
+        request = {"action": "gh_pr_merge", "number": getattr(args, "number", ""), "merge_method": merge_method, "cwd": os.getcwd()}
+    elif args.command == "gh-pr-close":
+        request = {"action": "gh_pr_close", "number": getattr(args, "number", ""), "cwd": os.getcwd()}
+    elif args.command == "gh-pr-comment":
+        request = {"action": "gh_pr_comment", "number": getattr(args, "number", ""), "body": getattr(args, "body", ""), "cwd": os.getcwd()}
+    elif args.command == "gh-issue-list":
+        request = {"action": "gh_issue_list", "state": getattr(args, "state", "open"), "cwd": os.getcwd()}
+    elif args.command == "gh-issue-close":
+        request = {"action": "gh_issue_close", "number": getattr(args, "number", ""), "cwd": os.getcwd()}
+    elif args.command == "gh-issue-comment":
+        request = {"action": "gh_issue_comment", "number": getattr(args, "number", ""), "body": getattr(args, "body", ""), "cwd": os.getcwd()}
+    elif args.command == "gh-release-list":
+        request = {"action": "gh_release_list", "cwd": os.getcwd()}
+    elif args.command == "gh-release-ai-changelog":
+        request = {"action": "gh_release_ai_changelog", "tag": getattr(args, "tag", ""), "since_tag": getattr(args, "since_tag", ""), "cwd": os.getcwd()}
+    elif args.command == "gh-workflow-list":
+        request = {"action": "gh_workflow_list", "cwd": os.getcwd()}
+    elif args.command == "gh-secret-list":
+        request = {"action": "gh_secret_list", "cwd": os.getcwd()}
+    elif args.command == "gh-label-list":
+        request = {"action": "gh_label_list", "cwd": os.getcwd()}
+    elif args.command == "gh-label-create":
+        request = {"action": "gh_label_create", "name": getattr(args, "name", ""), "color": getattr(args, "color", "0075ca"), "cwd": os.getcwd()}
+    elif args.command == "gh-search":
+        request = {"action": "gh_search", "kind": getattr(args, "kind", "repos"), "query": join_remainder(getattr(args, "query", [])), "ai_rank": True}
+    elif args.command == "gh-status":
+        request = {"action": "gh_status", "cwd": os.getcwd()}
+    elif args.command == "gh-api":
+        request = {"action": "gh_api", "endpoint": getattr(args, "endpoint", ""), "method": getattr(args, "method", "GET")}
     elif args.command is None and _remainder:
         # Passthrough: unknown subcommand treated as action name
         # Converts CLI → JSON payload for agentd

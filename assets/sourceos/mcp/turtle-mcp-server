@@ -653,6 +653,34 @@ TOOLS = [
     # Cross-session history
     {"name": "history_index", "description": "Index all past session command history for semantic search", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "history_search", "description": "Search all past terminal session history (semantic + keyword)", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}, "success_only": {"type": "boolean"}}, "required": ["query"]}},
+    # Copilot
+    {"name": "copilot_start", "description": "Start the self-hosted AI co-pilot watcher (auto-explains errors, suggests improvements)", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "copilot_stop", "description": "Stop the co-pilot watcher", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "copilot_status", "description": "Get co-pilot status, backend, and recent suggestions", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "copilot_chat", "description": "Multi-turn conversation with the AI co-pilot (persistent thread)", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "thread_id": {"type": "string"}, "clear": {"type": "boolean"}}, "required": ["message"]}},
+    {"name": "copilot_configure", "description": "Configure co-pilot backend, model, and behavior", "inputSchema": {"type": "object", "properties": {"backend": {"type": "string"}, "model": {"type": "string"}, "endpoint": {"type": "string"}, "auto_explain_errors": {"type": "boolean"}, "auto_suggest_slow": {"type": "boolean"}}}},
+    {"name": "copilot_suggest", "description": "Get latest proactive suggestions from the co-pilot", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
+    {"name": "copilot_backends", "description": "List available AI backends (Claude, Ollama, Noetica) and their status", "inputSchema": {"type": "object", "properties": {}}},
+    # gh parity
+    {"name": "gh_repo_create", "description": "Create a repository on Gitea (primary) or GitHub", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "private": {"type": "boolean"}, "org": {"type": "string"}}, "required": ["name"]}},
+    {"name": "gh_repo_fork", "description": "Fork the current repository", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}}},
+    {"name": "gh_repo_view", "description": "View repository details", "inputSchema": {"type": "object", "properties": {"repo": {"type": "string"}, "cwd": {"type": "string"}}}},
+    {"name": "gh_pr_checkout", "description": "Checkout a PR branch locally", "inputSchema": {"type": "object", "properties": {"number": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["number"]}},
+    {"name": "gh_pr_merge", "description": "Merge a PR (merge/squash/rebase)", "inputSchema": {"type": "object", "properties": {"number": {"type": "string"}, "merge_method": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["number"]}},
+    {"name": "gh_pr_close", "description": "Close a PR without merging", "inputSchema": {"type": "object", "properties": {"number": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["number"]}},
+    {"name": "gh_pr_comment", "description": "Add a comment to a PR", "inputSchema": {"type": "object", "properties": {"number": {"type": "string"}, "body": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["number", "body"]}},
+    {"name": "gh_issue_list", "description": "List issues on the repo", "inputSchema": {"type": "object", "properties": {"state": {"type": "string"}, "limit": {"type": "integer"}, "cwd": {"type": "string"}}}},
+    {"name": "gh_issue_close", "description": "Close an issue", "inputSchema": {"type": "object", "properties": {"number": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["number"]}},
+    {"name": "gh_issue_comment", "description": "Add a comment to an issue", "inputSchema": {"type": "object", "properties": {"number": {"type": "string"}, "body": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["number", "body"]}},
+    {"name": "gh_release_list", "description": "List releases on the repo", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}}},
+    {"name": "gh_release_ai_changelog", "description": "AI-generated release changelog from git commits", "inputSchema": {"type": "object", "properties": {"tag": {"type": "string"}, "since_tag": {"type": "string"}, "cwd": {"type": "string"}}}},
+    {"name": "gh_workflow_list", "description": "List GitHub Actions / Gitea Actions workflows", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}}},
+    {"name": "gh_secret_list", "description": "List repository secrets (names only)", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}}},
+    {"name": "gh_label_list", "description": "List repository labels", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}}},
+    {"name": "gh_label_create", "description": "Create a repository label", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "color": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["name"]}},
+    {"name": "gh_search", "description": "Search repos/issues/PRs/code with optional AI re-ranking", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "kind": {"type": "string"}, "limit": {"type": "integer"}, "ai_rank": {"type": "boolean"}}, "required": ["query"]}},
+    {"name": "gh_status", "description": "Show forge status: open PRs, issues, co-pilot state", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}}},
+    {"name": "gh_api", "description": "Raw Gitea or GitHub API call", "inputSchema": {"type": "object", "properties": {"endpoint": {"type": "string"}, "method": {"type": "string"}, "payload": {"type": "object"}, "gitea": {"type": "boolean"}}, "required": ["endpoint"]}},
 ]
 
 
@@ -922,6 +950,33 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
     if name == 'cost_record': return _agentd({'action': 'cost-record', 'model': arguments.get('model','claude-sonnet-4-6'), 'action_name': arguments.get('action_name',''), 'input_tokens': arguments.get('input_tokens',0), 'output_tokens': arguments.get('output_tokens',0)})
     if name == 'history_index': return _agentd({'action': 'history-index'})
     if name == 'history_search': return _agentd({'action': 'history-search', 'query': arguments.get('query'), 'limit': arguments.get('limit',20), 'success_only': arguments.get('success_only',False)})
+    import os as _os
+    if name == 'copilot_start': return _agentd({'action': 'copilot-start'})
+    if name == 'copilot_stop': return _agentd({'action': 'copilot-stop'})
+    if name == 'copilot_status': return _agentd({'action': 'copilot-status'})
+    if name == 'copilot_chat': return _agentd({'action': 'copilot-chat', 'message': arguments.get('message'), 'thread_id': arguments.get('thread_id','default'), 'clear': arguments.get('clear',False)})
+    if name == 'copilot_configure': return _agentd({'action': 'copilot-configure', **{k: v for k,v in arguments.items() if k in ('backend','model','endpoint','api_key_env','auto_explain_errors','auto_suggest_slow','slow_threshold_ms')}})
+    if name == 'copilot_suggest': return _agentd({'action': 'copilot-suggest', 'limit': arguments.get('limit',5)})
+    if name == 'copilot_backends': return _agentd({'action': 'copilot-backends'})
+    if name == 'gh_repo_create': return _agentd({'action': 'gh-repo-create', 'name': arguments.get('name'), 'description': arguments.get('description',''), 'private': arguments.get('private',False), 'org': arguments.get('org','')})
+    if name == 'gh_repo_fork': return _agentd({'action': 'gh-repo-fork', 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_repo_view': return _agentd({'action': 'gh-repo-view', 'repo': arguments.get('repo',''), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_pr_checkout': return _agentd({'action': 'gh-pr-checkout', 'number': arguments.get('number'), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_pr_merge': return _agentd({'action': 'gh-pr-merge', 'number': arguments.get('number'), 'merge_method': arguments.get('merge_method','merge'), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_pr_close': return _agentd({'action': 'gh-pr-close', 'number': arguments.get('number'), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_pr_comment': return _agentd({'action': 'gh-pr-comment', 'number': arguments.get('number'), 'body': arguments.get('body'), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_issue_list': return _agentd({'action': 'gh-issue-list', 'state': arguments.get('state','open'), 'limit': arguments.get('limit',20), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_issue_close': return _agentd({'action': 'gh-issue-close', 'number': arguments.get('number'), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_issue_comment': return _agentd({'action': 'gh-issue-comment', 'number': arguments.get('number'), 'body': arguments.get('body'), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_release_list': return _agentd({'action': 'gh-release-list', 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_release_ai_changelog': return _agentd({'action': 'gh-release-ai-changelog', 'tag': arguments.get('tag',''), 'since_tag': arguments.get('since_tag',''), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_workflow_list': return _agentd({'action': 'gh-workflow-list', 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_secret_list': return _agentd({'action': 'gh-secret-list', 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_label_list': return _agentd({'action': 'gh-label-list', 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_label_create': return _agentd({'action': 'gh-label-create', 'name': arguments.get('name'), 'color': arguments.get('color','0075ca'), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_search': return _agentd({'action': 'gh-search', 'query': arguments.get('query'), 'kind': arguments.get('kind','repos'), 'limit': arguments.get('limit',10), 'ai_rank': arguments.get('ai_rank',True)})
+    if name == 'gh_status': return _agentd({'action': 'gh-status', 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
+    if name == 'gh_api': return _agentd({'action': 'gh-api', 'endpoint': arguments.get('endpoint'), 'method': arguments.get('method','GET'), 'payload': arguments.get('payload'), 'gitea': arguments.get('gitea', bool(_os.environ.get('GITEA_URL')))})
     return {"error": f"unknown tool: {name}"}
 
 
@@ -945,7 +1000,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turtleterm", "version": "0.9.0"},
+                "serverInfo": {"name": "turtleterm", "version": "1.0.0"},
             },
         }
 

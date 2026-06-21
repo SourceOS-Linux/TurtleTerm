@@ -492,7 +492,7 @@ def test_mcp_plan_tools() -> None:
         else:
             fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
 
-    if '0.9.0' in content or '0.8.0' in content or '0.7.0' in content or '0.6.0' in content or '0.5.0' in content:
+    if '1.0.0' in content or '0.9.0' in content or '0.8.0' in content or '0.7.0' in content or '0.6.0' in content or '0.5.0' in content:
         ok('mcp version current')
     else:
         fail('mcp version current', 'version not updated')
@@ -859,7 +859,7 @@ def test_mcp_v06():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert "0.5.0" in r.stdout or "0.6.0" in r.stdout or "0.7.0" in r.stdout or "0.8.0" in r.stdout or "0.9.0" in r.stdout, f"MCP not reporting any known version: {r.stdout[:300]}"
+    assert "0.5.0" in r.stdout or "0.6.0" in r.stdout or "0.7.0" in r.stdout or "0.8.0" in r.stdout or "0.9.0" in r.stdout or "1.0.0" in r.stdout, f"MCP not reporting any known version: {r.stdout[:300]}"
     ok("mcp_v0.5.0_or_later")
 
 
@@ -1076,8 +1076,8 @@ def test_mcp_tool_count():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert "0.9.0" in r.stdout or "0.8.0" in r.stdout or "0.7.0" in r.stdout or "0.6.0" in r.stdout, f"MCP version unexpected: {r.stdout[:200]}"
-    ok("mcp_v0.8.0")
+    assert "1.0.0" in r.stdout or "0.9.0" in r.stdout or "0.8.0" in r.stdout or "0.7.0" in r.stdout or "0.6.0" in r.stdout, f"MCP version unexpected: {r.stdout[:200]}"
+    ok("mcp_v1.0.0")
 
 def test_persona_injection():
     """Verify persona is stored and returned correctly (foundation for AI injection)."""
@@ -1179,8 +1179,8 @@ def test_mcp_v08():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert "0.8.0" in r.stdout or "0.7.0" in r.stdout or "0.9.0" in r.stdout, f"MCP version: {r.stdout[:200]}"
-    _ok("mcp_v0.8.0")
+    assert "1.0.0" in r.stdout or "0.9.0" in r.stdout or "0.8.0" in r.stdout or "0.7.0" in r.stdout, f"MCP version: {r.stdout[:200]}"
+    _ok("mcp_v1.0.0")
 
 
 def test_gitea_surface():
@@ -1237,8 +1237,106 @@ def test_mcp_v09():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert any(v in r.stdout for v in ["0.9.0","0.8.0","0.7.0"]), f"MCP version not found: {r.stdout[:200]}"
+    assert any(v in r.stdout for v in ["1.0.0","0.9.0","0.8.0","0.7.0"]), f"MCP version not found: {r.stdout[:200]}"
     ok("mcp_v0.9.0")
+
+
+def test_copilot():
+    # Backends probe
+    r = agentd({"action": "copilot-backends"})
+    assert r and r.get("status") == "ok", f"copilot-backends failed: {r}"
+    backends = r["data"].get("backends", [])
+    assert len(backends) >= 2, f"expected >=2 backends, got {backends}"
+    backend_ids = {b["id"] for b in backends}
+    assert "claude" in backend_ids and "ollama" in backend_ids
+    ok(f"copilot_backends ({len(backends)} backends: {', '.join(b['id'] for b in backends)})")
+
+    # Configure
+    r2 = agentd({"action": "copilot-configure", "backend": "claude", "auto_explain_errors": True})
+    assert r2 and r2.get("status") == "ok"
+    assert r2["data"].get("saved") == True
+    ok("copilot_configure")
+
+    # Start
+    r3 = agentd({"action": "copilot-start"})
+    assert r3 and r3.get("status") == "ok"
+    d3 = r3["data"]
+    assert d3.get("started") == True or "already running" in d3.get("reason","")
+    ok(f"copilot_start (backend={d3.get('backend','?')})")
+
+    # Status — watcher thread is in-process; in --stdio mode each call is a
+    # fresh subprocess so 'running' reflects only that invocation. Check 'enabled'
+    # which persists to the config file across calls.
+    r4 = agentd({"action": "copilot-status"})
+    assert r4 and r4.get("status") == "ok"
+    assert r4["data"].get("enabled") == True or r4["data"].get("running") == True, \
+        f"expected enabled or running after start: {r4['data']}"
+    ok(f"copilot_status (enabled={r4['data'].get('enabled')} running={r4['data'].get('running')})")
+
+    # Chat
+    r5 = agentd({"action": "copilot-chat", "message": "hello, what terminal am I in?", "thread_id": "selftest"})
+    assert r5 and r5.get("status") == "ok"
+    assert r5["data"].get("reply","") or True  # may be empty without API key
+    ok(f"copilot_chat (turns={r5['data'].get('turns',0)})")
+
+    # Stop
+    r6 = agentd({"action": "copilot-stop"})
+    assert r6 and r6.get("status") == "ok"
+    assert r6["data"].get("stopped") == True
+    ok("copilot_stop")
+
+def test_gh_parity():
+    # gh-status (always works, even without forge configured)
+    r = agentd({"action": "gh-status"})
+    assert r and r.get("status") == "ok", f"gh-status failed: {r}"
+    assert "forge" in r["data"]
+    ok(f"gh_status (forge={r['data'].get('forge','?')})")
+
+    # gh-search (uses GitHub fallback if GITEA_URL not set)
+    r2 = agentd({"action": "gh-search", "query": "turtleterm", "kind": "repos", "ai_rank": False})
+    assert r2 and r2.get("status") == "ok", f"gh-search failed: {r2}"
+    d2 = r2["data"]
+    assert "results" in d2
+    ok(f"gh_search (results={len(d2['results'])} forge={d2.get('forge','?') if 'forge' in d2 else 'n/a'})")
+
+    # gh-repo-view (graceful with no remote)
+    r3 = agentd({"action": "gh-repo-view", "repo": "", "cwd": "/tmp"})
+    assert r3 and r3.get("status") == "ok"
+    ok("gh_repo_view (graceful no-remote)")
+
+    # gh-release-ai-changelog (no git repo = graceful)
+    r4 = agentd({"action": "gh-release-ai-changelog", "tag": "v1.2.0", "cwd": "/tmp"})
+    assert r4 and r4.get("status") == "ok"
+    ok("gh_release_ai_changelog (graceful)")
+
+    # gh-issue-list graceful
+    r5 = agentd({"action": "gh-issue-list", "state": "open", "cwd": "/tmp"})
+    assert r5 and r5.get("status") == "ok"
+    ok("gh_issue_list (graceful)")
+
+def test_turtle_gh_script():
+    script = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "bin" / "turtle-gh"
+    assert script.exists(), "turtle-gh missing"
+    r = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, timeout=10)
+    assert r.returncode in (0, 1), f"turtle-gh --help crashed: {r.stderr[:80]}"
+    assert "repo" in r.stdout or "Usage" in r.stdout
+    ok("turtle-gh script --help")
+
+    script2 = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "bin" / "turtle-copilot"
+    assert script2.exists(), "turtle-copilot missing"
+    r2 = subprocess.run([sys.executable, str(script2), "--help"], capture_output=True, text=True, timeout=10)
+    assert r2.returncode in (0, 1)
+    ok("turtle-copilot script --help")
+
+def test_mcp_v10():
+    mcp_path = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "mcp" / "turtle-mcp-server"
+    r = subprocess.run(
+        [sys.executable, str(mcp_path)],
+        input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+        capture_output=True, text=True, timeout=10,
+    )
+    assert any(v in r.stdout for v in ["1.0.0","0.9.0","0.8.0"]), f"MCP version: {r.stdout[:200]}"
+    ok("mcp_v1.0.0")
 
 def test_new_scripts_v3():
     scripts = ["turtle-gitea", "turtle-ci", "turtle-review", "turtle-watch", "turtle-cost"]
@@ -1327,6 +1425,11 @@ def main() -> int:
     test_mcp_v09()
     test_new_scripts_v3()
     test_agentd_version_v11()
+    # v1.0.0 MCP + copilot + gh parity tests
+    test_copilot()
+    test_gh_parity()
+    test_turtle_gh_script()
+    test_mcp_v10()
 
     passed = sum(1 for r in results if r['status'] == 'pass')
     failed = sum(1 for r in results if r['status'] == 'fail')

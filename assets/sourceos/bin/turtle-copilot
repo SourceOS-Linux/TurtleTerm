@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""turtle-copilot — Your self-hosted AI terminal co-pilot.
+
+Always running. Watches your terminal. Auto-explains errors. Suggests
+improvements. Multi-turn conversations. Your own Copilot — no GitHub needed.
+
+Backends: Claude API | Ollama (local LLMs) | Noetica (self-hosted)
+
+Usage:
+  turtle-copilot start                  Start the co-pilot watcher
+  turtle-copilot stop                   Stop the watcher
+  turtle-copilot status                 Show status + recent suggestions
+  turtle-copilot chat [message]         Multi-turn conversation
+  turtle-copilot suggest                Show latest proactive suggestions
+  turtle-copilot backends               List available AI backends
+  turtle-copilot config [key=value...]  Configure backend, model, etc.
+  turtle-copilot use claude             Switch to Claude API backend
+  turtle-copilot use ollama [model]     Switch to Ollama (local LLM)
+  turtle-copilot use noetica            Switch to Noetica (self-hosted)
+
+Examples:
+  turtle-copilot start
+  turtle-copilot chat "how do I find large files on disk?"
+  turtle-copilot use ollama llama3.2
+  turtle-copilot config auto_explain_errors=true slow_threshold_ms=5000
+"""
+from __future__ import annotations
+import json, readline, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'; MAGENTA='\033[35m'; BLUE='\033[34m'
+
+def agentd(payload: dict, timeout: int = 30) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def d(r) -> dict: return (r or {}).get("data", {})
+
+def header(text: str) -> None:
+    print(f"\n{BOLD}{CYAN}{text}{RESET}")
+    print(f"{GRAY}{'─'*50}{RESET}")
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); return 0
+
+    sub = args[0]
+    rest = args[1:]
+
+    # ── start ─────────────────────────────────────────────────────────────────
+    if sub == "start":
+        print("Starting TurtleTerm co-pilot watcher...")
+        r = agentd({"action": "copilot-start"})
+        data = d(r)
+        if data.get("started"):
+            print(f"  {GREEN}✓ Co-pilot running{RESET}")
+            print(f"  Backend : {CYAN}{data.get('backend','?')}{RESET}  ({data.get('model','')})")
+            print(f"  Auto-explain errors : {GREEN if data.get('proactive') else GRAY}{'on' if data.get('proactive') else 'off'}{RESET}")
+            print(f"\n  {GRAY}It will auto-explain errors and suggest improvements as you work.")
+            print(f"  Run 'turtle-copilot suggest' to see latest tips.{RESET}")
+        elif "already running" in data.get("reason",""):
+            print(f"  {YELLOW}Already running{RESET}  (backend: {data.get('backend','?')})")
+        else:
+            print(f"  {RED}Failed to start: {data.get('reason','?')}{RESET}", file=sys.stderr); return 1
+        return 0
+
+    # ── stop ──────────────────────────────────────────────────────────────────
+    if sub == "stop":
+        r = agentd({"action": "copilot-stop"})
+        if d(r).get("stopped"):
+            print(f"  {YELLOW}Co-pilot stopped.{RESET}")
+        return 0
+
+    # ── status ────────────────────────────────────────────────────────────────
+    if sub == "status":
+        r = agentd({"action": "copilot-status"})
+        data = d(r)
+        running = data.get("running", False)
+        icon = f"{GREEN}●{RESET}" if running else f"{GRAY}○{RESET}"
+        header("TurtleTerm Co-pilot")
+        print(f"  Status   : {icon}  {'running' if running else 'stopped'}")
+        print(f"  Backend  : {data.get('backend','?')}  ({data.get('model','?')})")
+        if data.get("endpoint"):
+            print(f"  Endpoint : {data.get('endpoint')}")
+        print(f"  Auto-explain errors : {'on' if data.get('auto_explain_errors') else 'off'}")
+        print(f"  Suggestions logged  : {data.get('suggestions_count', 0)}")
+        recent = data.get("recent_suggestions", [])
+        if recent:
+            print(f"\n{BOLD}Recent Suggestions:{RESET}")
+            for s in recent[-3:]:
+                t = s.get("type","?")
+                icon2 = {"error_explain": f"{RED}✗{RESET}", "perf_tip": f"{YELLOW}⚡{RESET}"}.get(t, "·")
+                cmd = s.get("command","")[:40]
+                print(f"  {icon2}  {cmd}")
+                print(f"     {GRAY}{s.get('suggestion','')[:100]}{RESET}")
+        if not running:
+            print(f"\n  {GRAY}Run: turtle-copilot start{RESET}")
+        return 0
+
+    # ── chat ──────────────────────────────────────────────────────────────────
+    if sub == "chat":
+        thread_id = "default"
+        if "--thread" in rest:
+            idx = rest.index("--thread")
+            thread_id = rest[idx+1] if idx+1 < len(rest) else "default"
+
+        initial_message = " ".join(a for a in rest if not a.startswith("--")).strip()
+
+        header(f"TurtleTerm Co-pilot Chat  [{thread_id}]")
+        print(f"  {GRAY}Type your message. 'exit' to quit. '/clear' to reset thread. '/thread NAME' to switch.{RESET}\n")
+
+        def chat_once(message: str, tid: str) -> str:
+            r = agentd({"action": "copilot-chat", "message": message, "thread_id": tid}, timeout=30)
+            return d(r).get("reply", "[no response]")
+
+        if initial_message:
+            print(f"{CYAN}You:{RESET} {initial_message}")
+            reply = chat_once(initial_message, thread_id)
+            print(f"\n{MAGENTA}Copilot:{RESET} {reply}\n")
+
+        # Interactive REPL
+        try:
+            while True:
+                try:
+                    user_input = input(f"{CYAN}You:{RESET} ").strip()
+                except EOFError:
+                    break
+                if not user_input: continue
+                if user_input.lower() in ("exit", "quit", ":q"): break
+                if user_input == "/clear":
+                    agentd({"action": "copilot-chat", "message": " ", "thread_id": thread_id, "clear": True})
+                    print(f"  {GRAY}Thread cleared.{RESET}"); continue
+                if user_input.startswith("/thread "):
+                    thread_id = user_input.split(" ", 1)[1].strip()
+                    print(f"  {GRAY}Switched to thread: {thread_id}{RESET}"); continue
+                reply = chat_once(user_input, thread_id)
+                print(f"\n{MAGENTA}Copilot:{RESET} {reply}\n")
+        except KeyboardInterrupt:
+            print()
+        return 0
+
+    # ── suggest ───────────────────────────────────────────────────────────────
+    if sub == "suggest":
+        r = agentd({"action": "copilot-suggest", "limit": 10})
+        suggestions = d(r).get("suggestions", [])
+        if not suggestions:
+            print(f"  {GRAY}No suggestions yet. Start the co-pilot: turtle-copilot start{RESET}")
+            return 0
+        header("Proactive Suggestions")
+        for s in reversed(suggestions[-5:]):
+            t = s.get("type","?")
+            icon = {"error_explain": f"{RED}[error]{RESET}", "perf_tip": f"{YELLOW}[perf]{RESET}"}.get(t, f"{GRAY}[?]{RESET}")
+            ts = s.get("ts","")[:16]
+            cmd = s.get("command","")[:50]
+            print(f"\n  {icon}  {GRAY}{ts}{RESET}  {cmd}")
+            print(f"  {s.get('suggestion','')}")
+        return 0
+
+    # ── backends ──────────────────────────────────────────────────────────────
+    if sub == "backends":
+        r = agentd({"action": "copilot-backends"})
+        backends = d(r).get("backends", [])
+        current  = d(r).get("current", "?")
+        header("Available AI Backends")
+        for b in backends:
+            avail = b.get("available", False)
+            icon  = f"{GREEN}✓{RESET}" if avail else f"{RED}✗{RESET}"
+            bid   = b.get("id","?")
+            star  = f"  {YELLOW}← current{RESET}" if bid == current else ""
+            print(f"  {icon}  {BOLD}{bid}{RESET}{star}")
+            if avail:
+                if b.get("models"):
+                    print(f"       models: {', '.join(b['models'][:5])}")
+                if b.get("version"):
+                    print(f"       version: {b['version']}")
+                if b.get("endpoint"):
+                    print(f"       endpoint: {b['endpoint']}")
+            else:
+                print(f"       {GRAY}{b.get('note','')}{RESET}")
+        print(f"\n  {GRAY}Switch: turtle-copilot use claude | ollama [model] | noetica{RESET}")
+        return 0
+
+    # ── use ───────────────────────────────────────────────────────────────────
+    if sub == "use":
+        backend = rest[0] if rest else ""
+        if backend not in ("claude", "ollama", "noetica", "openai"):
+            print(f"Unknown backend: {backend}  (claude|ollama|noetica|openai)", file=sys.stderr); return 1
+        config: dict = {"backend": backend}
+        if backend == "ollama":
+            model = rest[1] if len(rest) > 1 else "llama3.2"
+            config["model"] = model
+            config["endpoint"] = "http://localhost:11434"
+        elif backend == "claude":
+            config["model"] = "claude-sonnet-4-6"
+        elif backend == "noetica":
+            config["endpoint"] = "http://127.0.0.1:8080"
+            config["model"] = "noetica"
+        r = agentd({"action": "copilot-configure", **config})
+        cfg = d(r).get("config", {})
+        print(f"  {GREEN}✓{RESET} Switched to {BOLD}{backend}{RESET}  model={cfg.get('model','?')}")
+        return 0
+
+    # ── config ────────────────────────────────────────────────────────────────
+    if sub == "config":
+        if not rest:
+            r = agentd({"action": "copilot-status"})
+            data = d(r)
+            header("Co-pilot Configuration")
+            for k in ("backend","model","endpoint","auto_explain_errors","auto_suggest_slow","slow_threshold_ms","proactive"):
+                print(f"  {k:30}  {data.get(k, '(not set)')}")
+            return 0
+        # Parse key=value pairs
+        updates: dict = {}
+        for item in rest:
+            if "=" in item:
+                k, v = item.split("=", 1)
+                # Type coerce
+                if v.lower() in ("true","yes"): v = True
+                elif v.lower() in ("false","no"): v = False
+                elif v.isdigit(): v = int(v)
+                updates[k] = v
+        if not updates:
+            print("Usage: turtle-copilot config key=value [key2=value2 ...]"); return 1
+        r = agentd({"action": "copilot-configure", **updates})
+        print(f"  {GREEN}✓{RESET} Config updated: {', '.join(f'{k}={v}' for k,v in updates.items())}")
+        return 0
+
+    print(f"Unknown: {sub}", file=sys.stderr); return 1
+
+if __name__ == "__main__": raise SystemExit(main())
