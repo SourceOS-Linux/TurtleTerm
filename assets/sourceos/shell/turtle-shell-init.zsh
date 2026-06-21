@@ -197,6 +197,24 @@ zle -N _turtle_ai_complete
 bindkey '\e/' _turtle_ai_complete   # ALT+/
 bindkey '^@' _turtle_ai_complete    # CTRL+SPACE
 
+# G9: AI alias learning — track corrections after AI suggestions
+_turtle_alias_learn() {
+    local original="$_TURTLE_GHOST_BUF"
+    local correction="$BUFFER"
+    if [[ -n "$original" && -n "$correction" && "$original" != "$correction" && ${#correction} -gt 3 ]]; then
+        # Fire-and-forget: record the correction asynchronously
+        (turtle-agentctl --stdio alias-learn "$original" "$correction" >/dev/null 2>&1 &)
+    fi
+    _TURTLE_GHOST_BUF=""
+    _TURTLE_GHOST_SUGGESTION=""
+}
+# Hook into ACCEPT_LINE: when user accepts a line, check if it differs from the AI suggestion
+_turtle_learn_hook() {
+    _turtle_alias_learn
+    zle .accept-line
+}
+zle -N accept-line _turtle_learn_hook 2>/dev/null || true
+
 # ---- Debounced auto-ghost (only when ANTHROPIC_API_KEY is set) ----
 
 if [[ -n "${ANTHROPIC_API_KEY:-}" || "${TURTLE_GHOST_TEXT:-}" == "1" ]]; then

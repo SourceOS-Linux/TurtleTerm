@@ -492,10 +492,10 @@ def test_mcp_plan_tools() -> None:
         else:
             fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
 
-    if '0.4.0' in content:
-        ok('mcp version 0.4.0')
+    if '0.5.0' in content:
+        ok('mcp version 0.5.0')
     else:
-        fail('mcp version 0.4.0', 'version not updated')
+        fail('mcp version 0.5.0', 'version not updated')
 
     if '_synapseiq' in content:
         ok('mcp _synapseiq helper')
@@ -767,12 +767,104 @@ def test_agentd_new_actions() -> None:
 
 
 # ---------------------------------------------------------------------------
+# G9-G14 tests
+# ---------------------------------------------------------------------------
+
+def test_g9_alias_learning():
+    """Test AI alias learning."""
+    r = agentd({"action": "alias-learn", "original": "git st", "correction": "git status --short"})
+    assert r and r.get("status") == "ok", f"alias-learn failed: {r}"
+    d = r["data"]
+    assert d.get("learned") == True, f"alias not learned: {d}"
+    r2 = agentd({"action": "alias-list", "limit": 5})
+    assert r2 and r2.get("status") == "ok", f"alias-list failed: {r2}"
+    entries = r2["data"].get("corrections", [])
+    assert any(e.get("original") == "git st" for e in entries), f"learned entry not in list: {entries}"
+    ok("alias_learn + alias_list")
+
+def test_g10_git_context():
+    """Test git context action."""
+    r = agentd({"action": "git-context", "cwd": str(Path.home() / "dev" / "TurtleTerm")})
+    assert r and r.get("status") == "ok", f"git-context failed: {r}"
+    d = r["data"]
+    assert "branch" in d, f"no branch in git-context: {d}"
+    ok("git_context")
+
+def test_g11_session_narrate():
+    """Test session narration (offline fallback)."""
+    r = agentd({"action": "session-narrate", "session_id": "__selftest__"})
+    assert r and r.get("status") == "ok", f"session-narrate failed: {r}"
+    d = r["data"]
+    assert "narrative" in d, f"no narrative in response: {d}"
+    ok("session_narrate")
+
+def test_g13_sync():
+    """Test sync_push (local only — no remote needed)."""
+    # Write a dummy bookmark so there's something to sync
+    import json as _json_s
+    bm_path = Path.home() / ".config" / "turtleterm" / "bookmarks.json"
+    bm_path.parent.mkdir(parents=True, exist_ok=True)
+    if not bm_path.exists():
+        bm_path.write_text(_json_s.dumps([]))
+    r = agentd({"action": "sync-push", "remote": ""})
+    # Even without a remote it should init and stage files
+    assert r and r.get("status") == "ok", f"sync-push failed: {r}"
+    ok("sync_push")
+
+def test_g14_voice():
+    """Test voice_to_shell (sox unavailability handled gracefully)."""
+    r = agentd({"action": "voice-to-shell", "duration": 1})
+    assert r and r.get("status") == "ok", f"voice-to-shell failed: {r}"
+    d = r["data"]
+    assert d.get("status") in ("ok", "unavailable", "no_speech", "dictation_triggered"), \
+        f"unexpected voice status: {d}"
+    ok("voice_to_shell (graceful)")
+
+def test_g_coach():
+    """Test AI terminal coach."""
+    r = agentd({"action": "coach-analyze"})
+    assert r and r.get("status") == "ok", f"coach-analyze failed: {r}"
+    d = r["data"]
+    assert "insights" in d or "message" in d, f"coach response malformed: {d}"
+    ok("coach_analyze")
+
+def test_smart_paste():
+    """Test smart paste sanitizer."""
+    r = agentd({"action": "smart-paste-sanitize", "text": "echo 'hello world'", "shell": "bash"})
+    assert r and r.get("status") == "ok", f"smart-paste-sanitize failed: {r}"
+    d = r["data"]
+    assert "sanitized" in d, f"no sanitized field: {d}"
+    assert "hello world" in d["sanitized"], f"sanitized lost content: {d}"
+    ok("smart_paste_sanitize")
+
+def test_dep_vuln():
+    """Test dependency vulnerability scan (npm install path)."""
+    r = agentd({"action": "dep-vuln-scan", "command": "npm install express", "cwd": "/tmp"})
+    assert r and r.get("status") == "ok", f"dep-vuln-scan failed: {r}"
+    d = r["data"]
+    assert "safe" in d and "vulnerabilities" in d, f"dep-vuln-scan bad response: {d}"
+    ok("dep_vuln_scan")
+
+def test_mcp_v05():
+    """Verify MCP server reports v0.5.0."""
+    import subprocess as _sp_mcp
+    mcp_path = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "mcp" / "turtle-mcp-server"
+    r = _sp_mcp.run(
+        [sys.executable, str(mcp_path)],
+        input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+        capture_output=True, text=True, timeout=10,
+    )
+    assert "0.5.0" in r.stdout, f"MCP not reporting v0.5.0: {r.stdout[:300]}"
+    ok("mcp_v0.5.0")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> int:
     if not AS_JSON:
-        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.6.0{RESET}\n')
+        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.7.0{RESET}\n')
 
     test_agentd()
     test_agentctl()
@@ -785,6 +877,15 @@ def main() -> int:
     test_mcp_plan_tools()
     test_completions()
     test_agentd_new_actions()
+    test_g9_alias_learning()
+    test_g10_git_context()
+    test_g11_session_narrate()
+    test_g13_sync()
+    test_g14_voice()
+    test_g_coach()
+    test_smart_paste()
+    test_dep_vuln()
+    test_mcp_v05()
     test_runbook_script()
     test_update_notifier()
     test_neovim_plugin()

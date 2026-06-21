@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TurtleTerm local agent gateway v0.
+"""TurtleTerm local agent gateway v0.3.0.
 
 Conservative local JSON gateway for TurtleTerm. Supports:
 - stdio (one request / one response)
@@ -718,7 +718,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         noetica_reachable = noetica_get("/api/status", timeout=1) is not None
         return response("pong", {
             "service": "turtle-agentd",
-            "version": "0.2.0",
+            "version": "0.3.0",
             "noetica_url": noetica_url(),
             "noetica_reachable": noetica_reachable,
         })
@@ -1210,7 +1210,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
                 "id": "turtleterm",
                 "name": "TurtleTerm",
                 "description": "TurtleTerm terminal intelligence agent (SourceOS)",
-                "version": "0.2.0",
+                "version": "0.3.0",
                 "capabilities": ["terminal", "shell", "explain_selection", "nl_to_shell"],
                 "endpoint": env("TURTLETERM_ACP_ENDPOINT", ""),
             }
@@ -2015,6 +2015,608 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         }
         return handle_request(plan_request)
 
+    if action in ("coach_analyze", "coach-analyze"):
+        """Detect inefficient command patterns and teach better alternatives."""
+        session_id = request.get("session_id") or env("SOURCEOS_TERMINAL_SESSION_ID")
+        focus = request.get("focus", "")
+        events = read_ndjson(event_stream_path(), limit=500)
+        if session_id:
+            events = [e for e in events if e.get("session_id") == session_id]
+        completed = [e for e in events if e.get("event_type") == "command.completed"]
+        if len(completed) < 3:
+            return response("coach_analyze", {"insights": [], "message": "Need at least 3 commands to analyze patterns."})
+        commands = [e.get("command", "") for e in completed[-50:]]
+        cmds_text = "\n".join(commands)
+        system = (
+            "You are an expert shell programmer acting as a terminal coach. "
+            "Analyze these recent shell commands for inefficient patterns, repeated anti-patterns, "
+            "or missed opportunities for better tools. "
+            f"{'Focus on: ' + focus + '. ' if focus else ''}"
+            "Return JSON: {\"insights\": [{\"pattern\": \"...\", \"better\": \"...\", \"example\": \"...\"}], \"score\": 0-10} "
+            "where score=10 means highly efficient. Max 3 insights. Be specific with actual commands."
+        )
+        ai_resp = smart_chat(cmds_text, system=system)
+        import re as _re_coach
+        insights = []
+        score = 7
+        if ai_resp:
+            raw = (ai_resp.get("response") or "")
+            m = _re_coach.search(r'\{.*\}', raw, _re_coach.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                    insights = parsed.get("insights", [])
+                    score = parsed.get("score", 7)
+                except json.JSONDecodeError:
+                    pass
+        return response("coach_analyze", {"insights": insights, "score": score, "command_count": len(commands)})
+
+    if action in ("smart_paste_sanitize", "smart-paste-sanitize"):
+        text = request.get("text", "").strip()
+        shell = request.get("shell", "bash")
+        if not text:
+            return response("smart_paste_sanitize", {"sanitized": "", "changes": [], "safe": True})
+
+        import re as _re_sp
+        changes = []
+        sanitized = text
+
+        # Fix common quoting issues
+        # Curly quotes → straight quotes
+        for bad, good in [('‘', "'"), ('’', "'"), ('“', '"'), ('”', '"')]:
+            if bad in sanitized:
+                sanitized = sanitized.replace(bad, good)
+                changes.append(f"replaced curly quote {bad!r} → {good!r}")
+
+        # Zero-width chars
+        for zwc in ['​', '‌', '‍', '﻿']:
+            if zwc in sanitized:
+                sanitized = sanitized.replace(zwc, '')
+                changes.append("removed zero-width character")
+
+        # Detect unbalanced quotes
+        single_count = sanitized.count("'") - sanitized.count("\\'")
+        double_count = sanitized.count('"') - sanitized.count('\\"')
+        if single_count % 2 != 0:
+            changes.append("warning: unbalanced single quotes")
+        if double_count % 2 != 0:
+            changes.append("warning: unbalanced double quotes")
+
+        # Trailing semicolons that could concatenate dangerously
+        if sanitized.rstrip().endswith(';'):
+            changes.append("info: trailing semicolon detected")
+
+        # Also get AI improvement if complex command
+        if len(text) > 30 and env("ANTHROPIC_API_KEY"):
+            ai = _claude_chat(
+                f"Sanitize and improve this {shell} command for safety and correctness. "
+                f"Return ONLY the improved command, no explanation:\n{text}",
+                system=f"You are a {shell} expert. Fix quoting, escaping, and safety issues only. Return only the command.",
+                timeout=8
+            )
+            if ai:
+                ai_cmd = (ai.get("response") or "").strip().strip("`").strip()
+                if ai_cmd and ai_cmd != sanitized and len(ai_cmd) < len(sanitized) * 3:
+                    sanitized = ai_cmd
+                    changes.append("AI improved quoting/safety")
+
+        return response("smart_paste_sanitize", {
+            "sanitized": sanitized,
+            "original": text,
+            "changes": changes,
+            "safe": len([c for c in changes if "warning" in c]) == 0,
+        })
+
+    if action in ("dep_vuln_scan", "dep-vuln-scan"):
+        command = request.get("command", "").strip()
+        cwd = request.get("cwd", ".") or "."
+        if not command:
+            return response("dep_vuln_scan", {"vulnerabilities": [], "safe": True, "scanned": 0})
+        import subprocess as _sp_dv, re as _re_dv, shutil as _sh_dv
+
+        vulns = []
+        scanned = 0
+
+        # npm audit for npm installs
+        if _re_dv.match(r'npm (install|i|add)\b', command):
+            if _sh_dv.which("npm"):
+                r = _sp_dv.run(
+                    ["npm", "audit", "--json", "--package-lock-only"],
+                    capture_output=True, text=True, cwd=cwd, timeout=20
+                )
+                if r.returncode != 0 and r.stdout:
+                    try:
+                        audit = json.loads(r.stdout)
+                        vulns_data = audit.get("vulnerabilities", {})
+                        for name, v in list(vulns_data.items())[:10]:
+                            sev = v.get("severity", "unknown")
+                            if sev in ("critical", "high", "moderate"):
+                                vulns.append({"package": name, "severity": sev, "fixAvailable": v.get("fixAvailable", False)})
+                                scanned += 1
+                    except json.JSONDecodeError:
+                        pass
+
+        # pip-audit for pip installs
+        if _re_dv.match(r'pip(3)? install\b', command) and _sh_dv.which("pip-audit"):
+            pkgs = _re_dv.findall(r'(?:install\s+)([A-Za-z0-9_\-\[\]>=<.,!]+)', command)
+            if pkgs:
+                r = _sp_dv.run(
+                    ["pip-audit", "--json", "-r", "/dev/stdin"],
+                    input="\n".join(pkgs), capture_output=True, text=True, timeout=30
+                )
+                if r.stdout:
+                    try:
+                        audit = json.loads(r.stdout)
+                        for dep in (audit if isinstance(audit, list) else []):
+                            for vuln in dep.get("vulns", [])[:3]:
+                                vulns.append({
+                                    "package": dep.get("name", "?"),
+                                    "severity": vuln.get("aliases", ["?"])[0],
+                                    "fixAvailable": bool(dep.get("fix_versions")),
+                                    "id": vuln.get("id", ""),
+                                })
+                                scanned += 1
+                    except json.JSONDecodeError:
+                        pass
+
+        # cargo audit for rust
+        if _re_dv.match(r'cargo (add|install)\b', command) and _sh_dv.which("cargo-audit"):
+            r = _sp_dv.run(["cargo", "audit", "--json"], capture_output=True, text=True, cwd=cwd, timeout=30)
+            if r.stdout:
+                try:
+                    audit = json.loads(r.stdout)
+                    for v in (audit.get("vulnerabilities", {}).get("list", []))[:5]:
+                        vulns.append({
+                            "package": v.get("package", {}).get("name", "?"),
+                            "severity": v.get("advisory", {}).get("cvss", {}).get("score", "?"),
+                            "id": v.get("advisory", {}).get("id", ""),
+                        })
+                        scanned += 1
+                except json.JSONDecodeError:
+                    pass
+
+        critical = [v for v in vulns if v.get("severity") in ("critical", "high")]
+        return response("dep_vuln_scan", {
+            "vulnerabilities": vulns,
+            "critical_count": len(critical),
+            "safe": len(critical) == 0,
+            "scanned": scanned or len(vulns),
+            "command": command,
+        })
+
+    if action in ("session_to_pr", "session-to-pr"):
+        cwd = request.get("cwd", ".") or "."
+        style = request.get("style", "detailed")
+        import subprocess as _sp_pr
+        def _git_pr(*args: str) -> str:
+            r = _sp_pr.run(["git"] + list(args), capture_output=True, text=True, cwd=cwd, timeout=8)
+            return r.stdout.strip() if r.returncode == 0 else ""
+
+        branch   = _git_pr("rev-parse", "--abbrev-ref", "HEAD")
+        commits  = _git_pr("log", "--oneline", "main..HEAD")[:1000] or _git_pr("log", "--oneline", "-10")
+        diff_stat= _git_pr("diff", "--stat", "main..HEAD")[:800] or _git_pr("diff", "--stat", "HEAD~5..HEAD")[:800]
+        diff_body= _git_pr("diff", "--unified=2", "main..HEAD")[:3000] or ""
+
+        if not commits and not diff_stat:
+            return response("session_to_pr", {"title": "", "body": "", "error": "no commits found vs main"})
+
+        style_instr = {
+            "concise": "Write a concise 1-sentence title and 2-3 bullet summary.",
+            "detailed": "Write a clear title and a structured body with ## Summary (bullets), ## Changes (file-level), ## Testing.",
+            "conventional": "Use Conventional Commits format for the title (feat/fix/chore/docs/refactor). Body in standard PR template.",
+        }.get(style, "Write a clear title and structured body.")
+
+        prompt = (
+            f"Branch: {branch}\n\nCommits:\n{commits}\n\nDiff stat:\n{diff_stat}\n\nDiff:\n{diff_body[:2000]}"
+        )
+        system = (
+            f"You are a senior engineer writing a GitHub PR description. {style_instr} "
+            "Return JSON: {\"title\": \"...\", \"body\": \"...\"}"
+        )
+        ai_resp = smart_chat(prompt, system=system)
+        title = ""
+        body  = ""
+        if ai_resp:
+            raw = (ai_resp.get("response") or "")
+            import re as _re_pr
+            m = _re_pr.search(r'\{.*\}', raw, _re_pr.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                    title = parsed.get("title", "")
+                    body  = parsed.get("body", "")
+                except json.JSONDecodeError:
+                    title = branch.replace("-", " ").replace("_", " ").title()
+                    body  = raw[:1000]
+
+        return response("session_to_pr", {"title": title, "body": body, "branch": branch, "style": style})
+
+    # ------------------------------------------------------------------
+    # G9: Alias Learning + Style Profile
+    # ------------------------------------------------------------------
+    if action in ("alias_learn", "alias-learn"):
+        original = request.get("original", "").strip()
+        correction = request.get("correction", "").strip()
+        if not original or not correction or original == correction:
+            return response("alias_learn", {"learned": False, "reason": "no change"})
+
+        profile_path = Path.home() / ".config" / "turtleterm" / "alias_profile.json"
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile: dict = {}
+        if profile_path.exists():
+            try:
+                profile = json.loads(profile_path.read_text())
+            except json.JSONDecodeError:
+                profile = {}
+
+        entries: list = profile.get("corrections", [])
+        # deduplicate — update existing entry for same original
+        for e in entries:
+            if e.get("original") == original:
+                e["correction"] = correction
+                e["count"] = e.get("count", 1) + 1
+                break
+        else:
+            entries.append({"original": original, "correction": correction, "count": 1})
+
+        # keep most recent 500
+        entries = sorted(entries, key=lambda x: x.get("count", 1), reverse=True)[:500]
+        profile["corrections"] = entries
+
+        # Derive style preferences
+        style_notes = []
+        if any("--no-" in e["correction"] for e in entries[:20]):
+            style_notes.append("prefers explicit flags")
+        if any(len(e["correction"]) < len(e["original"]) for e in entries[:20]):
+            style_notes.append("prefers brevity")
+        profile["style_notes"] = style_notes
+        profile["updated"] = __import__('datetime').datetime.utcnow().isoformat()
+
+        profile_path.write_text(json.dumps(profile, indent=2))
+        return response("alias_learn", {"learned": True, "total_entries": len(entries), "style_notes": style_notes})
+
+    if action in ("alias_list", "alias-list"):
+        profile_path = Path.home() / ".config" / "turtleterm" / "alias_profile.json"
+        if not profile_path.exists():
+            return response("alias_list", {"corrections": [], "style_notes": []})
+        try:
+            profile = json.loads(profile_path.read_text())
+        except json.JSONDecodeError:
+            return response("alias_list", {"corrections": [], "style_notes": []})
+        entries = profile.get("corrections", [])
+        limit = int(request.get("limit", 20))
+        return response("alias_list", {
+            "corrections": entries[:limit],
+            "style_notes": profile.get("style_notes", []),
+            "total": len(entries),
+        })
+
+    if action in ("alias_apply", "alias-apply"):
+        command = request.get("command", "").strip()
+        if not command:
+            return response("alias_apply", {"command": command, "applied": False})
+        profile_path = Path.home() / ".config" / "turtleterm" / "alias_profile.json"
+        if not profile_path.exists():
+            return response("alias_apply", {"command": command, "applied": False})
+        try:
+            profile = json.loads(profile_path.read_text())
+        except json.JSONDecodeError:
+            return response("alias_apply", {"command": command, "applied": False})
+
+        entries = profile.get("corrections", [])
+        style_notes = profile.get("style_notes", [])
+        entries_text = "\n".join(f"{e['original']} → {e['correction']}" for e in entries[:30])
+
+        system = (
+            "You are a shell command personalizer. "
+            "The user has a personal style profile based on their past corrections. "
+            f"Style: {', '.join(style_notes) or 'none'}.\n"
+            f"Past corrections:\n{entries_text}\n\n"
+            "Apply the user's style preferences to improve the given command. "
+            "Return ONLY the improved command, no explanation."
+        )
+        ai = _claude_chat(command, system=system, timeout=8)
+        improved = (ai.get("response") or "").strip() if ai else ""
+        if improved and improved != command and len(improved) < 500:
+            return response("alias_apply", {"command": improved, "original": command, "applied": True})
+        return response("alias_apply", {"command": command, "applied": False})
+
+    # ------------------------------------------------------------------
+    # G10: Git Context Injection
+    # ------------------------------------------------------------------
+    if action in ("git_context", "git-context"):
+        cwd = request.get("cwd", ".") or "."
+        import subprocess as _sp_gc
+        def _git(*args: str) -> str:
+            r = _sp_gc.run(["git"] + list(args), capture_output=True, text=True, cwd=cwd, timeout=8)
+            return r.stdout.strip() if r.returncode == 0 else ""
+
+        branch       = _git("rev-parse", "--abbrev-ref", "HEAD")
+        recent       = _git("log", "--oneline", "-8")
+        status       = _git("status", "--short")
+        diff_stat    = _git("diff", "--stat", "HEAD")[:800]
+        remote_url   = _git("remote", "get-url", "origin")
+        # Try to derive PR URL (GitHub heuristic)
+        pr_base = ""
+        if "github.com" in remote_url:
+            repo_path = remote_url.replace("git@github.com:", "").replace("https://github.com/", "").removesuffix(".git")
+            pr_base = f"https://github.com/{repo_path}/compare/{branch}"
+        blame_files: list[str] = []
+        changed_files = _git("diff", "--name-only", "HEAD").splitlines()[:5]
+        for f in changed_files:
+            blame = _git("log", "--oneline", "-3", "--follow", f)
+            if blame:
+                blame_files.append(f"{f}: {blame.splitlines()[0]}")
+
+        context = {
+            "branch": branch,
+            "recent_commits": recent,
+            "status": status,
+            "diff_stat": diff_stat,
+            "remote": remote_url,
+            "pr_url": pr_base,
+            "blame_summary": blame_files,
+        }
+        return response("git_context", context)
+
+    # ------------------------------------------------------------------
+    # G11: Session Narrate
+    # ------------------------------------------------------------------
+    if action in ("session_narrate", "session-narrate"):
+        session_id = request.get("session_id") or env("SOURCEOS_TERMINAL_SESSION_ID", "")
+        limit = int(request.get("limit", 200))
+        events = read_ndjson(event_stream_path(), limit=limit)
+        if session_id:
+            events = [e for e in events if e.get("session_id") == session_id]
+        completed = [e for e in events if e.get("event_type") == "command.completed"]
+        if not completed:
+            return response("session_narrate", {"narrative": "No completed commands in this session yet.", "commands": 0})
+
+        lines = []
+        for e in completed[-40:]:
+            cmd = e.get("command", "")
+            rc  = e.get("exit_code", 0)
+            out = (e.get("output") or "")[:120]
+            lines.append(f"$ {cmd}  [exit {rc}]{' → ' + out.strip()[:80] if out.strip() else ''}")
+
+        prompt = "\n".join(lines)
+        system = (
+            "You are a technical scribe. Given a list of terminal commands with their exit codes, "
+            "write a 3-5 sentence narrative in past tense describing what the developer was working on. "
+            "Be specific, use technical terms, mention tools, file names, or patterns you observe. "
+            "Do NOT just list the commands. Write prose."
+        )
+        ai = _claude_chat(prompt, system=system, timeout=12)
+        narrative = (ai.get("response") or "").strip() if ai else "Unable to generate narrative (no AI key)."
+        return response("session_narrate", {"narrative": narrative, "commands": len(completed)})
+
+    # ------------------------------------------------------------------
+    # G12: Share Session
+    # ------------------------------------------------------------------
+    if action in ("share_session", "share-session"):
+        import subprocess as _sp_sh, shutil as _sh_sh
+        port = int(request.get("port", 7723))
+        ttl  = int(request.get("ttl_minutes", 60))
+
+        if _sh_sh.which("ttyd"):
+            shell = env("SHELL", "/bin/zsh")
+            proc = _sp_sh.Popen(
+                ["ttyd", "-p", str(port), "-t", "titleFixed=TurtleTerm Share", shell],
+                stdout=_sp_sh.DEVNULL, stderr=_sp_sh.DEVNULL,
+            )
+            import atexit as _ae_sh
+            _ae_sh.register(proc.terminate)
+            url = f"http://localhost:{port}"
+            return response("share_session", {
+                "url": url,
+                "pid": proc.pid,
+                "backend": "ttyd",
+                "ttl_minutes": ttl,
+                "hint": f"Open {url} in a browser to view/share this session",
+            })
+        elif _sh_sh.which("upterm"):
+            r = _sp_sh.run(
+                ["upterm", "host", "--force-command", env("SHELL", "/bin/zsh")],
+                capture_output=True, text=True, timeout=15,
+            )
+            lines = r.stdout.splitlines()
+            join_line = next((l for l in lines if "ssh" in l or "uptermd" in l), "")
+            return response("share_session", {
+                "url": join_line,
+                "backend": "upterm",
+                "ttl_minutes": ttl,
+                "hint": "Share the ssh command above",
+            })
+        else:
+            return response("share_session", {
+                "url": "",
+                "backend": "none",
+                "error": "Install ttyd (brew install ttyd) or upterm for session sharing",
+            })
+
+    if action in ("stop_share", "stop-share"):
+        import subprocess as _sp_ss
+        _sp_ss.run(["pkill", "-f", "ttyd"], capture_output=True)
+        _sp_ss.run(["pkill", "-f", "upterm"], capture_output=True)
+        return response("stop_share", {"stopped": True})
+
+    # ------------------------------------------------------------------
+    # G13: Sync Push / Pull
+    # ------------------------------------------------------------------
+    if action in ("sync_push", "sync-push"):
+        import subprocess as _sp_sy, shutil as _sh_sy
+        remote = request.get("remote", "").strip()
+        config_dir = Path.home() / ".config" / "turtleterm"
+        sync_repo  = config_dir / "sync"
+
+        # Files to sync
+        sync_files = [
+            config_dir / "bookmarks.json",
+            config_dir / "alias_profile.json",
+            config_dir / "env_baseline.json",
+            config_dir / "theme.txt",
+        ]
+        runbooks_dir = Path.home() / ".turtle" / "runbooks"
+
+        def _git_sync(*args: str) -> tuple[int, str]:
+            r = _sp_sy.run(["git"] + list(args), capture_output=True, text=True, cwd=sync_repo)
+            return r.returncode, r.stdout.strip() + r.stderr.strip()
+
+        if not sync_repo.exists():
+            if not remote:
+                return response("sync_push", {"status": "error", "message": "No sync repo yet. Run turtle-sync push --remote <URL>"})
+            sync_repo.mkdir(parents=True)
+            _git_sync("init")
+            if remote:
+                _git_sync("remote", "add", "origin", remote)
+
+        # Copy files into sync repo
+        synced = []
+        for f in sync_files:
+            if f.exists():
+                import shutil as _sh2
+                _sh2.copy2(f, sync_repo / f.name)
+                synced.append(f.name)
+
+        if runbooks_dir.exists():
+            import shutil as _sh3
+            rb_dest = sync_repo / "runbooks"
+            rb_dest.mkdir(exist_ok=True)
+            for rb in runbooks_dir.glob("*.yaml"):
+                _sh3.copy2(rb, rb_dest / rb.name)
+            synced.append("runbooks/")
+
+        _git_sync("add", "-A")
+        rc, out = _git_sync("commit", "-m", f"turtle-sync: {__import__('datetime').datetime.utcnow().strftime('%Y-%m-%d %H:%M')}")
+        if rc != 0 and "nothing to commit" in out:
+            return response("sync_push", {"status": "ok", "status_detail": "up-to-date", "files": synced})
+
+        if remote or _git_sync("remote", "get-url", "origin")[0] == 0:
+            push_rc, push_out = _git_sync("push", "-u", "origin", "main", "--force")
+            if push_rc != 0:
+                # try master
+                _git_sync("push", "-u", "origin", "master", "--force")
+
+        return response("sync_push", {"status": "ok", "status_detail": "pushed", "files": synced})
+
+    if action in ("sync_pull", "sync-pull"):
+        import subprocess as _sp_sp
+        config_dir = Path.home() / ".config" / "turtleterm"
+        sync_repo  = config_dir / "sync"
+        if not sync_repo.exists():
+            return response("sync_pull", {"status": "error", "message": "No sync repo. Run turtle-sync push --remote <URL> first."})
+
+        def _git_sp(*args: str) -> tuple[int, str]:
+            r = _sp_sp.run(["git"] + list(args), capture_output=True, text=True, cwd=sync_repo)
+            return r.returncode, r.stdout.strip()
+
+        rc, out = _git_sp("pull", "--rebase", "origin", "HEAD")
+        if rc != 0:
+            return response("sync_pull", {"status": "error", "message": out})
+
+        # Copy files back
+        import shutil as _sh_pull
+        pulled = []
+        for f in sync_repo.iterdir():
+            if f.is_file() and f.suffix in (".json", ".txt", ".yaml"):
+                _sh_pull.copy2(f, config_dir / f.name)
+                pulled.append(f.name)
+        rb_src = sync_repo / "runbooks"
+        if rb_src.exists():
+            rb_dest = Path.home() / ".turtle" / "runbooks"
+            rb_dest.mkdir(parents=True, exist_ok=True)
+            for rb in rb_src.glob("*.yaml"):
+                _sh_pull.copy2(rb, rb_dest / rb.name)
+            pulled.append("runbooks/")
+
+        return response("sync_pull", {"status": "ok", "files": pulled, "output": out})
+
+    # ------------------------------------------------------------------
+    # G14: Voice to Shell
+    # ------------------------------------------------------------------
+    if action in ("voice_to_shell", "voice-to-shell"):
+        import subprocess as _sp_v, shutil as _sh_v, tempfile as _tf_v
+        duration = int(request.get("duration", 4))
+
+        # Check sox available
+        if not _sh_v.which("sox"):
+            return response("voice_to_shell", {
+                "status": "unavailable",
+                "hint": "Install: brew install sox whisper-cpp",
+                "transcript": "",
+                "command": "",
+            })
+
+        # Record audio
+        with _tf_v.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+            wav_path = tmp_wav.name
+
+        try:
+            rec_r = _sp_v.run(
+                ["sox", "-d", "-r", "16000", "-c", "1", "-b", "16", wav_path, "trim", "0", str(duration)],
+                capture_output=True, timeout=duration + 5,
+            )
+            if rec_r.returncode != 0:
+                return response("voice_to_shell", {"status": "unavailable", "hint": "sox recording failed", "transcript": "", "command": ""})
+
+            # Try whisper.cpp (offline, fast)
+            transcript = ""
+            if _sh_v.which("whisper-cpp") or _sh_v.which("whisper"):
+                model_paths = [
+                    Path.home() / ".local" / "share" / "whisper" / "ggml-base.en.bin",
+                    Path.home() / ".local" / "share" / "whisper" / "ggml-tiny.en.bin",
+                    Path("/usr/local/share/whisper/ggml-base.en.bin"),
+                ]
+                model = next((str(p) for p in model_paths if p.exists()), None)
+                whisper_bin = _sh_v.which("whisper-cpp") or _sh_v.which("whisper")
+                if model and whisper_bin:
+                    wh_r = _sp_v.run(
+                        [whisper_bin, "-m", model, "-f", wav_path, "-otxt", "-of", wav_path + "_out"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    out_file = Path(wav_path + "_out.txt")
+                    if out_file.exists():
+                        transcript = out_file.read_text().strip()
+                        out_file.unlink(missing_ok=True)
+                    elif wh_r.stdout:
+                        # parse from stdout
+                        import re as _re_v
+                        m = _re_v.search(r'\] (.+)', wh_r.stdout)
+                        transcript = m.group(1).strip() if m else wh_r.stdout.strip()[:200]
+
+            # Fallback: use macOS Dictation via osascript
+            if not transcript:
+                r_dict = _sp_v.run(
+                    ["osascript", "-e", 'tell application "System Events" to keystroke "d" using {command down}'],
+                    capture_output=True, timeout=3,
+                )
+                return response("voice_to_shell", {
+                    "status": "dictation_triggered",
+                    "hint": "macOS Dictation triggered. Install whisper-cpp for offline transcription.",
+                    "transcript": "",
+                    "command": "",
+                })
+
+            if not transcript:
+                return response("voice_to_shell", {"status": "no_speech", "transcript": "", "command": ""})
+
+            # Convert transcript → shell command
+            system = (
+                "Convert the following spoken natural language to a shell command. "
+                "Return ONLY the raw shell command, no explanation, no backticks."
+            )
+            ai = _claude_chat(transcript, system=system, timeout=10)
+            command = (ai.get("response") or "").strip().strip("`") if ai else ""
+
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
+
+        return response("voice_to_shell", {
+            "status": "ok",
+            "transcript": transcript,
+            "command": command,
+        })
+
     return response("error", {"message": f"unknown action: {action}"}, status="error")
 
 
@@ -2066,7 +2668,7 @@ def serve_http(port: int) -> int:
             if self.path in ('/health', '/healthz'):
                 body = json.dumps({
                     "status": "ok", "service": "turtle-agentd",
-                    "version": "0.2.0", "mode": "http-daemon",
+                    "version": "0.3.0", "mode": "http-daemon",
                 }).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')

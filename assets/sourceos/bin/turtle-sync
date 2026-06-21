@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""turtle-sync — Cross-machine config sync for TurtleTerm.
+
+Syncs: bookmarks, alias learnings, SSH profiles, runbooks.
+Backed by a private git repo (you own the data).
+
+Usage:
+  turtle-sync push [--remote URL]   Push config to git remote
+  turtle-sync pull                  Pull config from git remote
+  turtle-sync status                Show sync status
+  turtle-sync init --remote URL     Initialize sync with a git remote
+"""
+from __future__ import annotations
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+
+def agentd(payload: dict) -> dict | None:
+    try:
+        r = subprocess.run(
+            [sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=30,
+        )
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def cmd_push(args: list[str]) -> int:
+    remote = ""
+    if "--remote" in args:
+        idx = args.index("--remote")
+        try: remote = args[idx + 1]
+        except IndexError: pass
+    print("Pushing TurtleTerm config to sync remote...")
+    r = agentd({"action": "sync_push", "remote": remote})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr); return 1
+    d = r.get("data", {})
+    if r.get("status") != "ok":
+        print(f"Error: {d.get('message', 'unknown')}", file=sys.stderr); return 1
+    status = d.get("status", "")
+    files  = d.get("files", [])
+    if status == "up-to-date":
+        print("Already up-to-date.")
+    else:
+        print(f"Pushed: {', '.join(files)}")
+    return 0
+
+
+def cmd_pull(args: list[str]) -> int:
+    print("Pulling TurtleTerm config from sync remote...")
+    r = agentd({"action": "sync_pull"})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr); return 1
+    d = r.get("data", {})
+    if r.get("status") != "ok":
+        print(f"Error: {d.get('message', 'unknown')}", file=sys.stderr); return 1
+    files = d.get("files", [])
+    print(f"Pulled: {', '.join(files) or 'nothing changed'}")
+    print(d.get("output", ""))
+    return 0
+
+
+def cmd_status(args: list[str]) -> int:
+    config_dir = Path.home() / ".config" / "turtleterm"
+    sync_repo  = config_dir / "sync"
+    if not sync_repo.exists():
+        print("Sync not initialized. Run: turtle-sync push --remote <URL>")
+        return 0
+    r = subprocess.run(["git", "log", "--oneline", "-5"], cwd=sync_repo, capture_output=True, text=True)
+    print(f"Sync repo: {sync_repo}")
+    print(f"Recent syncs:\n{r.stdout.strip() or '  (none)'}")
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); return 0
+    subcmd = args[0]; rest = args[1:]
+    if subcmd in ("push", "init"):  return cmd_push(rest)
+    if subcmd == "pull":            return cmd_pull(rest)
+    if subcmd == "status":          return cmd_status(rest)
+    print(f"Unknown command: {subcmd}. Use: push, pull, status, init", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

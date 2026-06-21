@@ -1824,6 +1824,50 @@ config.keys = {
       end),
     },
   },
+    -- G14: Voice-to-shell
+    { key = 'F4', mods = '', action = wezterm.action_callback(function(w, p)
+        local ok_v, v_out, _ = wezterm.run_child_process({'turtle-agentctl','--stdio','voice-to-shell'})
+        if ok_v and v_out then
+          local vd = {}
+          pcall(function() vd = wezterm.json_parse(v_out) end)
+          local status = (vd.data and vd.data.status) or ''
+          if status == 'unavailable' then
+            w:toast_notification('TurtleTerm Voice', (vd.data and vd.data.hint) or 'Install sox + whisper-cpp', nil, 5000)
+          elseif status == 'ok' then
+            local cmd = (vd.data and vd.data.command) or ''
+            w:toast_notification('\xf0\x9f\x8e\xa4  Voice', (vd.data.transcript or '') .. '\n\xe2\x86\x92 ' .. cmd, nil, 4000)
+          end
+        end
+      end) },
+    -- G11: Session narration
+    { key = 'F5', mods = '', action = wezterm.action_callback(function(w, p)
+        local ok_n, n_out, _ = wezterm.run_child_process({'turtle-agentctl','--stdio','session-narrate'})
+        if ok_n and n_out then
+          local nd = {}
+          pcall(function() nd = wezterm.json_parse(n_out) end)
+          local narrative = (nd.data and nd.data.narrative) or 'No session data yet'
+          w:toast_notification('\xf0\x9f\x93\x96  Session Narrative', narrative:sub(1, 400), nil, 12000)
+        end
+      end) },
+    -- Coach: AI Terminal Coach analysis
+    { key = 'F6', mods = '', action = wezterm.action_callback(function(w, p)
+        local ok_c, c_out, _ = wezterm.run_child_process({'turtle-agentctl','--stdio','coach-analyze'})
+        if ok_c and c_out then
+          local cd = {}
+          pcall(function() cd = wezterm.json_parse(c_out) end)
+          local insights = (cd.data and cd.data.insights) or {}
+          local score = (cd.data and cd.data.score) or '?'
+          if #insights == 0 then
+            w:toast_notification('\xf0\x9f\x8f\x86  Coach', string.format('Score: %s/10 — great shell hygiene!', score), nil, 4000)
+          else
+            local lines = { string.format('Score: %s/10', score) }
+            for _, ins in ipairs(insights) do
+              table.insert(lines, '\xe2\x80\xa2 ' .. (ins.pattern or '') .. ' \xe2\x86\x92 ' .. (ins.better or ''))
+            end
+            w:toast_notification('\xf0\x9f\x8f\x86  AI Coach', table.concat(lines, '\n'):sub(1, 400), nil, 12000)
+          end
+        end
+      end) },
 }
 
 wezterm.on('format-tab-title', function(tab, tabs, panes, config_, hover, max_width)

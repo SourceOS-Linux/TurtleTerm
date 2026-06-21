@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""turtle-voice — Voice-to-shell for TurtleTerm.
+
+Uses Whisper.cpp (offline, fast) or macOS Dictation fallback.
+Transcribes speech → converts to shell command → injects to terminal.
+
+Setup:
+  brew install sox whisper-cpp
+  mkdir -p ~/.local/share/whisper
+  whisper-cpp-download-ggml-model base.en   # or tiny.en for speed
+
+Usage:
+  turtle-voice                  Record 4s, transcribe, inject command
+  turtle-voice --duration 8     Record 8 seconds
+  turtle-voice --dry-run        Show command without injecting
+  turtle-voice --tts TEXT       Read TEXT aloud via macOS say
+"""
+from __future__ import annotations
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+
+def agentd(payload: dict) -> dict | None:
+    try:
+        r = subprocess.run(
+            [sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=60,
+        )
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def tts(text: str) -> None:
+    subprocess.run(["say", "-r", "200", text], check=False)
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if "--help" in args or "-h" in args:
+        print(__doc__)
+        return 0
+
+    # TTS mode
+    if "--tts" in args:
+        idx = args.index("--tts")
+        text = args[idx + 1] if idx + 1 < len(args) else ""
+        tts(text)
+        return 0
+
+    duration = 4
+    if "--duration" in args:
+        idx = args.index("--duration")
+        try: duration = int(args[idx + 1])
+        except (IndexError, ValueError): pass
+    dry_run = "--dry-run" in args
+
+    print(f"🎤  Recording {duration}s... (speak now)", flush=True)
+
+    r = agentd({"action": "voice_to_shell", "duration": duration})
+    if not r:
+        print("Error: agentd not responding", file=sys.stderr)
+        return 1
+
+    data = r.get("data", {})
+    status = data.get("status", "")
+
+    if status == "dictation_triggered":
+        print(data.get("hint", "Dictation triggered"))
+        return 0
+
+    if status == "unavailable":
+        print(f"Voice not available: {data.get('hint', '')}", file=sys.stderr)
+        print("Install: brew install sox whisper-cpp", file=sys.stderr)
+        return 1
+
+    transcript = data.get("transcript", "")
+    command    = data.get("command", "")
+
+    if not transcript:
+        print("No speech detected.", file=sys.stderr)
+        return 1
+
+    print(f"📝  Heard: {transcript}")
+    print(f"💻  Command: {command}")
+
+    if dry_run:
+        print("(dry-run: not injecting)")
+        return 0
+
+    if not command:
+        print("Could not generate command.", file=sys.stderr)
+        return 1
+
+    # Read back via TTS
+    try:
+        subprocess.Popen(["say", "-r", "180", command], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        pass
+
+    print("✓  Injected to terminal prompt")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
