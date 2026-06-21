@@ -4643,8 +4643,8 @@ done
                 result["tools"].append(tool)
 
         # Git info
-        result["git_branch"] = (_git("branch", "--show-current", cwd=str(cwd)) or "").strip()
-        result["git_remote"] = (_git("remote", "get-url", "origin", cwd=str(cwd)) or "").strip()
+        result["git_branch"] = (_git_module_level("branch", "--show-current", cwd=str(cwd)) or "").strip()
+        result["git_remote"] = (_git_module_level("remote", "get-url", "origin", cwd=str(cwd)) or "").strip()
 
         # .turtle config
         turtle_policy = cwd / ".turtle" / "policy.yaml"
