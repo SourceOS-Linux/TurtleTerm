@@ -1231,6 +1231,9 @@ local function turtle_workspace_save()
           if f then
             f:write(wezterm.json_encode(ws))
             f:close()
+            -- Track last saved workspace for startup auto-restore offer
+            local lf2 = io.open(WS_DIR .. '/_last.txt', 'w')
+            if lf2 then lf2:write(name); lf2:close() end
             w:toast_notification('TurtleTerm Workspace', 'Saved: ' .. name
               .. ' (' .. #tabs_data .. ' tabs)', nil, 3000)
           else
@@ -1502,8 +1505,28 @@ wezterm.on('update-right-status', function(window, pane)
   pcall(function() cwd_uri = tostring(pane.current_working_dir) or '' end)
   local is_ssh = proc:find('ssh') ~= nil or cwd_uri:find('^ssh://') ~= nil
 
+  -- Plan step indicator: show ⚡ goal [step/total] when a plan is active
+  local plan_badge = ''
+  do
+    local home = os.getenv('HOME') or ''
+    local plan_path = home .. '/.local/state/sourceos/terminal/current_plan.json'
+    local pf = io.open(plan_path, 'r')
+    if pf then
+      local raw = pf:read('*a'); pf:close()
+      local ok2, plan = pcall(wezterm.json_parse, raw)
+      if ok2 and plan and plan.steps then
+        local step = (plan.current_step or 0) + 1
+        local total = #plan.steps
+        local goal = (plan.goal or ''):sub(1, 30)
+        if step <= total then
+          plan_badge = string.format('  \xe2\x9a\xa1 %s [%d/%d]  ', goal, step, total)
+        end
+      end
+    end
+  end
+
   if is_ssh then
-    window:set_right_status('  \xe2\x87\x84 ssh  ')  -- ⇄ ssh
+    window:set_right_status(plan_badge .. '  \xe2\x87\x84 ssh  ')  -- ⇄ ssh
     -- Red title bar tint while inside SSH session
     local overrides = window:get_config_overrides() or {}
     if not overrides._ssh_frame then
@@ -1533,9 +1556,9 @@ wezterm.on('update-right-status', function(window, pane)
       window:set_config_overrides(overrides)
     end
     if domain ~= 'host' then
-      window:set_right_status(string.format('  %s  ', domain))
+      window:set_right_status(plan_badge .. string.format('  %s  ', domain))
     else
-      window:set_right_status('')
+      window:set_right_status(plan_badge)
     end
   end
 end)
@@ -1569,6 +1592,17 @@ wezterm.on('update-left-status', function(window, pane)
         nil, 9000
       )
     end
+  end
+
+  -- Workspace restore offer (fires once on startup if a saved workspace exists)
+  if wezterm.GLOBAL._ws_restore_name then
+    local name = wezterm.GLOBAL._ws_restore_name
+    wezterm.GLOBAL._ws_restore_name = nil
+    window:toast_notification(
+      'TurtleTerm Workspace',
+      'Last session: "' .. name .. '" — press CMD+SHIFT+O to restore',
+      nil, 7000
+    )
   end
 
   -- Last exit code + timing from state files
@@ -1711,6 +1745,26 @@ wezterm.on('gui-startup', function(cmd)
   wezterm.GLOBAL.check_shell_integration = true
   -- Auto-start SynapseIQ LSP server in background (no-op if already running)
   io.popen('turtle-synapseiq start >/dev/null 2>&1 &')
+
+  -- Workspace auto-restore: if a 'default' workspace was saved, offer to restore it.
+  -- Check for a startup-restore sentinel to avoid repeating on every reload.
+  if not wezterm.GLOBAL._ws_restore_offered then
+    wezterm.GLOBAL._ws_restore_offered = true
+    local ws_dir = (os.getenv('HOME') or '') .. '/.config/turtleterm/workspaces'
+    local last_file = ws_dir .. '/_last.txt'
+    local lf = io.open(last_file, 'r')
+    if lf then
+      local last_name = lf:read('*l'); lf:close()
+      if last_name and last_name ~= '' then
+        local ws_path = ws_dir .. '/' .. last_name .. '.json'
+        local wf = io.open(ws_path, 'r')
+        if wf then wf:close()
+          -- Schedule the toast+restore offer via the global so update-left-status can pick it up
+          wezterm.GLOBAL._ws_restore_name = last_name
+        end
+      end
+    end
+  end
 end)
 
 return config

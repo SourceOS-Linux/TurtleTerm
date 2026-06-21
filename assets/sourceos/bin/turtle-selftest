@@ -323,6 +323,8 @@ def test_lua_config() -> None:
             ('right-click context menu',     'turtle_block_context_menu'),
             ('workspace save CMD+SHIFT+S',   'turtle_workspace_save'),
             ('workspace restore CMD+SHIFT+O','turtle_workspace_restore'),
+            ('plan step right-status badge', 'plan_badge'),
+            ('workspace startup offer',      '_ws_restore_name'),
         ]
         import re as _re
         for name, needle in checks:
@@ -341,7 +343,7 @@ def test_lua_config() -> None:
 
 def main() -> int:
     if not AS_JSON:
-        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.4.0  ({len(results)} checks){RESET}\n')
+        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.4.0{RESET}\n')
 
     test_agentd()
     test_agentctl()
@@ -354,11 +356,12 @@ def main() -> int:
     passed = sum(1 for r in results if r['status'] == 'pass')
     failed = sum(1 for r in results if r['status'] == 'fail')
     skipped = sum(1 for r in results if r['status'] == 'skip')
+    total = len(results)
 
     if AS_JSON:
-        print(json.dumps({'results': results, 'passed': passed, 'failed': failed, 'skipped': skipped}, indent=2))
+        print(json.dumps({'results': results, 'passed': passed, 'failed': failed, 'skipped': skipped, 'total': total}, indent=2))
     else:
-        print(f'\n  {BOLD}Results:{RESET}  {GREEN}{passed} pass{RESET}  {RED}{failed} fail{RESET}  {GRAY}{skipped} skip{RESET}\n')
+        print(f'\n  {BOLD}Results:{RESET}  {GREEN}{passed} pass{RESET}  {RED}{failed} fail{RESET}  {GRAY}{skipped} skip{RESET}  {CYAN}{total} total{RESET}\n')
 
     return 0 if failed == 0 else 1
 
