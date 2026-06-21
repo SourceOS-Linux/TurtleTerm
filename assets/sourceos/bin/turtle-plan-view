@@ -4,17 +4,20 @@
 Usage:
   turtle-plan-view              pretty-print current_plan.json
   turtle-plan-view --json       raw JSON dump
-  turtle-plan-view --watch      refresh every 2 seconds until complete
+  turtle-plan-view --watch      stream updates via plan-events.ndjson (instant)
+  turtle-plan-view --events     dump raw plan-events.ndjson
 """
 
 from __future__ import annotations
 import json
 import os
+import select
 import sys
 import time
 from pathlib import Path
 
-PLAN_FILE = Path.home() / '.local' / 'state' / 'sourceos' / 'terminal' / 'current_plan.json'
+PLAN_FILE   = Path.home() / '.local' / 'state' / 'sourceos' / 'terminal' / 'current_plan.json'
+EVENTS_FILE = Path.home() / '.local' / 'state' / 'sourceos' / 'terminal' / 'plan-events.ndjson'
 
 RESET  = '\033[0m'
 BOLD   = '\033[1m'
@@ -47,16 +50,13 @@ def render(plan: dict) -> str:
 
         if i < current:
             indicator = f'{GREEN}✓{RESET}'
-            desc_color = GRAY
-            cmd_color = GRAY
+            desc_color, cmd_color = GRAY, GRAY
         elif i == current:
             indicator = f'{YELLOW}→{RESET}'
-            desc_color = BOLD
-            cmd_color = YELLOW
+            desc_color, cmd_color = BOLD, YELLOW
         else:
             indicator = f'{DIM}○{RESET}'
-            desc_color = DIM
-            cmd_color = GRAY
+            desc_color, cmd_color = DIM, GRAY
 
         rev_flag = '' if rev else f' {RED}[!destructive]{RESET}'
         lines.append(f'  {indicator} {BOLD}step {i+1}/{total}{RESET}{rev_flag}')
@@ -65,49 +65,77 @@ def render(plan: dict) -> str:
         lines.append('')
 
     if current < total:
-        lines.append(f'{BOLD}  Next:{RESET} run the → step above, then press {BOLD}CTRL+SHIFT+N{RESET} to advance.')
+        lines.append(f'{BOLD}  Next:{RESET} run the → step above, then {BOLD}CMD+SHIFT+N{RESET} to advance.')
     else:
         lines.append(f'{GREEN}{BOLD}  ✓ All steps complete.{RESET}')
     lines.append('')
     return '\n'.join(lines)
 
 
+def _events_mtime() -> float:
+    try:
+        return EVENTS_FILE.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def main() -> int:
     args = sys.argv[1:]
-    as_json = '--json' in args
-    watch = '--watch' in args
+    as_json  = '--json' in args
+    watch    = '--watch' in args
+    show_evs = '--events' in args
+
+    if show_evs:
+        if EVENTS_FILE.exists():
+            for line in EVENTS_FILE.read_text().splitlines():
+                try:
+                    print(json.dumps(json.loads(line), indent=2))
+                except json.JSONDecodeError:
+                    print(line)
+        return 0
 
     if not PLAN_FILE.exists():
         print('\n  No active plan.\n  Start one with CTRL+SHIFT+M or: turtle-agentctl plan <goal>\n')
         return 1
 
-    try:
-        while True:
-            plan = json.loads(PLAN_FILE.read_text())
-            if as_json:
-                print(json.dumps(plan, indent=2))
-                return 0
+    if as_json:
+        print(json.dumps(json.loads(PLAN_FILE.read_text()), indent=2))
+        return 0
 
-            if watch:
-                # Clear screen
-                print('\033[2J\033[H', end='')
+    # Initial render
+    last_mtime = _events_mtime()
+    plan = json.loads(PLAN_FILE.read_text())
+    if watch:
+        print('\033[2J\033[H', end='', flush=True)
+    print(render(plan))
+
+    if not watch:
+        return 0
+
+    # Watch mode: re-render whenever plan-events.ndjson changes (fast) or
+    # every 0.5s as heartbeat fallback.
+    while True:
+        # Non-blocking wait: poll every 250ms, check events file mtime
+        time.sleep(0.25)
+
+        cur_mtime = _events_mtime()
+        plan_exists = PLAN_FILE.exists()
+
+        if not plan_exists:
+            print('\n  Plan completed or aborted.\n')
+            return 0
+
+        if cur_mtime != last_mtime:
+            last_mtime = cur_mtime
+            try:
+                plan = json.loads(PLAN_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            print('\033[2J\033[H', end='', flush=True)
             print(render(plan))
-
-            if not watch:
-                return 0
-
             current = plan.get('current_step', 0)
-            total = len(plan.get('steps', []))
-            if current >= total:
+            if current >= len(plan.get('steps', [])):
                 return 0
-
-            time.sleep(2)
-            if not PLAN_FILE.exists():
-                print('\n  Plan completed or aborted.\n')
-                return 0
-    except (json.JSONDecodeError, OSError) as e:
-        print(f'  error reading plan: {e}', file=sys.stderr)
-        return 1
 
 
 if __name__ == '__main__':

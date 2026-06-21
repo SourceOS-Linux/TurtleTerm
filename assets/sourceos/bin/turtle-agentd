@@ -69,6 +69,22 @@ def event_stream_path() -> Path:
     return Path(env("SOURCEOS_TERMINAL_EVENTS", str(runtime_dir().parent / "terminal" / "events.ndjson")))
 
 
+def plan_events_path() -> Path:
+    return Path.home() / ".local" / "state" / "sourceos" / "terminal" / "plan-events.ndjson"
+
+
+def _emit_plan_event(event_type: str, **kwargs: Any) -> None:
+    """Append a plan lifecycle event to plan-events.ndjson for real-time view."""
+    path = plan_events_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {"type": event_type, "ts": utc_now(), **kwargs}
+    try:
+        with path.open("a") as f:
+            f.write(json.dumps(event) + "\n")
+    except OSError:
+        pass
+
+
 def receipts_root() -> Path:
     return Path(env("SOURCEOS_TERMINAL_RECEIPTS", str(Path.home() / ".local" / "state" / "sourceos" / "terminal" / "receipts")))
 
@@ -1206,6 +1222,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             "source": "plan_execute",
         }
         (pending_dir / "current_plan.json").write_text(json.dumps(plan_data, indent=2))
+        _emit_plan_event("plan_created", goal=parsed_goal, step_count=len(steps), current_step=0)
 
         first_cmd = steps[0].get("command", "") if steps else ""
         if first_cmd:
@@ -1247,6 +1264,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         next_idx = plan_data.get("current_step", 0) + 1
         if next_idx >= len(steps):
             plan_file.unlink(missing_ok=True)
+            _emit_plan_event("plan_complete", goal=plan_data.get("goal"), total_steps=len(steps))
             return response("plan_complete", {
                 "goal": plan_data.get("goal"),
                 "total_steps": len(steps),
@@ -1254,6 +1272,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             })
         plan_data["current_step"] = next_idx
         plan_file.write_text(json.dumps(plan_data, indent=2))
+        _emit_plan_event("step_started",
+            goal=plan_data.get("goal"), step=next_idx,
+            total=len(steps), command=steps[next_idx].get("command", ""),
+            description=steps[next_idx].get("description", ""))
         next_cmd = steps[next_idx].get("command", "")
         if next_cmd:
             tmp = pending_dir / "pending_command.tmp"
@@ -1301,9 +1323,15 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
     if action == "plan_abort":
         pending_dir = Path.home() / ".local" / "state" / "sourceos" / "terminal"
         plan_file = pending_dir / "current_plan.json"
+        goal = None
+        try:
+            goal = json.loads(plan_file.read_text()).get("goal")
+        except (OSError, json.JSONDecodeError):
+            pass
         plan_file.unlink(missing_ok=True)
         (pending_dir / "pending_command").unlink(missing_ok=True)
         (pending_dir / "pending_command.json").unlink(missing_ok=True)
+        _emit_plan_event("plan_aborted", goal=goal)
         return response("plan_abort", {"status": "aborted"})
 
     return response("error", {"message": f"unknown action: {action}"}, status="error")

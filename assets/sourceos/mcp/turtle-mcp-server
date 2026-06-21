@@ -239,6 +239,37 @@ TOOLS = [
         "description": "Register TurtleTerm as an ACP agent with a local Atlas instance. Atlas uses the Agent Client Protocol (ACP) for tool integrations.",
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "plan_create",
+        "description": "Create a multi-step shell command plan for a goal using the TurtleTerm agent planner. Returns the generated steps and injects step 1 into the terminal prompt for execution.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "Natural-language goal to plan (e.g. 'set up a Python virtualenv and install requests')."},
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "plan_status",
+        "description": "Get the current agent plan status: goal, steps, and which step is active.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "plan_advance",
+        "description": "Advance the agent plan to the next step. Call after the current terminal command has completed. Injects the next command into the terminal prompt.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "plan_abort",
+        "description": "Abort the current agent plan and clear the terminal prompt queue.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "workspace_list",
+        "description": "List saved TurtleTerm workspace layouts (from CMD+SHIFT+S saves). Returns names, tab counts, and save timestamps.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 
@@ -308,6 +339,34 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         })
     if name == "atlas_acp_register":
         return _agentd({"action": "atlas_acp_register"})
+    if name == "plan_create":
+        goal = arguments.get("goal", "")
+        if not goal:
+            return {"error": "goal is required"}
+        return _agentd({"action": "plan_execute", "goal": goal})
+    if name == "plan_status":
+        return _agentd({"action": "plan_status"})
+    if name == "plan_advance":
+        return _agentd({"action": "plan_next"})
+    if name == "plan_abort":
+        return _agentd({"action": "plan_abort"})
+    if name == "workspace_list":
+        import os as _os
+        ws_dir = Path.home() / ".config" / "turtleterm" / "workspaces"
+        if not ws_dir.exists():
+            return {"workspaces": [], "note": "No workspaces saved yet — use CMD+SHIFT+S in TurtleTerm to save one."}
+        workspaces = []
+        for p in sorted(ws_dir.glob("*.json")):
+            try:
+                data = json.loads(p.read_text())
+                workspaces.append({
+                    "name": data.get("name", p.stem),
+                    "saved_at": data.get("saved_at"),
+                    "tab_count": len(data.get("tabs", [])),
+                })
+            except (json.JSONDecodeError, OSError):
+                workspaces.append({"name": p.stem, "saved_at": None, "tab_count": None})
+        return {"workspaces": workspaces, "count": len(workspaces)}
     return {"error": f"unknown tool: {name}"}
 
 

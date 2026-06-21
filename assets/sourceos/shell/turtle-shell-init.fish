@@ -91,6 +91,91 @@ function _turtle_fish_preexec --on-event fish_preexec
 EOF
 end
 
+# ============================================================
+# AI ghost-text — two modes:
+#   1. Explicit: ALT+/ fires immediately (synchronous)
+#   2. Debounced: CTRL+SPACE (same underlying function)
+# Only active when ANTHROPIC_API_KEY is set or TURTLE_GHOST_TEXT=1
+# ============================================================
+
+if set -q ANTHROPIC_API_KEY; or test "$TURTLE_GHOST_TEXT" = "1"
+
+function _turtle_ai_complete
+    set -l buf (commandline)
+    test -z "$buf"; and return
+
+    set -l writer (_turtle_writer)
+    set -l json_buf (python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' $buf 2>/dev/null; or echo '"'$buf'"')
+    set -l result (printf '{"action":"nl_to_shell","text":%s}\n' $json_buf \
+        | python3 $writer --stdio 2>/dev/null \
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("data",{}).get("command",""))' 2>/dev/null)
+    if test -n "$result"; and test "$result" != "$buf"
+        commandline -r $result
+        commandline -f repaint
+    end
+end
+
+if status is-interactive
+    bind \e/ _turtle_ai_complete           # ALT+/
+    bind \e\  _turtle_ai_complete          # ALT+SPACE (fallback)
+end
+
+# Debounced background ghost-text (fish has no TRAPALRM, so we use
+# fish_prompt event to consume results from a background fetch launched
+# after each keystroke by the key binding below).
+
+set -g _TURTLE_GHOST_BUF ""
+set -g _TURTLE_GHOST_PID 0
+set -g _TURTLE_GHOST_FILE /tmp/turtle-fish-ghost-$fish_pid.txt
+
+function __turtle_ghost_fetch
+    # Called by ALT+G; launches background fetch, result applied on next prompt
+    set -l buf (commandline)
+    test (string length $buf) -lt 4; and return
+    test "$buf" = "$_TURTLE_GHOST_BUF"; and return   # same input, skip
+
+    set -g _TURTLE_GHOST_BUF $buf
+    # Kill previous in-flight fetch
+    if test $_TURTLE_GHOST_PID -gt 0
+        kill $_TURTLE_GHOST_PID 2>/dev/null
+        rm -f $_TURTLE_GHOST_FILE
+        set -g _TURTLE_GHOST_PID 0
+    end
+
+    set -l writer (_turtle_writer)
+    set -l json_buf (python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' $buf 2>/dev/null)
+    printf '{"action":"nl_to_shell","text":%s}\n' $json_buf \
+        | python3 $writer --stdio 2>/dev/null \
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("data",{}).get("command",""))' \
+        > $_TURTLE_GHOST_FILE 2>/dev/null &
+    set -g _TURTLE_GHOST_PID $last_pid
+end
+
+function __turtle_consume_ghost --on-event fish_prompt
+    # Consume result on next prompt draw after a background fetch
+    test $_TURTLE_GHOST_PID -eq 0; and return
+    not test -f $_TURTLE_GHOST_FILE; and return
+    # Check if process exited
+    if not kill -0 $_TURTLE_GHOST_PID 2>/dev/null
+        set -l result (cat $_TURTLE_GHOST_FILE 2>/dev/null)
+        rm -f $_TURTLE_GHOST_FILE
+        set -g _TURTLE_GHOST_PID 0
+        set -g _TURTLE_GHOST_BUF ""
+        if test -n "$result"
+            # Print hint below prompt (non-destructive; user must press ALT+/ to accept)
+            printf '\e[90m  AI▸ %s\e[0m\n' (string sub -l 80 $result) >&2
+        end
+    end
+end
+
+if status is-interactive
+    bind \eg __turtle_ghost_fetch          # ALT+G: background ghost fetch
+end
+
+trap 'rm -f $_TURTLE_GHOST_FILE' EXIT
+
+end  # end ANTHROPIC_API_KEY guard
+
 function _turtle_fish_postexec --on-event fish_postexec
     set -l exit_status $status
     set -l completed_at (date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; or echo "")

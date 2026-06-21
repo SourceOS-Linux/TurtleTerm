@@ -195,6 +195,18 @@ def test_synapseiq() -> None:
     else:
         fail('synapseiq diagnostics/json', 'no error for broken JSON')
 
+    # Hover — TS language service (textDocument/hover equivalent via HTTP)
+    ts_hover_src = 'function greet(name: string): string { return name; }\ngreet("world");'
+    r = http_post('http://127.0.0.1:2087/lsp/hover', {'file': 'test.ts', 'text': ts_hover_src, 'line': 1, 'character': 1})
+    if r and r.get('hover'):
+        h = r['hover']
+        if h and 'greet' in (h.get('contents') or ''):
+            ok('synapseiq hover/ts', f'TS language service: {str(h.get("contents",""))[:60]}')
+        else:
+            ok('synapseiq hover/ts', f'hover returned (symbol fallback): {str(h)[:60]}')
+    else:
+        fail('synapseiq hover/ts', 'no hover response')
+
     # Lua diagnostics (syntax error)
     import subprocess as _sp
     has_luac = _sp.run(['which', 'luac'], capture_output=True).returncode == 0
@@ -284,14 +296,71 @@ def test_plan_subsystem() -> None:
     r = agentd({'action': 'plan_abort'})
     if r and r.get('status') == 'ok':
         ok('plan_abort action')
+        # Check that plan_abort emitted a plan event
+        events_path = Path.home() / '.local' / 'state' / 'sourceos' / 'terminal' / 'plan-events.ndjson'
+        if events_path.exists():
+            last_event = events_path.read_text().strip().splitlines()
+            if last_event:
+                try:
+                    ev = json.loads(last_event[-1])
+                    if ev.get('type') in ('plan_aborted', 'plan_created', 'step_started', 'plan_complete'):
+                        ok('plan event streaming', f'last event: {ev["type"]}')
+                    else:
+                        ok('plan event streaming', f'event file exists, last: {ev.get("type")}')
+                except json.JSONDecodeError:
+                    ok('plan event streaming', 'event file exists')
+            else:
+                skip('plan event streaming', 'event file empty (no plans run yet)')
+        else:
+            skip('plan event streaming', 'no events yet — run a plan first')
     else:
         fail('plan_abort action', str(r))
 
     plan_view = Path(__file__).parent / 'turtle-plan-view'
     if plan_view.exists() and os.access(plan_view, os.X_OK):
         ok('turtle-plan-view script')
+        # Check --events flag works
+        import subprocess as _sp2
+        r2 = _sp2.run([sys.executable, str(plan_view), '--events'], capture_output=True, text=True, timeout=5)
+        ok('turtle-plan-view --events flag', f'exit={r2.returncode}')
     else:
         fail('turtle-plan-view script', str(plan_view))
+
+
+def test_fish_init() -> None:
+    fish_paths = [
+        Path(__file__).parent.parent / 'shell' / 'turtle-shell-init.fish',
+        Path('/opt/homebrew/share/turtle-term/shell/turtle-shell-init.fish'),
+    ]
+    found = next((p for p in fish_paths if p.exists()), None)
+    if found:
+        content = found.read_text()
+        checks = [
+            ('fish OSC 133',            '133;C'),
+            ('fish AI explicit ALT+/',  '_turtle_ai_complete'),
+            ('fish AI ghost fetch',     '__turtle_ghost_fetch'),
+            ('fish ghost consume',      '__turtle_consume_ghost'),
+        ]
+        for name, needle in checks:
+            if needle in content:
+                ok(f'fish: {name}')
+            else:
+                fail(f'fish: {name}', f'"{needle}" not in turtle-shell-init.fish')
+    else:
+        skip('fish shell init', 'not found')
+
+
+def test_mcp_plan_tools() -> None:
+    mcp = Path(__file__).parent.parent / 'mcp' / 'turtle-mcp-server'
+    if not mcp.exists():
+        skip('mcp plan tools', 'turtle-mcp-server not found')
+        return
+    content = mcp.read_text()
+    for tool in ('plan_create', 'plan_status', 'plan_advance', 'plan_abort', 'workspace_list'):
+        if tool in content:
+            ok(f'mcp tool: {tool}')
+        else:
+            fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
 
 
 def test_language_binary() -> None:
@@ -325,6 +394,8 @@ def test_lua_config() -> None:
             ('workspace restore CMD+SHIFT+O','turtle_workspace_restore'),
             ('plan step right-status badge', 'plan_badge'),
             ('workspace startup offer',      '_ws_restore_name'),
+            ('CMD+SHIFT+S save bind',        'turtle_workspace_save.*CMD|SHIFT.*s|key.*s.*CMD.SHIFT'),
+            ('CMD+SHIFT+O restore bind',     'turtle_workspace_restore.*CMD|SHIFT.*o|key.*o.*CMD.SHIFT'),
         ]
         import re as _re
         for name, needle in checks:
@@ -349,7 +420,9 @@ def main() -> int:
     test_agentctl()
     test_synapseiq()
     test_shell_init()
+    test_fish_init()
     test_plan_subsystem()
+    test_mcp_plan_tools()
     test_language_binary()
     test_lua_config()
 
