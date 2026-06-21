@@ -150,6 +150,50 @@ function! turtle#status() abort
 endfunction
 
 " ---------------------------------------------------------------------------
+" :SynapseIQLSP — print lspconfig snippet for synapseiq-lsp
+" ---------------------------------------------------------------------------
+
+function! turtle#synapseiq_lsp_snippet() abort
+  let snippet = [
+    \ 'Add to your Neovim config (requires nvim-lspconfig):',
+    \ '',
+    \ '  local lspconfig = require("lspconfig")',
+    \ '  local configs = require("lspconfig.configs")',
+    \ '',
+    \ '  if not configs.synapseiq then',
+    \ '    configs.synapseiq = {',
+    \ '      default_config = {',
+    \ '        cmd = { "synapseiq-lsp" },',
+    \ '        filetypes = {',
+    \ '          "python", "typescript", "javascript",',
+    \ '          "lua", "rust", "go", "sh", "json", "yaml",',
+    \ '          "ruby", "java", "cpp", "c",',
+    \ '        },',
+    \ '        root_dir = lspconfig.util.root_pattern(".git", "."),',
+    \ '        single_file_support = true,',
+    \ '        settings = {},',
+    \ '      },',
+    \ '    }',
+    \ '  end',
+    \ '  lspconfig.synapseiq.setup({})',
+    \ '',
+    \ 'Or with vim.lsp.start (no lspconfig dependency):',
+    \ '',
+    \ '  vim.api.nvim_create_autocmd("FileType", {',
+    \ '    pattern = { "python","typescript","javascript","lua","rust","go" },',
+    \ '    callback = function(ev)',
+    \ '      vim.lsp.start({',
+    \ '        name = "synapseiq-lsp",',
+    \ '        cmd = { "synapseiq-lsp" },',
+    \ '        root_dir = vim.fs.dirname(vim.fs.find({ ".git" }, { upward = true })[1]),',
+    \ '      })',
+    \ '    end,',
+    \ '  })',
+  \ ]
+  call s:show_float('SynapseIQ LSP Setup', snippet)
+endfunction
+
+" ---------------------------------------------------------------------------
 " Commands
 " ---------------------------------------------------------------------------
 
@@ -158,6 +202,7 @@ command! -nargs=* TurtleRun call turtle#run(<f-args>)
 command! -nargs=* TurtleNL call turtle#nl(<f-args>)
 command! TurtleContext call turtle#context()
 command! TurtleStatus call turtle#status()
+command! SynapseIQLSP call turtle#synapseiq_lsp_snippet()
 
 " ---------------------------------------------------------------------------
 " Key mappings (only if not already mapped)

@@ -104,6 +104,14 @@ config.unix_domains = {
   },
 }
 
+-- Session persistence — keep panes visible after process exits, warn before close
+config.exit_behavior = 'Hold'
+config.exit_behavior_messaging = 'Brief'
+config.window_close_confirmation = 'AlwaysPrompt'
+config.skip_close_confirmation_for_processes_named = {
+  'bash', 'zsh', 'fish', 'sh',
+}
+
 config.set_environment_variables = {
   SOURCEOS_TERMINAL_FRONTEND = 'turtle-term',
   SOURCEOS_TERMINAL_PROFILE = 'turtleterm-v0',
@@ -490,6 +498,66 @@ local function turtle_history_search()
   end)
 end
 
+-- Feature: CTRL+SHIFT+P — preview file (image via imgcat, code via bat/cat)
+local function turtle_preview_file()
+  return wezterm.action_callback(function(window, pane)
+    -- 1. Try selection
+    local path = ''
+    local sel = window:get_selection_text_for_pane(pane)
+    if sel and sel:match('^[%w_/%.%-~]+$') and #sel < 300 then
+      path = sel:gsub('^%s+', ''):gsub('%s+$', '')
+    end
+    -- 2. Try input zone
+    if path == '' then
+      pcall(function()
+        local zones = pane:get_semantic_zones()
+        for _, z in ipairs(zones) do
+          if z.semantic_type == 'Input' then
+            local t = pane:get_text_from_semantic_zone(z)
+            if t then path = t:gsub('^%s+', ''):gsub('%s+$', '') end
+          end
+        end
+      end)
+    end
+
+    local image_exts = { png=1, jpg=1, jpeg=1, gif=1, bmp=1, webp=1, svg=1, tiff=1, tif=1, ico=1 }
+    local ext = path:lower():match('%.([a-z]+)$') or ''
+
+    if path == '' then
+      -- 3. Prompt
+      window:perform_action(act.PromptInputLine {
+        description = '🐢 Preview file: enter path',
+        action = wezterm.action_callback(function(w2, p2, line)
+          if line and line ~= '' then
+            local ext2 = line:lower():match('%.([a-z]+)$') or ''
+            local is_img = image_exts[ext2] ~= nil
+            w2:perform_action(act.SpawnCommandInNewPane {
+              direction = 'Right', size = { Percent = 50 },
+              command = { args = is_img
+                and {'sh', '-c', 'imgcat ' .. line .. '; printf "\\npress Enter..."; read -r _'}
+                or  {'sh', '-c', 'bat --paging=never ' .. line .. ' 2>/dev/null || cat ' .. line .. '; printf "\\npress Enter..."; read -r _'}
+              },
+            }, p2)
+          end
+        end),
+      }, pane)
+      return
+    end
+
+    local is_img = image_exts[ext] ~= nil
+    window:perform_action(
+      act.SpawnCommandInNewPane {
+        direction = 'Right', size = { Percent = 50 },
+        command = { args = is_img
+          and {'sh', '-c', 'imgcat ' .. path .. ' 2>/dev/null; printf "\\npress Enter..."; read -r _'}
+          or  {'sh', '-c', 'bat --paging=never ' .. path .. ' 2>/dev/null || cat ' .. path .. '; printf "\\npress Enter..."; read -r _'}
+        },
+      }, pane
+    )
+    window:toast_notification('TurtleTerm Preview', path, nil, 2000)
+  end)
+end
+
 -- Feature: CTRL+SHIFT+R AI history search (NL query → smart command reconstruction)
 local function turtle_history_ai_search()
   return act.PromptInputLine {
@@ -537,6 +605,40 @@ local function turtle_atlas_context()
       end
     else
       window:toast_notification('TurtleTerm', 'atlas-context failed', nil, 4000)
+    end
+  end)
+end
+
+-- ============================================================
+-- AI Sidebar (CTRL+SHIFT+X)
+-- ============================================================
+
+local function turtle_ai_sidebar()
+  return wezterm.action_callback(function(window, pane)
+    -- Check if AI sidebar pane is still alive
+    local ai_pane_id = wezterm.GLOBAL.ai_sidebar_pane_id
+    if ai_pane_id then
+      local found = false
+      local mux_win = window:mux_window()
+      for _, p in ipairs(mux_win:panes()) do
+        if p:pane_id() == ai_pane_id then
+          found = true
+          break
+        end
+      end
+      if found then
+        window:toast_notification('TurtleTerm AI', 'Sidebar already open — click to focus', nil, 2000)
+        return
+      end
+    end
+    -- Spawn the AI sidebar as a right split (35% width)
+    local new_pane = pane:split {
+      direction = 'Right',
+      size = 0.35,
+      command = { args = { 'turtle-ai-chat' } },
+    }
+    if new_pane then
+      wezterm.GLOBAL.ai_sidebar_pane_id = new_pane:pane_id()
     end
   end)
 end
@@ -702,8 +804,8 @@ config.keys = {
   { key = 'k', mods = 'CTRL|SHIFT', action = act.ActivatePaneDirection 'Up' },
   { key = 'l', mods = 'CTRL|SHIFT', action = act.ActivatePaneDirection 'Right' },
   { key = 'f', mods = 'CTRL|SHIFT', action = act.Search 'CurrentSelectionOrEmptyString' },
-  { key = 'x', mods = 'CTRL|SHIFT', action = act.ActivateCopyMode },
-  { key = 'p', mods = 'CTRL|SHIFT', action = act.ActivateCommandPalette },
+  { key = 'x', mods = 'CTRL|SHIFT', action = turtle_ai_sidebar() },  -- AI sidebar toggle
+  { key = 'p', mods = 'CTRL|SHIFT', action = turtle_preview_file() },
   { key = 'o', mods = 'CTRL|SHIFT', action = act.ShowLauncher },
   { key = 'g', mods = 'CTRL|SHIFT', action = turtle_policy_gate() },
   {

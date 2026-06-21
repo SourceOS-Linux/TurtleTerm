@@ -162,6 +162,14 @@ def main(argv: list[str]) -> int:
 
     sub.add_parser("atlas-register", help="register TurtleTerm with Atlas via ACP")
 
+    # Feature 2: execute with confirmation
+    exec_confirm_p = sub.add_parser("execute-with-confirmation", help="send a command to the terminal for human review (not auto-executed)")
+    exec_confirm_p.add_argument("cmd", nargs=argparse.REMAINDER, help="command to send for confirmation")
+
+    # Feature 3: local policy evaluation
+    policy_local_p = sub.add_parser("policy-evaluate-local", help="evaluate a command against the built-in local policy rule engine")
+    policy_local_p.add_argument("cmd", nargs=argparse.REMAINDER, help="command to evaluate")
+
     args = parser.parse_args(argv)
 
     if args.command == "ping":
@@ -239,6 +247,18 @@ def main(argv: list[str]) -> int:
         request = {"action": "atlas_context", "cwd": getattr(args, "cwd", None) or os.getcwd()}
     elif args.command == "atlas-register":
         request = {"action": "atlas_acp_register"}
+    elif args.command == "execute-with-confirmation":
+        joined_cmd = join_remainder(args.cmd)
+        if not joined_cmd:
+            print(json.dumps({"status": "error", "message": "execute-with-confirmation requires a command"}))
+            return 2
+        request = {"action": "terminal_execute_with_confirmation", "command": joined_cmd}
+    elif args.command == "policy-evaluate-local":
+        joined_cmd = join_remainder(args.cmd)
+        if not joined_cmd:
+            print(json.dumps({"status": "error", "message": "policy-evaluate-local requires a command"}))
+            return 2
+        request = {"action": "policy_evaluate_local", "command": joined_cmd}
     else:
         parser.print_help(sys.stderr)
         return 2

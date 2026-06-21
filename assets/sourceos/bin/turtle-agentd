@@ -239,6 +239,45 @@ def noetica_get(path: str, timeout: int = 3) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
+# Local policy rule engine
+# ---------------------------------------------------------------------------
+
+_LOCAL_POLICY_RULES: list[dict[str, str]] = [
+    {"pattern": r"rm\s+-rf\s+/\s*$", "decision": "deny", "reason": "Recursive deletion of filesystem root is destructive."},
+    {"pattern": r"rm\s+-rf\s+/\b", "decision": "deny", "reason": "Recursive deletion from root path is destructive."},
+    {"pattern": r"rm\s+-rf\s+~\s*$", "decision": "deny", "reason": "Recursive deletion of home directory is destructive."},
+    {"pattern": r"rm\s+-rf\s+~/", "decision": "deny", "reason": "Recursive deletion within home directory requires review."},
+    {"pattern": r"git\s+push\s+--force", "decision": "warn", "reason": "Force push rewrites remote history."},
+    {"pattern": r"curl\b.*\|\s*sh", "decision": "deny", "reason": "Piping curl to shell executes untrusted remote code."},
+    {"pattern": r"curl\b.*\|\s*bash", "decision": "deny", "reason": "Piping curl to bash executes untrusted remote code."},
+    {"pattern": r"sudo\s+rm\s+-rf", "decision": "deny", "reason": "Privileged recursive deletion is destructive."},
+    {"pattern": r"kill\s+-9\s+1\b", "decision": "deny", "reason": "Killing PID 1 crashes the system."},
+    {"pattern": r"DROP\s+TABLE", "decision": "warn", "reason": "DROP TABLE permanently destroys database table data."},
+    {"pattern": r":\(\)\s*\{.*:\|:.*\}", "decision": "deny", "reason": "Fork bomb detected."},
+    {"pattern": r"chmod\s+-R\s+777\s+/", "decision": "deny", "reason": "Recursive 777 on root removes all access controls."},
+]
+
+_COMPILED_LOCAL_RULES: list[tuple[re.Pattern[str], str, str, str]] = [
+    (re.compile(rule["pattern"], re.IGNORECASE | re.DOTALL), rule["decision"], rule["reason"], rule["pattern"])
+    for rule in _LOCAL_POLICY_RULES
+]
+
+
+def _local_policy_check(command: str) -> tuple[str, str, str | None]:
+    """Check command against local policy rules. Returns (decision, reason, matched_pattern)."""
+    warn_hit: tuple[str, str, str] | None = None
+    for compiled, decision, reason, pattern in _COMPILED_LOCAL_RULES:
+        if compiled.search(command):
+            if decision == "deny":
+                return "deny", reason, pattern
+            if decision == "warn" and warn_hit is None:
+                warn_hit = (decision, reason, pattern)
+    if warn_hit:
+        return warn_hit[0], warn_hit[1], warn_hit[2]
+    return "allow", "No local policy rules matched.", None
+
+
+# ---------------------------------------------------------------------------
 # Policy Fabric wire (Track D)
 # ---------------------------------------------------------------------------
 
@@ -253,7 +292,21 @@ def policy_evaluate(
     actor_id: str = "human:local-user",
     risk_level: str | None = None,
 ) -> dict[str, Any] | None:
-    """POST an execution request to Policy Fabric. Returns decision or None if unreachable."""
+    """POST an execution request to Policy Fabric. Returns decision or None if unreachable.
+    Short-circuits with a local deny result if the built-in rule engine rejects the command."""
+    # Check local rules first — deny short-circuits without hitting Policy Fabric.
+    local_decision, local_reason, local_pattern = _local_policy_check(command)
+    if local_decision == "deny":
+        return {
+            "decision": {
+                "outcome": "deny",
+                "reason": f"[local-policy] {local_reason}",
+                "matched_rule": local_pattern,
+            },
+            "decision_id": None,
+            "source": "local-policy",
+        }
+
     if risk_level is None:
         # host is high-risk, isolated domains are lower
         risk_level = "high" if execution_domain == "host" else "medium"
@@ -404,6 +457,31 @@ def smart_chat(
     if result is not None:
         return result
     return noetica_chat(text, session_id=session_id, context=context)
+
+
+# ---------------------------------------------------------------------------
+# Session context helpers
+# ---------------------------------------------------------------------------
+
+def _get_session_context(n: int = 10) -> str:
+    """Return the last n command.completed events as a formatted string (max 2000 chars)."""
+    events = read_ndjson(event_stream_path(), limit=500)
+    completed = [e for e in events if e.get("event_type") == "command.completed"]
+    recent = completed[-n:]
+    if not recent:
+        return ""
+    lines: list[str] = ["Recent commands:"]
+    for idx, evt in enumerate(recent):
+        cmd = (evt.get("command") or "").replace("\n", " ")
+        if len(cmd) > 80:
+            cmd = cmd[:77] + "..."
+        exit_status = evt.get("exit_status")
+        exit_str = f"exit {exit_status}" if exit_status is not None else "exit ?"
+        lines.append(f"  [{idx}] $ {cmd} → {exit_str}")
+    result = "\n".join(lines)
+    if len(result) > 2000:
+        result = result[:1997] + "..."
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +924,9 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         ctx_suffix = ""
         if git.get("git_branch"):
             ctx_suffix = f"\n\nContext: git branch `{git['git_branch']}`, cwd `{cwd}`"
+        session_ctx = _get_session_context()
+        if session_ctx:
+            ctx_suffix += f"\n\n{session_ctx}"
         user_prompt = f"Selected text:\n```\n{text}\n```{ctx_suffix}"
         ai_resp = smart_chat(
             user_prompt,
@@ -886,6 +967,9 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         ctx_suffix = ""
         if git.get("git_branch"):
             ctx_suffix = f"\n\nContext: git branch `{git['git_branch']}`, cwd `{cwd}`"
+        session_ctx = _get_session_context()
+        if session_ctx:
+            ctx_suffix += f"\n\n{session_ctx}"
         user_prompt = f"Request: {text}{ctx_suffix}"
         ai_resp = smart_chat(
             user_prompt,
@@ -914,6 +998,33 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             "source": source,
             "ai_response": ai_resp,
             "reachable": ai_resp is not None,
+        })
+
+    if action == "terminal_execute_with_confirmation":
+        command = request.get("command", "").strip()
+        if not command:
+            return response("error", {"message": "command is required"}, status="error")
+        description = request.get("description", "")
+        pending_dir = Path.home() / ".local" / "state" / "sourceos" / "terminal"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        pending_file = pending_dir / "pending_command"
+        tmp_file = pending_dir / "pending_command.tmp"
+        tmp_file.write_text(command, encoding="utf-8")
+        tmp_file.rename(pending_file)
+        meta = {
+            "command": command,
+            "description": description,
+            "requested_at": utc_now(),
+            "source": "mcp",
+        }
+        meta_file = pending_dir / "pending_command.json"
+        meta_tmp = pending_dir / "pending_command.json.tmp"
+        meta_tmp.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+        meta_tmp.rename(meta_file)
+        return response("execution_pending", {
+            "command": command,
+            "status": "pending_confirmation",
+            "note": "Command written to pending_command file. The terminal will display it for human review and execution.",
         })
 
     if action == "atlas_context":
@@ -970,6 +1081,22 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             "registration": registration["agent"],
             "atlas_response": result,
             "status": "registered" if reachable else "atlas_unreachable",
+        })
+
+    # ------------------------------------------------------------------
+    # Local policy rule engine
+    # ------------------------------------------------------------------
+
+    if action == "policy_evaluate_local":
+        command = request.get("command", "").strip()
+        if not command:
+            return response("error", {"message": "command is required"}, status="error")
+        local_decision, local_reason, local_matched = _local_policy_check(command)
+        return response("policy_local", {
+            "command": command,
+            "decision": local_decision,
+            "reason": local_reason,
+            "matched_rule": local_matched,
         })
 
     # ------------------------------------------------------------------

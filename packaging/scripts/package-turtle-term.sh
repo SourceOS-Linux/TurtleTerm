@@ -40,6 +40,7 @@ for script in \
   turtle-language \
   turtle-session \
   turtle-synapseiq \
+  synapseiq-lsp \
   turtleterm \
   turtleterm-mux-server; do
   cp "$repo_root/assets/sourceos/bin/$script" "$stage/bin/"

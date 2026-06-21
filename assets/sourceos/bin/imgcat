@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""imgcat — display images inline in TurtleTerm / iTerm2 / WezTerm.
+
+Usage:
+  imgcat image.png
+  imgcat image.jpg image.gif  (multiple files)
+  cat image.png | imgcat -     (stdin)
+  imgcat --width 80 image.png  (width hint)
+"""
+
+import base64, os, sys, argparse
+from pathlib import Path
+
+def emit_image(data: bytes, filename: str = '', width: int = 0) -> None:
+    b64 = base64.b64encode(data).decode('ascii')
+    size = len(data)
+    args_str = f'size={size};inline=1'
+    if filename:
+        import base64 as _b64
+        args_str += f';name={_b64.b64encode(filename.encode()).decode()}'
+    if width:
+        args_str += f';width={width}'
+    # iTerm2 / WezTerm inline image protocol: ESC ] 1337 ; File=... : base64data BEL
+    sys.stdout.buffer.write(f'\x1b]1337;File={args_str}:{b64}\x07\n'.encode('ascii'))
+    sys.stdout.buffer.flush()
+
+def main():
+    parser = argparse.ArgumentParser(description='Display images inline in TurtleTerm')
+    parser.add_argument('files', nargs='*', help='image files (or - for stdin)')
+    parser.add_argument('--width', type=int, default=0, help='width in columns')
+    args = parser.parse_args()
+
+    targets = args.files or ['-']
+    for target in targets:
+        if target == '-':
+            data = sys.stdin.buffer.read()
+            emit_image(data, 'stdin', args.width)
+        else:
+            p = Path(target)
+            if not p.exists():
+                print(f'imgcat: {target}: No such file', file=sys.stderr)
+                continue
+            emit_image(p.read_bytes(), p.name, args.width)
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,36 @@
+#!/usr/bin/env sh
+# synapseiq-lsp — SynapseIQ language server in real LSP stdio mode (JSON-RPC 2.0)
+# Editors (Neovim, VS Code, Helix, Emacs) point their LSP config at this script.
+#
+# Search order for server.js:
+#   1. $SOURCEOS_SYNAPSEIQ_SERVER          (explicit override)
+#   2. Alongside this script in the bundle  (../synapseiq/packages/lsp/src/server.js)
+#   3. Homebrew share                       (/opt/homebrew/share/turtleterm/synapseiq/server.js)
+#   4. /usr/local share
+#   5. ~/.local share
+#   6. ~/dev checkout                       (~/dev/synapseiq/packages/lsp/src/server.js)
+
+set -e
+
+if [ -n "${SOURCEOS_SYNAPSEIQ_SERVER:-}" ] && [ -f "$SOURCEOS_SYNAPSEIQ_SERVER" ]; then
+  exec node "$SOURCEOS_SYNAPSEIQ_SERVER" --lsp "$@"
+fi
+
+_self_dir="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+
+_candidates="
+${_self_dir}/../synapseiq/packages/lsp/src/server.js
+/opt/homebrew/share/turtleterm/synapseiq/server.js
+/usr/local/share/turtleterm/synapseiq/server.js
+${HOME}/.local/share/turtleterm/synapseiq/server.js
+${HOME}/dev/synapseiq/packages/lsp/src/server.js
+"
+
+for _candidate in $_candidates; do
+  if [ -f "$_candidate" ]; then
+    exec node "$_candidate" --lsp "$@"
+  fi
+done
+
+echo "synapseiq-lsp: server.js not found. Set SOURCEOS_SYNAPSEIQ_SERVER or clone synapseiq to ~/dev/synapseiq" >&2
+exit 1

@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""TurtleTerm AI Chat — persistent sidebar.
+
+Runs inside a terminal pane as an interactive AI workspace.
+Maintains conversation context across queries within the session.
+Reads from stdin, sends to agentd, prints responses.
+"""
+
+import json
+import os
+import readline
+import subprocess
+import sys
+
+# ANSI colors
+CYAN   = '\033[36m'
+YELLOW = '\033[33m'
+RED    = '\033[31m'
+RESET  = '\033[0m'
+BOLD   = '\033[1m'
+
+PROMPT = f'{CYAN}▸ {RESET}'
+
+readline.parse_and_bind('tab: complete')
+
+HELP_TEXT = f"""{YELLOW}TurtleTerm AI Chat — commands:{RESET}
+  /clear          — clear conversation history
+  /context <file> — load file as context for next query
+  /cmd <desc>     — generate a shell command (nl-to-shell mode)
+  /help           — show this help
+  /q  /quit       — exit
+"""
+
+def agentctl(*args):
+    """Run turtle-agentctl with args, return parsed JSON or None."""
+    try:
+        result = subprocess.run(
+            ['turtle-agentctl'] + list(args),
+            capture_output=True, text=True, timeout=30
+        )
+        if result.stdout.strip():
+            return json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+        pass
+    return None
+
+def format_history(history):
+    """Format the last 10 conversation exchanges as context prefix."""
+    if not history:
+        return ''
+    lines = ['Previous:']
+    for i, (q, a) in enumerate(history[-10:]):
+        lines.append(f'[{i}] Q: {q}')
+        lines.append(f'    A: {a[:200]}')
+    return '\n'.join(lines) + '\n\n'
+
+def explain(text):
+    """Send text to explain-selection, return explanation string."""
+    data = agentctl('explain-selection', text)
+    if data is None:
+        return None
+    return (data.get('data') or {}).get('explanation') or None
+
+def nl_to_shell(text):
+    """Send text to nl-to-shell, return command string."""
+    data = agentctl('nl-to-shell', text)
+    if data is None:
+        return None
+    return (data.get('data') or {}).get('command') or None
+
+def print_header():
+    print(f'{BOLD}TurtleTerm AI{RESET}  {YELLOW}(CTRL+SHIFT+X to toggle){RESET}')
+    print(f'{YELLOW}Type a question, /help for commands, /q to quit.{RESET}')
+    print()
+
+def main():
+    print_header()
+
+    history = []       # list of (query, response) tuples
+    pending_context = ''
+
+    is_tty = sys.stdin.isatty()
+
+    while True:
+        try:
+            if is_tty:
+                line = input(PROMPT)
+            else:
+                sys.stdout.write(PROMPT)
+                sys.stdout.flush()
+                line = sys.stdin.readline()
+                if not line:          # EOF
+                    break
+                line = line.rstrip('\n')
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        line = line.strip()
+
+        # Empty line — if TTY just re-prompt, otherwise treat as quit signal
+        if not line:
+            if not is_tty:
+                break
+            continue
+
+        # ---- Special commands ----
+        if line in ('/q', '/quit', r'\q'):
+            break
+
+        if line == '/clear':
+            history.clear()
+            pending_context = ''
+            print(f'{YELLOW}History cleared.{RESET}')
+            continue
+
+        if line == '/help':
+            print(HELP_TEXT)
+            continue
+
+        if line.startswith('/context '):
+            path = line[len('/context '):].strip()
+            path = os.path.expanduser(path)
+            try:
+                with open(path) as f:
+                    pending_context = f.read()
+                print(f'{YELLOW}Context loaded: {path} ({len(pending_context)} chars){RESET}')
+            except OSError as e:
+                print(f'{RED}Cannot read {path}: {e}{RESET}')
+            continue
+
+        if line.startswith('/cmd '):
+            description = line[len('/cmd '):].strip()
+            if not description:
+                print(f'{RED}Usage: /cmd <description>{RESET}')
+                continue
+            print(f'{YELLOW}Generating command…{RESET}')
+            cmd = nl_to_shell(description)
+            if cmd:
+                print(f'{BOLD}$ {cmd}{RESET}')
+                history.append((description, cmd))
+            else:
+                print(f'{RED}No command generated (is Noetica running on :8080?){RESET}')
+            continue
+
+        # ---- Normal query ----
+        # Build query with history prefix and any loaded context
+        query = line
+        prefix = format_history(history)
+        if pending_context:
+            prefix = f'Context:\n{pending_context}\n\n' + prefix
+            pending_context = ''
+
+        full_query = prefix + query if prefix else query
+
+        print(f'{YELLOW}Thinking…{RESET}')
+        explanation = explain(full_query)
+
+        if explanation:
+            # Word-wrap long lines at terminal width
+            try:
+                cols = os.get_terminal_size().columns
+            except OSError:
+                cols = 80
+            print()
+            # Print response respecting existing newlines
+            for para in explanation.split('\n'):
+                if len(para) <= cols:
+                    print(para)
+                else:
+                    # Simple word-wrap
+                    words = para.split()
+                    current = ''
+                    for word in words:
+                        if current and len(current) + 1 + len(word) > cols:
+                            print(current)
+                            current = word
+                        else:
+                            current = (current + ' ' + word).lstrip()
+                    if current:
+                        print(current)
+            print()
+            history.append((query, explanation))
+        else:
+            print(f'{RED}No response (is Noetica running on :8080? Check: turtle-agentctl explain-selection test){RESET}')
+
+if __name__ == '__main__':
+    main()

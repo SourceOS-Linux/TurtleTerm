@@ -159,3 +159,29 @@ precmd() {
 }
 EOF
 }
+
+# ============================================================
+# AI ghost-text completion via zsh widget
+# Bound to ALT+/ — complete current buffer with AI suggestion
+# Also bound to CTRL+SPACE (^@) for terminal compatibility
+# ============================================================
+
+_turtle_ai_complete() {
+    local current_buffer="$BUFFER"
+    [[ -z "$current_buffer" ]] && return
+
+    # Call nl-to-shell synchronously
+    local result
+    result=$(turtle-agentctl nl-to-shell "$current_buffer" 2>/dev/null | \
+             python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',{}).get('command',''))" 2>/dev/null)
+
+    if [[ -n "$result" && "$result" != "$current_buffer" ]]; then
+        BUFFER="$result"
+        CURSOR=${#BUFFER}
+        zle reset-prompt
+        zle -M "AI: $result"
+    fi
+}
+zle -N _turtle_ai_complete
+bindkey '\e/' _turtle_ai_complete   # ALT+/
+bindkey '^@' _turtle_ai_complete    # CTRL+SPACE (terminal sends ^@)

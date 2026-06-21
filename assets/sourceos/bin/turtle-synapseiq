@@ -9,7 +9,9 @@ Usage:
   turtle-synapseiq stop      Stop the running server
   turtle-synapseiq status    Check if the server is running and reachable
   turtle-synapseiq restart   Stop then start
-  turtle-synapseiq install   Locate and validate the server script
+  turtle-synapseiq install              Locate and validate the server script
+  turtle-synapseiq install-launchagent  Install + load macOS LaunchAgent (auto-start at login)
+  turtle-synapseiq uninstall-launchagent  Unload + remove the LaunchAgent
 """
 
 from __future__ import annotations
@@ -131,6 +133,91 @@ def cmd_install() -> int:
     return 1
 
 
+def _find_plist_template() -> Path | None:
+    """Locate the LaunchAgent plist template bundled with TurtleTerm."""
+    candidates = [
+        # Relative to this script: bin/ -> sourceos/ -> macos/
+        Path(__file__).parent.parent / "macos" / "com.sourceos.synapseiq-lsp.plist",
+        # Dev layout: assets/sourceos/macos/
+        Path(__file__).parent.parent.parent.parent / "assets" / "sourceos" / "macos" / "com.sourceos.synapseiq-lsp.plist",
+        # Installed prefix locations
+        Path("/opt/homebrew/share/turtleterm/macos/com.sourceos.synapseiq-lsp.plist"),
+        Path("/usr/local/share/turtleterm/macos/com.sourceos.synapseiq-lsp.plist"),
+        Path.home() / ".local" / "share" / "turtleterm" / "macos" / "com.sourceos.synapseiq-lsp.plist",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def cmd_install_launchagent() -> int:
+    """Install and load the SynapseIQ LSP LaunchAgent for the current user."""
+    script = find_server_script()
+    if not script:
+        print(
+            "ERROR: server.js not found. Set SOURCEOS_SYNAPSEIQ_SERVER or clone synapseiq to ~/dev/synapseiq",
+            file=sys.stderr,
+        )
+        return 1
+
+    template = _find_plist_template()
+    if not template:
+        print(
+            "ERROR: plist template not found. Expected at assets/sourceos/macos/com.sourceos.synapseiq-lsp.plist",
+            file=sys.stderr,
+        )
+        return 1
+
+    log_dir = Path.home() / "Library" / "Logs" / "sourceos"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = str(log_dir / "synapseiq-lsp.log")
+    err_path = str(log_dir / "synapseiq-lsp.err.log")
+
+    plist_content = template.read_text()
+    plist_content = plist_content.replace("SYNAPSEIQ_SERVER_PATH", str(script))
+    plist_content = plist_content.replace("SYNAPSEIQ_LOG_PATH", log_path)
+    plist_content = plist_content.replace("SYNAPSEIQ_ERR_PATH", err_path)
+
+    dest = Path.home() / "Library" / "LaunchAgents" / "com.sourceos.synapseiq-lsp.plist"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(plist_content)
+    print(f"wrote: {dest}")
+
+    result = subprocess.run(
+        ["launchctl", "load", str(dest)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"loaded: com.sourceos.synapseiq-lsp (port {PORT})")
+        print(f"logs:   {log_path}")
+        print(f"errors: {err_path}")
+        return 0
+    else:
+        print(f"launchctl load failed: {result.stderr.strip()}", file=sys.stderr)
+        return 1
+
+
+def cmd_uninstall_launchagent() -> int:
+    """Unload and remove the SynapseIQ LSP LaunchAgent."""
+    dest = Path.home() / "Library" / "LaunchAgents" / "com.sourceos.synapseiq-lsp.plist"
+    if dest.exists():
+        result = subprocess.run(
+            ["launchctl", "unload", str(dest)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            # Not fatal — may already be unloaded
+            print(f"launchctl unload: {result.stderr.strip()}", file=sys.stderr)
+        dest.unlink()
+        print(f"removed: {dest}")
+    else:
+        print(f"not installed: {dest}")
+    return 0
+
+
 def main() -> int:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd == "start":
@@ -144,6 +231,10 @@ def main() -> int:
         return cmd_status()
     elif cmd == "install":
         return cmd_install()
+    elif cmd == "install-launchagent":
+        return cmd_install_launchagent()
+    elif cmd == "uninstall-launchagent":
+        return cmd_uninstall_launchagent()
     else:
         print(__doc__)
         return 2
