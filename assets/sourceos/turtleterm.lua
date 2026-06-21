@@ -1639,6 +1639,44 @@ wezterm.on('update-left-status', function(window, pane)
     end
   end
 
+  -- Plan auto-advance: when a plan step ran and exited cleanly, auto-call plan_next.
+  -- Set by the pending_command injection below when source == "plan".
+  -- Opt out: TURTLE_PLAN_AUTO_ADVANCE=0
+  if exit_content ~= (wezterm.GLOBAL.last_plan_exit or '') and wezterm.GLOBAL._turtle_plan_waiting then
+    local plan_exit_num = tonumber(exit_content) or -1
+    -- Only act when exit code actually settled (non-empty)
+    if exit_content ~= '' then
+      wezterm.GLOBAL._turtle_plan_waiting = nil
+      wezterm.GLOBAL.last_plan_exit = exit_content
+      local auto_advance = os.getenv('TURTLE_PLAN_AUTO_ADVANCE') ~= '0'
+      if plan_exit_num == 0 and auto_advance then
+        -- Clean exit → advance to next step silently then toast result
+        local ok2, out2, _ = wezterm.run_child_process({
+          'turtle-agentctl', '--stdio', 'plan-next'
+        })
+        if ok2 and out2 then
+          local ok3, resp = pcall(wezterm.json_parse, out2)
+          if ok3 and resp then
+            if resp.kind == 'plan_complete' then
+              window:toast_notification('TurtleTerm Plan', '✓ Plan complete! Goal achieved.', nil, 4000)
+            else
+              local step = resp.data and resp.data.step or '?'
+              local total = resp.data and resp.data.step_count or '?'
+              local desc = resp.data and resp.data.description or ''
+              window:toast_notification('TurtleTerm Plan',
+                string.format('Step %s/%s ready → %s', step + 1, total, desc:sub(1, 60)), nil, 4000)
+            end
+          end
+        end
+      elseif plan_exit_num ~= 0 then
+        -- Failed step — pause and notify
+        window:toast_notification('TurtleTerm Plan',
+          string.format('Step failed (exit %d) — check output, then CMD+SHIFT+N to continue or CMD+P → plan abort',
+            plan_exit_num), nil, 7000)
+      end
+    end
+  end
+
   -- SynapseIQ diagnostic count — auto-fire on non-zero exit when file paths detected in output
   if exit_content ~= (wezterm.GLOBAL.last_checked_exit or '') then
     wezterm.GLOBAL.last_checked_exit = exit_content
@@ -1688,7 +1726,7 @@ wezterm.on('update-left-status', function(window, pane)
     table.insert(parts, ' \xe2\x96\xa4 ' .. block_count)  -- ▤ block icon
   end
 
-  -- Pending command injection (from terminal_execute_with_confirmation MCP tool)
+  -- Pending command injection (from plan_execute / terminal_execute_with_confirmation)
   local pending_path = xdg_state .. '/sourceos/terminal/pending_command'
   local pf = io.open(pending_path, 'r')
   if pf then
@@ -1697,8 +1735,36 @@ wezterm.on('update-left-status', function(window, pane)
     os.remove(pending_path)
     if cmd_text and cmd_text ~= '' then
       cmd_text = cmd_text:match('^%s*(.-)%s*$')  -- trim
+
+      -- Read metadata to detect plan source and arm auto-advance
+      local meta_path = xdg_state .. '/sourceos/terminal/pending_command.json'
+      local mf = io.open(meta_path, 'r')
+      local is_plan_step = false
+      if mf then
+        local raw = mf:read('*a'); mf:close()
+        os.remove(meta_path)
+        local ok2, meta = pcall(wezterm.json_parse, raw)
+        if ok2 and meta and meta.source == 'plan' then
+          is_plan_step = true
+          local step = (meta.plan_step or 0) + 1
+          local total = meta.plan_total or '?'
+          local desc  = meta.description or ''
+          local goal  = meta.goal or ''
+          -- Arm auto-advance: will fire when exit code edge arrives
+          wezterm.GLOBAL._turtle_plan_waiting = true
+          wezterm.GLOBAL.last_plan_exit = exit_content  -- snapshot current
+          window:toast_notification(
+            string.format('TurtleTerm Plan  [%s/%s]', step, total),
+            string.format('%s\n$ %s', desc:sub(1,80), cmd_text:sub(1,60)),
+            nil, 5000
+          )
+        end
+      end
+
       pane:send_text(cmd_text)
-      window:toast_notification('TurtleTerm Agent', 'Command ready (press Enter): ' .. cmd_text:sub(1, 60), nil, 4000)
+      if not is_plan_step then
+        window:toast_notification('TurtleTerm Agent', 'Command ready (press Enter): ' .. cmd_text:sub(1, 60), nil, 4000)
+      end
     end
   end
 

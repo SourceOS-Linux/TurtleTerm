@@ -195,7 +195,7 @@ def test_synapseiq() -> None:
     else:
         fail('synapseiq diagnostics/json', 'no error for broken JSON')
 
-    # Hover — TS language service (textDocument/hover equivalent via HTTP)
+    # Hover — TS language service
     ts_hover_src = 'function greet(name: string): string { return name; }\ngreet("world");'
     r = http_post('http://127.0.0.1:2087/lsp/hover', {'file': 'test.ts', 'text': ts_hover_src, 'line': 1, 'character': 1})
     if r and r.get('hover'):
@@ -206,6 +206,31 @@ def test_synapseiq() -> None:
             ok('synapseiq hover/ts', f'hover returned (symbol fallback): {str(h)[:60]}')
     else:
         fail('synapseiq hover/ts', 'no hover response')
+
+    # Definition — gd / textDocument/definition
+    ts_def_src = 'function add(a: number, b: number) { return a + b; }\nadd(1, 2);'
+    r = http_post('http://127.0.0.1:2087/lsp/definition', {'file': 'test.ts', 'text': ts_def_src, 'line': 1, 'character': 1})
+    if r and r.get('definition'):
+        d = r['definition']
+        if d.get('line') == 0:
+            ok('synapseiq definition/ts', f'line={d["line"]} col={d["col"]} (function add)')
+        else:
+            fail('synapseiq definition/ts', f'expected line 0, got {d}')
+    else:
+        fail('synapseiq definition/ts', f'no definition for "add" — {r}')
+
+    # SignatureHelp — <C-k> / textDocument/signatureHelp
+    ts_sig_src = 'function multiply(x: number, y: number): number { return x*y; }\nmultiply('
+    r = http_post('http://127.0.0.1:2087/lsp/signature', {'file': 'test.ts', 'text': ts_sig_src, 'line': 1, 'character': 9})
+    if r and r.get('signature_help') and r['signature_help'].get('signatures'):
+        sigs = r['signature_help']['signatures']
+        label = sigs[0].get('label', '')
+        if 'multiply' in label:
+            ok('synapseiq signature/ts', f'{label[:70]}')
+        else:
+            fail('synapseiq signature/ts', f'unexpected label: {label}')
+    else:
+        fail('synapseiq signature/ts', f'no signatures returned — {r}')
 
     # Lua diagnostics (syntax error)
     import subprocess as _sp
@@ -327,6 +352,30 @@ def test_plan_subsystem() -> None:
         fail('turtle-plan-view script', str(plan_view))
 
 
+def test_bash_init() -> None:
+    bash_paths = [
+        Path(__file__).parent.parent / 'shell' / 'turtle-shell-init.bash',
+        Path('/opt/homebrew/share/turtle-term/shell/turtle-shell-init.bash'),
+    ]
+    found = next((p for p in bash_paths if p.exists()), None)
+    if found:
+        content = found.read_text()
+        checks = [
+            ('bash OSC 133',              '133;C'),
+            ('bash AI explicit ALT+/',    '_turtle_ai_complete'),
+            ('bash AI bg fetch ALT+G',    '_turtle_ghost_fetch_bg'),
+            ('bash AI ghost consume',     '_turtle_ghost_consume'),
+            ('bash bind -x ALT+/',        'bind -x'),
+        ]
+        for name, needle in checks:
+            if needle in content:
+                ok(f'bash: {name}')
+            else:
+                fail(f'bash: {name}', f'"{needle}" not in turtle-shell-init.bash')
+    else:
+        skip('bash shell init', 'not found')
+
+
 def test_fish_init() -> None:
     fish_paths = [
         Path(__file__).parent.parent / 'shell' / 'turtle-shell-init.fish',
@@ -363,6 +412,34 @@ def test_mcp_plan_tools() -> None:
             fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
 
 
+def test_neovim_plugin() -> None:
+    nvim_paths = [
+        Path(__file__).parent.parent / 'neovim' / 'plugin' / 'turtle.vim',
+        Path('/opt/homebrew/share/turtle-term/neovim/plugin/turtle.vim'),
+    ]
+    found = next((p for p in nvim_paths if p.exists()), None)
+    if not found:
+        skip('neovim plugin', 'turtle.vim not found')
+        return
+    content = found.read_text()
+    checks = [
+        ('auto-start LSP on FileType',    'TurtleSynapseIQLSP'),
+        ('lsp.start call',                'lsp.start('),
+        ('K → hover binding',             'lsp.buf.hover'),
+        ('gd → definition binding',       'lsp.buf.definition'),
+        ('C-k → signature help',          'lsp.buf.signature_help'),
+        ('CursorHold diagnostics float',  'CursorHold'),
+        ('plan commands',                 'TurtlePlan'),
+        ('explain command',               'TurtleExplain'),
+    ]
+    import re as _re
+    for name, needle in checks:
+        if needle in content:
+            ok(f'nvim: {name}')
+        else:
+            fail(f'nvim: {name}', f'"{needle}" not in turtle.vim')
+
+
 def test_language_binary() -> None:
     lang = Path(__file__).parent / 'turtle-language'
     if lang.exists():
@@ -396,6 +473,8 @@ def test_lua_config() -> None:
             ('workspace startup offer',      '_ws_restore_name'),
             ('CMD+SHIFT+S save bind',        'turtle_workspace_save.*CMD|SHIFT.*s|key.*s.*CMD.SHIFT'),
             ('CMD+SHIFT+O restore bind',     'turtle_workspace_restore.*CMD|SHIFT.*o|key.*o.*CMD.SHIFT'),
+            ('plan auto-advance on exit 0',  '_turtle_plan_waiting'),
+            ('plan fail toast',              'Step failed.*exit'),
         ]
         import re as _re
         for name, needle in checks:
@@ -420,9 +499,11 @@ def main() -> int:
     test_agentctl()
     test_synapseiq()
     test_shell_init()
+    test_bash_init()
     test_fish_init()
     test_plan_subsystem()
     test_mcp_plan_tools()
+    test_neovim_plugin()
     test_language_binary()
     test_lua_config()
 

@@ -160,3 +160,83 @@ if [[ -n "${PROMPT_COMMAND:-}" ]]; then
 else
     PROMPT_COMMAND="_turtle_precmd"
 fi
+
+# ============================================================
+# AI ghost-text for bash
+#   ALT+/  — synchronous explicit completion (blocks ~1-2s)
+#   ALT+G  — background fetch; result printed above next prompt
+# Only active when ANTHROPIC_API_KEY is set or TURTLE_GHOST_TEXT=1
+# ============================================================
+
+if [[ -n "${ANTHROPIC_API_KEY:-}" || "${TURTLE_GHOST_TEXT:-}" == "1" ]]; then
+
+_turtle_ai_complete() {
+    local buf="${READLINE_LINE}"
+    [[ ${#buf} -lt 3 ]] && return
+
+    local json_buf
+    json_buf=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$buf" 2>/dev/null) || return
+
+    local result
+    result=$(printf '{"action":"nl_to_shell","text":%s}\n' "$json_buf" \
+        | python3 "$(_turtle_writer)" --stdio 2>/dev/null \
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("data",{}).get("command",""))' \
+        2>/dev/null)
+
+    if [[ -n "$result" && "$result" != "$buf" ]]; then
+        READLINE_LINE="$result"
+        READLINE_POINT="${#READLINE_LINE}"
+    fi
+}
+
+# Background ghost-text: ALT+G launches fetch, result shown above next prompt
+_TURTLE_GHOST_PID=0
+_TURTLE_GHOST_FILE="/tmp/turtle-bash-ghost-$$.txt"
+
+_turtle_ghost_fetch_bg() {
+    local buf="${READLINE_LINE}"
+    [[ ${#buf} -lt 4 ]] && return
+    # Cancel any in-flight fetch
+    [[ $_TURTLE_GHOST_PID -gt 0 ]] && kill "$_TURTLE_GHOST_PID" 2>/dev/null
+    rm -f "$_TURTLE_GHOST_FILE"
+
+    local json_buf outfile writer
+    json_buf=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$buf" 2>/dev/null) || return
+    outfile="$_TURTLE_GHOST_FILE"
+    writer="$(_turtle_writer)"
+    (
+        result=$(printf '{"action":"nl_to_shell","text":%s}\n' "$json_buf" \
+            | python3 "$writer" --stdio 2>/dev/null \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("data",{}).get("command",""))' \
+            2>/dev/null)
+        [[ -n "$result" ]] && printf '%s' "$result" > "$outfile"
+    ) &
+    _TURTLE_GHOST_PID=$!
+}
+
+_turtle_ghost_consume() {
+    [[ $_TURTLE_GHOST_PID -le 0 ]] && return
+    if ! kill -0 "$_TURTLE_GHOST_PID" 2>/dev/null; then
+        _TURTLE_GHOST_PID=0
+        if [[ -f "$_TURTLE_GHOST_FILE" ]]; then
+            local result; result=$(cat "$_TURTLE_GHOST_FILE" 2>/dev/null)
+            rm -f "$_TURTLE_GHOST_FILE"
+            [[ -n "$result" ]] && printf '\e[90m  AI▸ %s\e[0m\n' "${result:0:100}" >&2
+        fi
+    fi
+}
+
+# Wire readline bindings (interactive shell only)
+if [[ $- == *i* ]]; then
+    bind -x '"\e/":_turtle_ai_complete'     # ALT+/  — explicit synchronous
+    bind -x '"\eg":_turtle_ghost_fetch_bg'  # ALT+G  — background fetch
+fi
+
+# Prepend ghost consumer to PROMPT_COMMAND (fires before each prompt)
+if [[ "${PROMPT_COMMAND}" != *_turtle_ghost_consume* ]]; then
+    PROMPT_COMMAND="_turtle_ghost_consume; ${PROMPT_COMMAND:-:}"
+fi
+
+trap 'rm -f "$_TURTLE_GHOST_FILE"; [[ $_TURTLE_GHOST_PID -gt 0 ]] && kill "$_TURTLE_GHOST_PID" 2>/dev/null' EXIT
+
+fi  # end ANTHROPIC_API_KEY / TURTLE_GHOST_TEXT guard

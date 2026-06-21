@@ -618,7 +618,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         noetica_reachable = noetica_get("/api/status", timeout=1) is not None
         return response("pong", {
             "service": "turtle-agentd",
-            "version": "0.1.0",
+            "version": "0.2.0",
             "noetica_url": noetica_url(),
             "noetica_reachable": noetica_reachable,
         })
@@ -1084,7 +1084,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
                 "id": "turtleterm",
                 "name": "TurtleTerm",
                 "description": "TurtleTerm terminal intelligence agent (SourceOS)",
-                "version": "0.1.1",
+                "version": "0.2.0",
                 "capabilities": ["terminal", "shell", "explain_selection", "nl_to_shell"],
                 "endpoint": env("TURTLETERM_ACP_ENDPOINT", ""),
             }

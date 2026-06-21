@@ -149,6 +149,94 @@ function! turtle#status() abort
   echo 'TurtleTerm agent v' . (ver !=# '' ? ver : '?') . ' | noetica=' . (noetica !=# '' ? noetica : '?')
 endfunction
 
+" ============================================================
+" SynapseIQ LSP — zero-config auto-attach (Neovim 0.8+)
+"
+" Starts synapseiq-lsp the first time a supported filetype is
+" opened.  Wires K / gd / gr / <C-k> only when unbound.
+" Opt out: let g:turtle_synapseiq_lsp_auto = 0
+" ============================================================
+
+if get(g:, 'turtle_synapseiq_lsp_auto', 1) && has('nvim')
+  augroup TurtleSynapseIQLSP
+    autocmd!
+    autocmd FileType
+          \ python,typescript,javascript,typescriptreact,javascriptreact,
+          \lua,rust,go,sh,bash,zsh,fish,json,yaml,ruby,java,cpp,c
+          \ call turtle#_synapseiq_lsp_attach()
+  augroup END
+endif
+
+function! turtle#_synapseiq_lsp_attach() abort
+  if !has('nvim') | return | endif
+  if !executable('synapseiq-lsp') | return | endif
+lua << EOFLUA
+  local api    = vim.api
+  local lsp    = vim.lsp
+  local fn     = vim.fn
+  local kmap   = vim.keymap
+
+  -- Walk up from the current file to find a project root
+  local root = vim.fs.dirname(
+    vim.fs.find(
+      { '.git','package.json','pyproject.toml','Cargo.toml',
+        'go.mod','setup.py','Makefile','.editorconfig' },
+      { upward = true, path = api.nvim_buf_get_name(0) }
+    )[1]
+  ) or fn.getcwd()
+
+  -- Avoid re-attaching if already on this buffer
+  local get_clients = lsp.get_clients or lsp.get_active_clients
+  for _, c in ipairs(get_clients({ name = 'synapseiq-lsp' })) do
+    if lsp.buf_is_attached(0, c.id) then return end
+  end
+
+  lsp.start({
+    name     = 'synapseiq-lsp',
+    cmd      = { 'synapseiq-lsp' },
+    root_dir = root,
+    capabilities = lsp.protocol.make_client_capabilities(),
+
+    on_attach = function(_client, bufnr)
+      -- Only bind if nothing already owns this key in this buffer
+      local function map(mode, lhs, rhs, desc)
+        if fn.mapcheck(lhs, mode) == '' then
+          kmap.set(mode, lhs, rhs, { buffer = bufnr, silent = true, desc = desc })
+        end
+      end
+
+      map('n', 'K',           lsp.buf.hover,           'SynapseIQ: type / doc hover')
+      map('n', 'gd',          lsp.buf.definition,      'SynapseIQ: go to definition')
+      map('n', 'gr',          lsp.buf.references,      'SynapseIQ: find references')
+      map('i', '<C-k>',       lsp.buf.signature_help,  'SynapseIQ: signature help')
+      map('n', '<Leader>ld',  function()
+        vim.diagnostic.open_float(nil, { border = 'rounded', source = 'always' })
+      end, 'SynapseIQ: diagnostics float')
+
+      -- Floating diagnostics on cursor hold (non-focused, keep typing)
+      api.nvim_create_autocmd('CursorHold', {
+        buffer   = bufnr,
+        callback = function()
+          vim.diagnostic.open_float(
+            nil, { focus = false, scope = 'cursor', border = 'rounded', source = 'always' }
+          )
+        end,
+      })
+
+      -- Consistent diagnostic display across all buffers
+      vim.diagnostic.config({
+        virtual_text     = { prefix = '●', spacing = 4 },
+        signs            = true,
+        underline        = true,
+        update_in_insert = false,
+        severity_sort    = true,
+        float            = { border = 'rounded', source = 'always' },
+      })
+    end,
+  })
+EOFLUA
+endfunction
+
 " ---------------------------------------------------------------------------
 " :SynapseIQLSP — print lspconfig snippet for synapseiq-lsp
 " ---------------------------------------------------------------------------
