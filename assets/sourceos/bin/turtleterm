@@ -5,6 +5,101 @@ set -eu
 
 bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
+# ---------------------------------------------------------------------------
+# Subcommands (handled before the exec into wezterm-gui)
+# ---------------------------------------------------------------------------
+_cmd="${1:-}"
+case "$_cmd" in
+  --version|-V)
+    echo "TurtleTerm 0.2.0"
+    exit 0
+    ;;
+  --help|-h|help)
+    cat <<'HELP'
+TurtleTerm — SourceOS agent terminal
+
+Usage:
+  turtleterm                          Launch the terminal
+  turtleterm --install-shell-integration
+                                      Add shell integration to your rc file
+  turtleterm --version                Print version
+  turtleterm --help                   This message
+
+Shell integration adds OSC 133 prompt marks, dangerous-command warnings,
+and long-running command notifications to zsh, bash, or fish.
+HELP
+    exit 0
+    ;;
+  --install-shell-integration|install-shell-integration)
+    shift
+    _shell="${SHELL:-}"
+    _shell_name="$(basename "$_shell")"
+
+    # Find the shell init dir
+    _init_dir=""
+    for _candidate in \
+      "${bin_dir}/../shell" \
+      "${bin_dir}/../share/turtle-term/shell" \
+      "${bin_dir}/../../assets/sourceos/shell" \
+      "/opt/homebrew/share/turtleterm/shell" \
+      "/usr/local/share/turtleterm/shell" \
+      "${HOME}/.local/share/turtleterm/shell"
+    do
+      if [ -f "${_candidate}/turtle-shell-init.zsh" ]; then
+        _init_dir="$(CDPATH= cd -- "$_candidate" && pwd)"
+        break
+      fi
+    done
+
+    if [ -z "$_init_dir" ]; then
+      echo "ERROR: shell init directory not found." >&2
+      echo "  Expected turtle-shell-init.{zsh,bash,fish} in one of:" >&2
+      echo "    $(dirname "$bin_dir")/share/turtle-term/shell" >&2
+      exit 1
+    fi
+
+    case "$_shell_name" in
+      zsh)
+        _rc="${HOME}/.zshrc"
+        _init_file="${_init_dir}/turtle-shell-init.zsh"
+        _source_line="source \"${_init_file}\""
+        ;;
+      bash)
+        _rc="${HOME}/.bashrc"
+        [ -f "${HOME}/.bash_profile" ] && _rc="${HOME}/.bash_profile"
+        _init_file="${_init_dir}/turtle-shell-init.bash"
+        _source_line="source \"${_init_file}\""
+        ;;
+      fish)
+        _rc="${HOME}/.config/fish/config.fish"
+        mkdir -p "$(dirname "$_rc")"
+        _init_file="${_init_dir}/turtle-shell-init.fish"
+        _source_line="source \"${_init_file}\""
+        ;;
+      *)
+        echo "Unsupported shell: $_shell_name (supported: zsh, bash, fish)" >&2
+        exit 1
+        ;;
+    esac
+
+    if [ ! -f "$_init_file" ]; then
+      echo "ERROR: init file not found: $_init_file" >&2
+      exit 1
+    fi
+
+    if grep -q "turtle-shell-init" "$_rc" 2>/dev/null; then
+      echo "Already installed in $_rc — no changes made."
+    else
+      printf '\n# TurtleTerm shell integration\n%s\n' "$_source_line" >> "$_rc"
+      echo "Added to $_rc:"
+      echo "  $_source_line"
+      echo ""
+      echo "Restart your shell or run: source $_rc"
+    fi
+    exit 0
+    ;;
+esac
+
 export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
 
 config_file=""

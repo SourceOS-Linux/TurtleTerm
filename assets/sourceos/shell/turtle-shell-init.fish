@@ -99,10 +99,15 @@ function _turtle_fish_postexec --on-event fish_postexec
     printf '\e]133;D;%d\a' $exit_status
     printf '\e]133;A\a'
 
-    # Write exit code for status bar
+    # Write exit code + timing for status bar
     set -l state_dir (_turtle_state_dir)
     mkdir -p $state_dir 2>/dev/null
     printf '%d' $exit_status > "$state_dir/last_exit" 2>/dev/null
+    if test $_TURTLE_FISH_START_EPOCH -gt 0
+        set -l _now (date +%s 2>/dev/null; or echo 0)
+        set -l _elapsed (math $_now - $_TURTLE_FISH_START_EPOCH)
+        printf '%d' $_elapsed > "$state_dir/last_duration" 2>/dev/null
+    end
 
     # Long command notification
     if test -n "$_TURTLE_FISH_CMD"; and test $_TURTLE_FISH_START_EPOCH -gt 0

@@ -99,10 +99,15 @@ _turtle_precmd() {
     printf '\e]133;D;%d\a' $exit_status
     printf '\e]133;A\a'
 
-    # Write exit code for status bar
+    # Write exit code + timing for status bar
     local state_dir; state_dir="$(_turtle_state_dir)"
     mkdir -p "$state_dir" 2>/dev/null || true
     printf '%d' $exit_status > "$state_dir/last_exit" 2>/dev/null || true
+    if [[ ${_TURTLE_CMD_START_EPOCH:-0} -gt 0 ]]; then
+        local _now; _now=$(date +%s 2>/dev/null || echo 0)
+        local _elapsed=$(( _now - _TURTLE_CMD_START_EPOCH ))
+        printf '%d' "$_elapsed" > "$state_dir/last_duration" 2>/dev/null || true
+    fi
 
     # Long command notification
     if [[ -n "$_TURTLE_CMD_PENDING" && $_TURTLE_CMD_START_EPOCH -gt 0 ]]; then

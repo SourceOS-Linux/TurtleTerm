@@ -273,18 +273,25 @@ local function turtle_explain_selection()
       window:toast_notification('TurtleTerm', 'No text selected — select output first, then CTRL+SHIFT+E.', nil, 4000)
       return
     end
-    window:toast_notification('TurtleTerm', 'Asking Noetica to explain…', nil, 2000)
-    local ok, stdout, _ = wezterm.run_child_process({
-      'turtle-agentctl', 'explain-selection', sel,
-    })
-    if ok and stdout and stdout ~= '' then
-      local data = {}
-      pcall(function() data = wezterm.json_parse(stdout) end)
-      local explanation = (data.data and data.data.explanation) or stdout:sub(1, 300)
-      window:toast_notification('TurtleTerm Explain', explanation, nil, 12000)
-    else
-      window:toast_notification('TurtleTerm', 'Noetica unreachable — start dev-backend.sh on :8080', nil, 6000)
-    end
+    -- Write selection to temp file so the subprocess shell can read it
+    local tmp = '/tmp/turtle-explain-sel.txt'
+    local f = io.open(tmp, 'w')
+    if f then f:write(sel); f:close() end
+    -- Open a right split pane that runs the explain and shows the result inline
+    window:perform_action(
+      act.SpawnCommandInNewPane {
+        direction = 'Right',
+        size = { Percent = 40 },
+        command = {
+          args = {
+            'sh', '-c',
+            'clear; echo "=== TurtleTerm Explain ==="; echo; sel=$(cat /tmp/turtle-explain-sel.txt); turtle-agentctl explain-selection "$sel" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get(\'data\',{}).get(\'explanation\',\'(no response)\'))" 2>/dev/null || echo "(could not reach AI)"; echo; printf "press Enter to close... "; read -r _',
+          },
+        },
+      },
+      pane
+    )
+    window:toast_notification('TurtleTerm', 'Explaining…', nil, 2000)
   end)
 end
 
@@ -315,6 +322,131 @@ local function turtle_nl_to_shell()
   }
 end
 
+-- Feature: CTRL+SPACE inline AI ghost-text completion
+-- Reads the current Input zone, runs nl-to-shell on partial text, replaces with suggestion.
+local function turtle_ai_complete()
+  return wezterm.action_callback(function(window, pane)
+    local input_text = ''
+    pcall(function()
+      local zones = pane:get_semantic_zones()
+      for _, z in ipairs(zones) do
+        if z.semantic_type == 'Input' then
+          input_text = pane:get_text_from_semantic_zone(z)
+        end
+      end
+    end)
+    input_text = input_text:gsub('^%s+', ''):gsub('%s+$', '')
+    if input_text == '' then
+      window:toast_notification('TurtleTerm', 'Start typing first, then CTRL+SPACE for AI completion.', nil, 2500)
+      return
+    end
+    local ok, stdout, _ = wezterm.run_child_process({ 'turtle-agentctl', 'nl-to-shell', input_text })
+    if ok and stdout and stdout ~= '' then
+      local data = {}
+      pcall(function() data = wezterm.json_parse(stdout) end)
+      local cmd = (data.data and data.data.command) or ''
+      if cmd ~= '' and cmd ~= input_text then
+        pane:send_text('\x15')  -- Ctrl+U — clear line
+        pane:send_text(cmd)
+        window:toast_notification('TurtleTerm AI', cmd:sub(1, 80), nil, 3000)
+      else
+        window:toast_notification('TurtleTerm AI', 'No better suggestion — keeping your input.', nil, 2000)
+      end
+    else
+      window:toast_notification('TurtleTerm', 'AI unavailable (set ANTHROPIC_API_KEY or start Noetica).', nil, 3000)
+    end
+  end)
+end
+
+-- Feature: CTRL+R history fuzzy picker from event stream
+local function turtle_history_search()
+  return wezterm.action_callback(function(window, pane)
+    local home = os.getenv('HOME') or ''
+    local xdg_state = os.getenv('XDG_STATE_HOME') or (home .. '/.local/state')
+    local events_file = xdg_state .. '/sourceos/terminal/events.ndjson'
+    local choices = {}
+    local seen = {}
+
+    -- Read from turtle event stream (most accurate)
+    local f = io.open(events_file, 'r')
+    if f then
+      local lines = {}
+      for line in f:lines() do table.insert(lines, line) end
+      f:close()
+      for i = #lines, 1, -1 do
+        local ok, evt = pcall(function() return wezterm.json_parse(lines[i]) end)
+        if ok and evt and evt.event and evt.event.event_type == 'command.completed' then
+          local cmd = evt.event.command or ''
+          if cmd ~= '' and not seen[cmd] then
+            seen[cmd] = true
+            table.insert(choices, { label = cmd, id = cmd })
+            if #choices >= 100 then break end
+          end
+        end
+      end
+    end
+
+    -- Fallback: shell history files
+    if #choices == 0 then
+      local ok, out, _ = wezterm.run_child_process({
+        'sh', '-c', 'tail -n 100 "${HISTFILE:-$HOME/.zsh_history}" 2>/dev/null || tail -n 100 ~/.bash_history 2>/dev/null'
+      })
+      if ok and out then
+        for line in out:gmatch('[^\n]+') do
+          local cmd = line:match('^: %d+:%d+;(.+)$') or line
+          cmd = cmd:gsub('^%s+', ''):gsub('%s+$', '')
+          if cmd ~= '' and not seen[cmd] then
+            seen[cmd] = true
+            table.insert(choices, { label = cmd, id = cmd })
+          end
+        end
+      end
+    end
+
+    if #choices == 0 then
+      window:toast_notification('TurtleTerm History', 'No history yet — run some commands first.', nil, 3000)
+      return
+    end
+
+    window:perform_action(
+      act.InputSelector {
+        action = wezterm.action_callback(function(_, p2, id, _)
+          if id then p2:send_text(id) end
+        end),
+        title = 'TurtleTerm History  (fuzzy search)',
+        choices = choices,
+        fuzzy = true,
+      },
+      pane
+    )
+  end)
+end
+
+-- Feature: CTRL+SHIFT+R AI history search (NL query → smart command reconstruction)
+local function turtle_history_ai_search()
+  return act.PromptInputLine {
+    description = '🐢 AI History: describe what you want to do (recreate or find)',
+    initial_value = '',
+    action = wezterm.action_callback(function(window, pane, line)
+      if not line or line == '' then return end
+      local ok, stdout, _ = wezterm.run_child_process({
+        'turtle-agentctl', 'nl-to-shell', line,
+      })
+      if ok and stdout and stdout ~= '' then
+        local data = {}
+        pcall(function() data = wezterm.json_parse(stdout) end)
+        local cmd = (data.data and data.data.command) or ''
+        if cmd ~= '' then
+          pane:send_text(cmd)
+          window:toast_notification('TurtleTerm AI History', cmd, nil, 5000)
+        end
+      else
+        window:toast_notification('TurtleTerm', 'AI unavailable', nil, 3000)
+      end
+    end),
+  }
+end
+
 local function turtle_atlas_context()
   return wezterm.action_callback(function(window, pane)
     local cwd = ''
@@ -340,6 +472,85 @@ local function turtle_atlas_context()
     end
   end)
 end
+
+-- ============================================================
+-- Stored Workflows (Feature 4)
+-- ============================================================
+
+local function parse_workflows(content)
+  local workflows = {}
+  local current = {}
+  for line in content:gmatch('[^\n]+') do
+    local name = line:match('^%- name:%s*"?([^"]+)"?%s*$')
+    local cmd  = line:match('^  command:%s*"?([^"]+)"?%s*$')
+    if name then
+      if current.name then table.insert(workflows, current) end
+      current = { name = name }
+    elseif cmd and current.name then
+      current.command = cmd
+    end
+  end
+  if current.name then table.insert(workflows, current) end
+  return workflows
+end
+
+local turtle_builtin_workflows = {
+  { name = 'Show disk usage by directory',      command = 'du -sh */ | sort -rh | head -20' },
+  { name = 'Git log graph (last 20)',            command = 'git log --oneline --graph --decorate -20' },
+  { name = 'Find large files (>10MB)',           command = "find . -size +10M -not -path './.git/*' | sort" },
+  { name = 'Show listening ports',               command = 'lsof -iTCP -sTCP:LISTEN -n -P' },
+  { name = 'Watch system resources',             command = 'top -o cpu' },
+  { name = 'Recent git changes',                 command = 'git diff --stat HEAD~5..HEAD' },
+  { name = 'Docker containers',                  command = "docker ps -a --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'" },
+  { name = 'Show PATH entries',                  command = "echo $PATH | tr ':' '\\n'" },
+}
+
+local function turtle_workflows()
+  return wezterm.action_callback(function(window, pane)
+    local workflows = turtle_builtin_workflows
+    local home = os.getenv('HOME') or ''
+    local wf_path = home .. '/.config/turtleterm/workflows.yaml'
+    local wf_file = io.open(wf_path, 'r')
+    if wf_file then
+      local content = wf_file:read('*a')
+      wf_file:close()
+      local parsed = parse_workflows(content)
+      if #parsed > 0 then workflows = parsed end
+    end
+    local choices = {}
+    for i, wf in ipairs(workflows) do
+      table.insert(choices, { label = string.format('%d. %s', i, wf.name), id = tostring(i) })
+    end
+    window:perform_action(
+      act.InputSelector {
+        action = wezterm.action_callback(function(w, p, id, label)
+          if not id then return end
+          local idx = tonumber(id)
+          if idx and workflows[idx] then
+            p:send_text(workflows[idx].command)
+            w:toast_notification('TurtleTerm Workflows', workflows[idx].name, nil, 3000)
+          end
+        end),
+        title = 'TurtleTerm Workflows',
+        choices = choices,
+        fuzzy = true,
+      },
+      pane
+    )
+  end)
+end
+
+-- ============================================================
+-- Trigger system defaults (Feature 5)
+-- ============================================================
+
+config.turtle_triggers = {
+  { pattern = 'Error:',            label = 'error detected',    action = 'notify' },
+  { pattern = 'FAILED',            label = 'failure',           action = 'notify' },
+  { pattern = 'Permission denied', label = 'permission error',  action = 'notify' },
+  { pattern = 'panic:',            label = 'panic',             action = 'notify' },
+  { pattern = 'fatal:',            label = 'fatal error',       action = 'notify' },
+}
 
 config.keys = {
   -- Prompt jumping (OSC 133 marks required — turtle-shell-init provides them)
@@ -403,13 +614,17 @@ config.keys = {
   },
 
   -- Agent intelligence
-  { key = 'e', mods = 'CTRL|SHIFT', action = turtle_explain_selection() },
-  { key = 'n', mods = 'CTRL|SHIFT', action = turtle_nl_to_shell() },
-  { key = 'a', mods = 'CTRL|SHIFT', action = turtle_atlas_context() },
+  { key = 'e', mods = 'CTRL|SHIFT',   action = turtle_explain_selection() },
+  { key = 'n', mods = 'CTRL|SHIFT',   action = turtle_nl_to_shell() },
+  { key = 'a', mods = 'CTRL|SHIFT',   action = turtle_atlas_context() },
+  { key = 'Space', mods = 'CTRL',     action = turtle_ai_complete() },       -- AI ghost-text complete
+  { key = 'r', mods = 'CTRL',         action = turtle_history_search() },    -- History fuzzy picker
+  { key = 'r', mods = 'CTRL|SHIFT',   action = turtle_history_ai_search() }, -- AI history search
 
   { key = 'Enter', mods = 'CTRL|SHIFT', action = act.SplitVertical { domain = 'CurrentPaneDomain' } },
   { key = 'Enter', mods = 'CTRL|ALT', action = act.SplitHorizontal { domain = 'CurrentPaneDomain' } },
-  { key = 'w', mods = 'CTRL|SHIFT', action = act.CloseCurrentPane { confirm = true } },
+  { key = 'w', mods = 'CTRL|SHIFT', action = turtle_workflows() },
+  { key = 'q', mods = 'CTRL|SHIFT', action = act.CloseCurrentPane { confirm = true } },
   { key = 't', mods = 'CTRL|SHIFT', action = act.SpawnTab 'CurrentPaneDomain' },
   { key = 'LeftArrow', mods = 'CTRL|SHIFT', action = act.ActivateTabRelative(-1) },
   { key = 'RightArrow', mods = 'CTRL|SHIFT', action = act.ActivateTabRelative(1) },
@@ -467,7 +682,15 @@ end)
 
 wezterm.on('update-right-status', function(window, pane)
   local domain = turtle_domain()
-  if domain ~= 'host' then
+  -- Feature 3: SSH profile indicator
+  local proc = ''
+  pcall(function() proc = pane:get_foreground_process_name() or '' end)
+  local cwd_uri = ''
+  pcall(function() cwd_uri = tostring(pane.current_working_dir) or '' end)
+  local is_ssh = proc:find('ssh') ~= nil or cwd_uri:find('^ssh://') ~= nil
+  if is_ssh then
+    window:set_right_status('  \xe2\x87\x84 ssh  ')  -- ⇄ ssh
+  elseif domain ~= 'host' then
     window:set_right_status(string.format('  %s  ', domain))
   else
     window:set_right_status('')
@@ -493,17 +716,85 @@ wezterm.on('update-left-status', function(window, pane)
     end
   end
 
-  -- Last exit code from state file
+  -- First-run shell integration hint (fires once per session after gui-startup)
+  if wezterm.GLOBAL.check_shell_integration then
+    wezterm.GLOBAL.check_shell_integration = nil
+    if not os.getenv('TURTLE_SHELL_INIT_DIR') then
+      window:toast_notification(
+        'TurtleTerm — Shell Integration',
+        'Shell integration not active.\nRun: turtleterm --install-shell-integration\n(enables prompt marks, AI context, dangerous-command warnings)',
+        nil, 9000
+      )
+    end
+  end
+
+  -- Last exit code + timing from state files
   local home = os.getenv('HOME') or ''
   local xdg_state = os.getenv('XDG_STATE_HOME') or (home .. '/.local/state')
   local exit_file = xdg_state .. '/sourceos/terminal/last_exit'
+  local exit_content = ''
   local f = io.open(exit_file, 'r')
   if f then
-    local code = f:read('*n')
+    exit_content = f:read('*l') or ''
     f:close()
-    if code and code ~= 0 then
+    local code = tonumber(exit_content) or 0
+    if code ~= 0 then
       table.insert(parts, ' \xe2\x9c\x97 ' .. tostring(code))  -- ✗
     end
+  end
+
+  -- Command timing (⏱)
+  local dur_file = xdg_state .. '/sourceos/terminal/last_duration'
+  local df = io.open(dur_file, 'r')
+  if df then
+    local dur = df:read('*n')
+    df:close()
+    if dur and dur > 1 then
+      local dur_str
+      if dur < 60 then
+        dur_str = string.format('%.0fs', dur)
+      elseif dur < 3600 then
+        dur_str = string.format('%dm%ds', math.floor(dur / 60), dur % 60)
+      else
+        dur_str = string.format('%dh%dm', math.floor(dur / 3600), math.floor((dur % 3600) / 60))
+      end
+      table.insert(parts, ' \xe2\x8f\xb1 ' .. dur_str)  -- ⏱
+    end
+  end
+
+  -- SynapseIQ diagnostic count — auto-fire on non-zero exit when file paths detected in output
+  if exit_content ~= (wezterm.GLOBAL.last_checked_exit or '') then
+    wezterm.GLOBAL.last_checked_exit = exit_content
+    local exit_num = tonumber(exit_content) or 0
+    if exit_num ~= 0 then
+      local last_out = ''
+      pcall(function()
+        local zones = pane:get_semantic_zones()
+        for _, z in ipairs(zones) do
+          if z.semantic_type == 'Output' then
+            last_out = pane:get_text_from_semantic_zone(z) or ''
+          end
+        end
+      end)
+      local file_found = last_out:match('([%w_/%.%-]+%.[a-zA-Z][a-zA-Z0-9]*):%d+')
+      if file_found and file_found:match('%.[a-z]+$') then
+        local ok2, diag_out, _ = wezterm.run_child_process({ 'turtle-language', 'diagnostics', file_found })
+        if ok2 and diag_out and diag_out ~= '' then
+          local ddata = {}
+          pcall(function() ddata = wezterm.json_parse(diag_out) end)
+          local count = (ddata.data and ddata.data.diagnostic_count) or 0
+          wezterm.GLOBAL.last_diag_count = count > 0 and count or nil
+          wezterm.GLOBAL.last_diag_file = count > 0 and file_found or nil
+        end
+      else
+        wezterm.GLOBAL.last_diag_count = nil
+      end
+    else
+      wezterm.GLOBAL.last_diag_count = nil
+    end
+  end
+  if wezterm.GLOBAL.last_diag_count then
+    table.insert(parts, ' \xe2\xac\xa1 ' .. wezterm.GLOBAL.last_diag_count)  -- ⬡ N issues
   end
 
   -- Block count from semantic zones (OSC 133)
@@ -520,6 +811,47 @@ wezterm.on('update-left-status', function(window, pane)
     table.insert(parts, ' \xe2\x96\xa4 ' .. block_count)  -- ▤ block icon
   end
 
+  -- Pending command injection (from terminal_execute_with_confirmation MCP tool)
+  local pending_path = xdg_state .. '/sourceos/terminal/pending_command'
+  local pf = io.open(pending_path, 'r')
+  if pf then
+    local cmd_text = pf:read('*a')
+    pf:close()
+    os.remove(pending_path)
+    if cmd_text and cmd_text ~= '' then
+      cmd_text = cmd_text:match('^%s*(.-)%s*$')  -- trim
+      pane:send_text(cmd_text)
+      window:toast_notification('TurtleTerm Agent', 'Command ready (press Enter): ' .. cmd_text:sub(1, 60), nil, 4000)
+    end
+  end
+
+  -- Trigger system: check last output zone against configured patterns
+  local triggers = config.turtle_triggers or {}
+  if #triggers > 0 then
+    local last_output = ''
+    pcall(function()
+      local zones = pane:get_semantic_zones()
+      for _, z in ipairs(zones) do
+        if z.semantic_type == 'Output' then
+          last_output = pane:get_text_from_semantic_zone(z)
+        end
+      end
+    end)
+    if last_output ~= '' then
+      local last_trigger_key = '_turtle_last_trigger_' .. tostring(#last_output)
+      if not wezterm.GLOBAL[last_trigger_key] then
+        wezterm.GLOBAL[last_trigger_key] = true
+        for _, trigger in ipairs(triggers) do
+          if last_output:find(trigger.pattern) then
+            if trigger.action == 'notify' then
+              window:toast_notification('TurtleTerm Trigger', trigger.label .. ': ' .. trigger.pattern, nil, 4000)
+            end
+          end
+        end
+      end
+    end
+  end
+
   if #parts > 0 then
     window:set_left_status(table.concat(parts, '  ') .. '  ')
   else
@@ -532,6 +864,8 @@ wezterm.on('gui-startup', function(cmd)
   pcall(function()
     mux.set_active_workspace(workspace)
   end)
+  -- Signal update-left-status to show shell integration hint if not active
+  wezterm.GLOBAL.check_shell_integration = true
 end)
 
 return config

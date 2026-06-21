@@ -39,6 +39,7 @@ for script in \
   turtle-agent-machine \
   turtle-language \
   turtle-session \
+  turtle-synapseiq \
   turtleterm \
   turtleterm-mux-server; do
   cp "$repo_root/assets/sourceos/bin/$script" "$stage/bin/"
@@ -58,6 +59,19 @@ if [[ -f "$repo_root/assets/sourceos/mcp/turtle-mcp-server" ]]; then
   cp "$repo_root/assets/sourceos/mcp/turtle-mcp-server" "$stage/bin/turtle-mcp-server"
   chmod 0755 "$stage/bin/turtle-mcp-server"
   cp -R "$repo_root/assets/sourceos/mcp/." "$stage/share/turtle-term/mcp/"
+fi
+
+# SynapseIQ LSP server (optional — bundled if repo is present)
+_synapseiq_server="$repo_root/../synapseiq/packages/lsp/src/server.js"
+if [[ -f "$_synapseiq_server" ]]; then
+  mkdir -p "$stage/share/turtle-term/synapseiq"
+  cp "$_synapseiq_server" "$stage/share/turtle-term/synapseiq/server.js"
+fi
+
+# Neovim plugin
+if [[ -d "$repo_root/assets/sourceos/neovim" ]]; then
+  mkdir -p "$stage/share/turtle-term/neovim"
+  cp -R "$repo_root/assets/sourceos/neovim/." "$stage/share/turtle-term/neovim/"
 fi
 cp "$repo_root/LICENSE.md" "$stage/"
 cp "$repo_root/THIRD_PARTY_NOTICES.md" "$stage/" 2>/dev/null || true

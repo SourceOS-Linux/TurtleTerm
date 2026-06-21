@@ -105,10 +105,14 @@ precmd() {
     # OSC 133 A — prompt start (enables cmd+up/down jumping in WezTerm)
     printf '\e]133;A\a'
 
-    # Write exit code for status bar
+    # Write exit code + timing for status bar
     local state_dir; state_dir="$(_turtle_state_dir)"
     mkdir -p "$state_dir" 2>/dev/null || true
     printf '%d' $exit_status > "$state_dir/last_exit" 2>/dev/null || true
+    if [[ ${_TURTLE_ZSH_CMD_EPOCH:-0} -gt 0 ]]; then
+        local _elapsed=$(( ${EPOCHSECONDS:-0} - _TURTLE_ZSH_CMD_EPOCH ))
+        printf '%d' "$_elapsed" > "$state_dir/last_duration" 2>/dev/null || true
+    fi
 
     # Long command notification (>10s, skipped if TURTLE_NOTIFY_THRESHOLD=0)
     if [[ -n "$_TURTLE_ZSH_CMD" && ${_TURTLE_ZSH_CMD_EPOCH:-0} -gt 0 ]]; then
