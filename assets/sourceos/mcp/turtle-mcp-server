@@ -5,15 +5,20 @@ Exposes TurtleTerm terminal/session tools to MCP-compatible clients (Claude
 Code, Cursor, VS Code, etc.) over stdio JSON-RPC 2.0.
 
 Tools exposed (all read-only or proposal-only — no ambient shell authority):
-  terminal_sessions     List known terminal sessions from the event stream.
-  terminal_inspect      Return recent events for a session.
-  terminal_summarize    Summarize a session's completed commands.
-  terminal_propose      Propose a command (records but does not execute).
-  terminal_receipts     List receipt file paths for a session.
-  language_diagnostics  Diagnostics for a file via SynapseIQ LSP or fallback.
-  language_symbols      Symbol list for a file via SynapseIQ LSP or fallback.
-  noetica_status        Check Noetica reachability.
-  noetica_query         Send a query to Noetica /api/chat.
+  terminal_sessions                  List known terminal sessions from the event stream.
+  terminal_inspect                   Return recent events for a session.
+  terminal_summarize                 Summarize a session's completed commands.
+  terminal_propose                   Propose a command (records but does not execute).
+  terminal_receipts                  List receipt file paths for a session.
+  terminal_execute_with_confirmation Inject a command into the terminal for human confirmation.
+  language_diagnostics               Diagnostics for a file via SynapseIQ LSP or fallback.
+  language_symbols                   Symbol list for a file via SynapseIQ LSP or fallback.
+  language_hover                     Hover info (type/docs) for a symbol at a position.
+  language_definition                Jump-to-definition for a symbol at a position.
+  language_references                All references to a symbol at a position.
+  language_format                    Format a source file with the appropriate formatter.
+  noetica_status                     Check Noetica reachability.
+  noetica_query                      Send a query to Noetica /api/chat.
 
 Wiring to Claude Code (add to ~/.claude/settings.json mcpServers):
   {
@@ -70,6 +75,23 @@ def _language(args: list[str]) -> dict[str, Any]:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return {"status": "error", "message": result.stderr.strip() or "language CLI error"}
+
+
+def _synapseiq(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Call SynapseIQ LSP HTTP API directly (faster than subprocess)."""
+    import urllib.request
+    import urllib.error
+    import os as _os
+    port = int(_os.environ.get("SYNAPSEIQ_LSP_PORT", "2087"))
+    url = f"http://127.0.0.1:{port}{endpoint}"
+    try:
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return {"status": "error", "message": f"SynapseIQ LSP not reachable on :{port} — start with: turtle-synapseiq start"}
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +166,60 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "file": {"type": "string", "description": "Absolute or relative path to the file."},
+            },
+            "required": ["file"],
+        },
+    },
+    {
+        "name": "language_hover",
+        "description": "Get hover information (type signature, documentation) for a symbol at a position in a source file. Requires SynapseIQ LSP running.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Absolute path to the source file."},
+                "text": {"type": "string", "description": "Full file content (reads file if omitted)."},
+                "line": {"type": "integer", "description": "0-based line number."},
+                "character": {"type": "integer", "description": "0-based character offset."},
+            },
+            "required": ["file", "line", "character"],
+        },
+    },
+    {
+        "name": "language_definition",
+        "description": "Find the definition location of a symbol at a position. Returns line/column of where it's defined.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Absolute path to the source file."},
+                "text": {"type": "string", "description": "Full file content (reads file if omitted)."},
+                "line": {"type": "integer", "description": "0-based line number."},
+                "character": {"type": "integer", "description": "0-based character offset."},
+            },
+            "required": ["file", "line", "character"],
+        },
+    },
+    {
+        "name": "language_references",
+        "description": "Find all references to a symbol at a position within the file.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Absolute path to the source file."},
+                "text": {"type": "string", "description": "Full file content (reads file if omitted)."},
+                "line": {"type": "integer", "description": "0-based line number."},
+                "character": {"type": "integer", "description": "0-based character offset."},
+            },
+            "required": ["file", "line", "character"],
+        },
+    },
+    {
+        "name": "language_format",
+        "description": "Format a source file using the appropriate formatter (prettier/black/rustfmt/gofmt/stylua). Returns the formatted content.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": "string", "description": "Absolute path to the source file."},
+                "text": {"type": "string", "description": "Full file content (reads file if omitted)."},
             },
             "required": ["file"],
         },
@@ -240,6 +316,23 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "terminal_execute_with_confirmation",
+        "description": (
+            "Inject a shell command into the active TurtleTerm pane for human confirmation. "
+            "The command appears at the terminal prompt — the user must press Enter to run it. "
+            "This is the primary way for agents to request terminal actions with human oversight. "
+            "Always provide a clear description of what the command does and why."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The shell command to inject into the terminal prompt."},
+                "description": {"type": "string", "description": "Human-readable explanation of what this command does and why."},
+            },
+            "required": ["command", "description"],
+        },
+    },
+    {
         "name": "plan_create",
         "description": "Create a multi-step shell command plan for a goal using the TurtleTerm agent planner. Returns the generated steps and injects step 1 into the terminal prompt for execution.",
         "inputSchema": {
@@ -295,6 +388,26 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         return _language(["diagnostics", arguments["file"]])
     if name == "language_symbols":
         return _language(["symbols", arguments["file"]])
+    if name in ("language_hover", "language_definition", "language_references", "language_format"):
+        file_path = arguments.get("file", "")
+        text = arguments.get("text", "")
+        if not text and file_path:
+            try:
+                text = Path(file_path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return {"error": f"could not read file: {file_path}"}
+        endpoint_map = {
+            "language_hover":       "/lsp/hover",
+            "language_definition":  "/lsp/definition",
+            "language_references":  "/lsp/references",
+            "language_format":      "/lsp/format",
+        }
+        return _synapseiq(endpoint_map[name], {
+            "file": file_path,
+            "text": text,
+            "line": arguments.get("line", 0),
+            "character": arguments.get("character", 0),
+        })
     if name == "noetica_status":
         return _agentd({"action": "noetica_status"})
     if name == "noetica_query":
@@ -339,6 +452,16 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
         })
     if name == "atlas_acp_register":
         return _agentd({"action": "atlas_acp_register"})
+    if name == "terminal_execute_with_confirmation":
+        cmd = arguments.get("command", "").strip()
+        desc = arguments.get("description", "")
+        if not cmd:
+            return {"error": "command is required"}
+        return _agentd({
+            "action": "terminal_execute_with_confirmation",
+            "command": cmd,
+            "description": desc,
+        })
     if name == "plan_create":
         goal = arguments.get("goal", "")
         if not goal:
@@ -390,7 +513,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turtleterm", "version": "0.1.0"},
+                "serverInfo": {"name": "turtleterm", "version": "0.2.0"},
             },
         }
 

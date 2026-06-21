@@ -66,6 +66,15 @@ elseif env('SOURCEOS_TERMINAL_COLOR_SCHEME', '') ~= '' then
 else
   config.colors = iterm2_colors
 end
+-- Load persisted theme choice (written by theme picker on confirm)
+do
+  local _theme_file = (os.getenv('HOME') or '') .. '/.config/turtleterm/theme.txt'
+  local _tf = io.open(_theme_file, 'r')
+  if _tf then
+    local _saved = _tf:read('*l'); _tf:close()
+    if _saved and _saved ~= '' then config.color_scheme = _saved end
+  end
+end
 
 config.font = wezterm.font_with_fallback({
   'Menlo',
@@ -1048,6 +1057,11 @@ local function turtle_theme_picker()
             -- User confirmed a selection — apply permanently for this session
             w:set_config_overrides({ color_scheme = id })
             _current_scheme = id
+            -- Persist across restarts
+            local _home = os.getenv('HOME') or ''
+            os.execute('mkdir -p ' .. shell_quote(_home .. '/.config/turtleterm'))
+            local _ptf = io.open(_home .. '/.config/turtleterm/theme.txt', 'w')
+            if _ptf then _ptf:write(id); _ptf:close() end
             w:toast_notification('TurtleTerm Theme', id, nil, 2500)
           else
             -- Escape pressed — revert to original
@@ -1294,6 +1308,10 @@ local function turtle_workspace_restore()
               -- Reuse current tab
               cur_tab   = w:active_tab()
               first_pane = w:active_pane()
+              -- Restore tab title
+              if tab_data.title and tab_data.title ~= '' then
+                pcall(function() cur_tab:set_title(tab_data.title) end)
+              end
             else
               -- Spawn a new tab
               local ok4
@@ -1301,6 +1319,10 @@ local function turtle_workspace_restore()
                 return w:spawn_tab({})
               end)
               if not ok4 then goto next_tab end
+              -- Restore tab title
+              if tab_data.title and tab_data.title ~= '' then
+                pcall(function() cur_tab:set_title(tab_data.title) end)
+              end
             end
 
             -- CD first pane
@@ -1650,6 +1672,22 @@ wezterm.on('update-left-status', function(window, pane)
       wezterm.GLOBAL.last_plan_exit = exit_content
       local auto_advance = os.getenv('TURTLE_PLAN_AUTO_ADVANCE') ~= '0'
       if plan_exit_num == 0 and auto_advance then
+        -- Capture Output zone content for adaptive plan_next (S3)
+        local _step_out = ''
+        pcall(function()
+          local _zones_out = pane:get_semantic_zones()
+          for _, _oz in ipairs(_zones_out) do
+            if _oz.semantic_type == 'Output' then
+              local _zt = pane:get_text_from_semantic_zone(_oz)
+              if _zt and #_zt > 0 then _step_out = _zt end
+            end
+          end
+        end)
+        if _step_out ~= '' then
+          local _so_path = (os.getenv('HOME') or '') .. '/.local/state/sourceos/terminal/step_output.txt'
+          local _sof = io.open(_so_path, 'w')
+          if _sof then _sof:write(_step_out:sub(1, 2000)); _sof:close() end
+        end
         -- Clean exit → advance to next step silently then toast result
         local ok2, out2, _ = wezterm.run_child_process({
           'turtle-agentctl', '--stdio', 'plan-next'

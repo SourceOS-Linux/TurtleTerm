@@ -212,6 +212,7 @@ lua << EOFLUA
       map('n', '<Leader>ld',  function()
         vim.diagnostic.open_float(nil, { border = 'rounded', source = 'always' })
       end, 'SynapseIQ: diagnostics float')
+      vim.keymap.set('n', '<Leader>f',  function() vim.lsp.buf.format({ async=true }) end,         { buffer=true, silent=true, desc='LSP format' })
 
       -- Floating diagnostics on cursor hold (non-focused, keep typing)
       api.nvim_create_autocmd('CursorHold', {
@@ -222,6 +223,10 @@ lua << EOFLUA
           )
         end,
       })
+
+      if vim.lsp.inlay_hint then
+        vim.lsp.inlay_hint.enable(true, { bufnr = 0 })
+      end
 
       -- Consistent diagnostic display across all buffers
       vim.diagnostic.config({

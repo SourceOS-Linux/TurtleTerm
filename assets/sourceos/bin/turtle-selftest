@@ -232,6 +232,40 @@ def test_synapseiq() -> None:
     else:
         fail('synapseiq signature/ts', f'no signatures returned — {r}')
 
+    # References — A3
+    ts_ref_src = 'function greet(name: string) { return name; }\ngreet("world");\ngreet("again");'
+    r = http_post('http://127.0.0.1:2087/lsp/references', {'file': 'test.ts', 'text': ts_ref_src, 'line': 1, 'character': 1})
+    if r and isinstance(r.get('references'), list) and len(r['references']) >= 2:
+        ok('synapseiq references/ts', f'{r["reference_count"]} refs for greet')
+    elif r and isinstance(r.get('references'), list):
+        ok('synapseiq references/ts', f'{len(r["references"])} refs (regex fallback ok)')
+    else:
+        fail('synapseiq references/ts', f'no references returned — {r}')
+
+    # Format — A4
+    ts_unformatted = 'const x=1;const y   =  2;function bad(   ){ return x+y; }'
+    r = http_post('http://127.0.0.1:2087/lsp/format', {'file': 'test.ts', 'text': ts_unformatted})
+    if r is not None:
+        if r.get('available') and r.get('formatted') and r['formatted'] != ts_unformatted:
+            ok('synapseiq format/ts', f'prettier: {len(r["formatted"])} chars')
+        elif r.get('available') is False:
+            skip('synapseiq format/ts', 'prettier not installed')
+        else:
+            ok('synapseiq format/ts', 'endpoint reachable (formatter absent)')
+    else:
+        fail('synapseiq format/ts', 'no response from /lsp/format')
+
+    # Inlay hints — A6
+    ts_hint_src = 'function add(x: number, y: number) { return x + y; }\nconst result = add(1, 2);'
+    r = http_post('http://127.0.0.1:2087/lsp/inlay-hints', {'file': 'test.ts', 'text': ts_hint_src})
+    if r is not None:
+        if isinstance(r.get('hints'), list):
+            ok('synapseiq inlay-hints/ts', f'{r["hint_count"]} hints')
+        else:
+            fail('synapseiq inlay-hints/ts', f'unexpected response: {r}')
+    else:
+        fail('synapseiq inlay-hints/ts', 'no response from /lsp/inlay-hints')
+
     # Lua diagnostics (syntax error)
     import subprocess as _sp
     has_luac = _sp.run(['which', 'luac'], capture_output=True).returncode == 0
@@ -284,6 +318,36 @@ def test_synapseiq() -> None:
         skip('synapseiq diagnostics/go', 'go not installed')
 
 
+def test_agentd_http() -> None:
+    """S1 — HTTP daemon mode."""
+    import threading
+    import time as _time
+
+    port = 17722  # ephemeral test port (not 7722 to avoid conflicts)
+    proc = subprocess.Popen(
+        [sys.executable, str(AGENTD), '--http', str(port)],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+    try:
+        # Wait for startup line
+        _time.sleep(1.0)
+        h = http_get(f'http://127.0.0.1:{port}/health', timeout=3)
+        if h and h.get('status') == 'ok':
+            ok('agentd HTTP daemon /health', f"v{h.get('version','?')} mode={h.get('mode','?')}")
+        else:
+            fail('agentd HTTP daemon /health', str(h))
+
+        # POST a ping
+        r = http_post(f'http://127.0.0.1:{port}/stdio', {'action': 'ping'}, timeout=5)
+        if r and r.get('status') == 'ok':
+            ok('agentd HTTP daemon /stdio ping')
+        else:
+            fail('agentd HTTP daemon /stdio ping', str(r))
+    finally:
+        proc.terminate()
+        proc.wait(timeout=3)
+
+
 def test_shell_init() -> None:
     init_paths = [
         Path(__file__).parent.parent / 'shell' / 'turtle-shell-init.zsh',
@@ -307,6 +371,10 @@ def test_shell_init() -> None:
             ok('shell AI ghost-text debounced (auto)')
         else:
             fail('shell AI ghost-text debounced', '_turtle_ghost_tick / TRAPALRM not found')
+        if '_TURTLE_GHOST_SUGGESTION' in content and 'to accept' in content:
+            ok('shell ghost-text preview-not-replace (S2)')
+        else:
+            fail('shell ghost-text preview-not-replace', '_TURTLE_GHOST_SUGGESTION or accept hint missing')
     else:
         skip('shell init file', 'not installed')
 
@@ -405,11 +473,23 @@ def test_mcp_plan_tools() -> None:
         skip('mcp plan tools', 'turtle-mcp-server not found')
         return
     content = mcp.read_text()
-    for tool in ('plan_create', 'plan_status', 'plan_advance', 'plan_abort', 'workspace_list'):
+    for tool in ('plan_create', 'plan_status', 'plan_advance', 'plan_abort', 'workspace_list',
+                 'terminal_execute_with_confirmation',
+                 'language_hover', 'language_definition', 'language_references', 'language_format'):
         if tool in content:
             ok(f'mcp tool: {tool}')
         else:
             fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
+
+    # Check _synapseiq helper and version 0.2.0
+    if '_synapseiq' in content:
+        ok('mcp _synapseiq helper')
+    else:
+        fail('mcp _synapseiq helper', 'not found')
+    if '0.2.0' in content:
+        ok('mcp version 0.2.0')
+    else:
+        fail('mcp version 0.2.0', 'version not updated')
 
 
 def test_neovim_plugin() -> None:
@@ -432,12 +512,34 @@ def test_neovim_plugin() -> None:
         ('plan commands',                 'TurtlePlan'),
         ('explain command',               'TurtleExplain'),
     ]
+    checks += [
+        ('Leader-f format binding',  'lsp.buf.format'),
+        ('inlay hints enable',       'inlay_hint'),
+    ]
     import re as _re
     for name, needle in checks:
         if needle in content:
             ok(f'nvim: {name}')
         else:
             fail(f'nvim: {name}', f'"{needle}" not in turtle.vim')
+
+
+def test_completions() -> None:
+    """B5 — agentctl completion files."""
+    shell_dir = Path(__file__).parent.parent / 'shell'
+    for fname, needle in [
+        ('turtle-agentctl-completions.zsh',  '_turtle_agentctl'),
+        ('turtle-agentctl-completions.bash', '_turtle_agentctl_completions'),
+    ]:
+        p = shell_dir / fname
+        if p.exists():
+            content = p.read_text()
+            if needle in content:
+                ok(f'completion: {fname}', f'{needle} defined')
+            else:
+                fail(f'completion: {fname}', f'{needle} not found in file')
+        else:
+            fail(f'completion: {fname}', f'file not found at {p}')
 
 
 def test_language_binary() -> None:
@@ -475,6 +577,9 @@ def test_lua_config() -> None:
             ('CMD+SHIFT+O restore bind',     'turtle_workspace_restore.*CMD|SHIFT.*o|key.*o.*CMD.SHIFT'),
             ('plan auto-advance on exit 0',  '_turtle_plan_waiting'),
             ('plan fail toast',              'Step failed.*exit'),
+            ('persistent theme read',        'theme.txt'),
+            ('output zone capture B3',       'step_output.txt'),
+            ('tab title restore B6',         'set_title.*tab_data.title|tab_data.title.*set_title'),
         ]
         import re as _re
         for name, needle in checks:
@@ -493,16 +598,18 @@ def test_lua_config() -> None:
 
 def main() -> int:
     if not AS_JSON:
-        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.4.0{RESET}\n')
+        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.5.0{RESET}\n')
 
     test_agentd()
     test_agentctl()
+    test_agentd_http()
     test_synapseiq()
     test_shell_init()
     test_bash_init()
     test_fish_init()
     test_plan_subsystem()
     test_mcp_plan_tools()
+    test_completions()
     test_neovim_plugin()
     test_language_binary()
     test_lua_config()

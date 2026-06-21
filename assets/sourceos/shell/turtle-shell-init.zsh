@@ -168,18 +168,29 @@ EOF
 # ============================================================
 
 _turtle_ai_complete() {
+    # If a suggestion is pending and buffer matches what we fetched for, accept it
+    if [[ -n "$_TURTLE_GHOST_SUGGESTION" && "$BUFFER" == "$_TURTLE_GHOST_BUF" ]]; then
+        BUFFER="$_TURTLE_GHOST_SUGGESTION"
+        CURSOR=${#BUFFER}
+        _TURTLE_GHOST_SUGGESTION=""
+        _TURTLE_GHOST_BUF=""
+        zle reset-prompt
+        return
+    fi
+
+    # Otherwise fetch synchronously and show as preview
     local current_buffer="$BUFFER"
     [[ -z "$current_buffer" ]] && return
+    _TURTLE_GHOST_SUGGESTION=""
 
     local result
     result=$(turtle-agentctl nl-to-shell "$current_buffer" 2>/dev/null | \
              python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',{}).get('command',''))" 2>/dev/null)
 
     if [[ -n "$result" && "$result" != "$current_buffer" ]]; then
-        BUFFER="$result"
-        CURSOR=${#BUFFER}
-        zle reset-prompt
-        zle -M "  AI: $result"
+        _TURTLE_GHOST_SUGGESTION="$result"
+        _TURTLE_GHOST_BUF="$current_buffer"
+        zle -M "  AI▸ $result  [ALT+/ to accept]"
     fi
 }
 zle -N _turtle_ai_complete
@@ -194,6 +205,7 @@ _TURTLE_GHOST_BUF=""       # buffer seen last tick
 _TURTLE_GHOST_STABLE=0     # 1 = buffer unchanged for one tick → ready to fetch
 _TURTLE_GHOST_PID=0        # pid of background nl-to-shell process
 _TURTLE_GHOST_FILE="/tmp/turtle-ghost-$$.txt"
+_TURTLE_GHOST_SUGGESTION=""  # pending AI suggestion (shown but not yet accepted)
 
 # Cleanup on shell exit
 trap 'rm -f "$_TURTLE_GHOST_FILE"; [[ $_TURTLE_GHOST_PID -gt 0 ]] && kill "$_TURTLE_GHOST_PID" 2>/dev/null' EXIT
@@ -209,10 +221,8 @@ _turtle_ghost_tick() {
             _TURTLE_GHOST_PID=0
             # Only inject if buffer hasn't changed since we kicked off the fetch
             if [[ -n "$result" && "$result" != "$buf" && "$buf" == "$_TURTLE_GHOST_BUF" ]]; then
-                BUFFER="$result"
-                CURSOR=${#BUFFER}
-                zle reset-prompt
-                zle -M "  AI▸ $result"
+                _TURTLE_GHOST_SUGGESTION="$result"
+                zle -M "  AI▸ $result  [ALT+/ to accept]"
                 _TURTLE_GHOST_STABLE=0
                 return
             fi
@@ -243,6 +253,10 @@ _turtle_ghost_tick() {
         # Buffer changed — reset and cancel any in-flight fetch
         _TURTLE_GHOST_BUF="$buf"
         _TURTLE_GHOST_STABLE=0
+        if [[ -n "$_TURTLE_GHOST_SUGGESTION" ]]; then
+            _TURTLE_GHOST_SUGGESTION=""
+            zle -M ""
+        fi
         if [[ $_TURTLE_GHOST_PID -gt 0 ]]; then
             kill "$_TURTLE_GHOST_PID" 2>/dev/null
             rm -f "$_TURTLE_GHOST_FILE"
