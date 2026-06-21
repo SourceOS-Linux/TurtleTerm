@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""turtle-watch — Supervisor that keeps a process alive.
+
+Restarts on crash. macOS notification when it dies. Perfect for dev servers.
+
+Usage:
+  turtle-watch "npm run dev"                Run + restart on crash
+  turtle-watch "make serve" --max 3         Max 3 restarts
+  turtle-watch "python app.py" --no-restart Just alert on crash
+  turtle-watch list                         Show watched processes
+"""
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+def agentd(payload: dict, timeout: int = 10) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def d(r) -> dict: return (r or {}).get("data", {})
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); return 0
+
+    if args[0] == "list":
+        r = agentd({"action": "process-watch-list"})
+        procs = d(r).get("processes", [])
+        if not procs: print("No watched processes.")
+        for p in procs:
+            status = p.get("status", "?")
+            icon = {"running": "⟳", "exited": "✓", "restarting": "↺", "max_restarts_exceeded": "✗"}.get(status, "?")
+            print(f"  {icon}  {p.get('wid','?')}  [{status}]  restarts={p.get('restarts',0)}  {p.get('command','')[:50]}")
+        return 0
+
+    # Parse command + flags
+    cmd = args[0]
+    max_restarts = int(args[args.index("--max") + 1]) if "--max" in args else 5
+    restart = "--no-restart" not in args
+    timeout = int(args[args.index("--timeout") + 1]) if "--timeout" in args else 3600
+
+    print(f"Watching: {cmd}")
+    print(f"  restart={restart}  max={max_restarts}  timeout={timeout}s")
+
+    r = agentd({"action": "process-watch", "command": cmd, "restart": restart,
+                "max_restarts": max_restarts, "timeout": timeout})
+    data = d(r)
+    if data.get("started"):
+        print(f"  WID : {data['wid']}")
+        print(f"  Log : {data['log']}")
+        print(f"  tail -f {data['log']}")
+    else:
+        print(f"Failed: {data.get('reason','?')}", file=sys.stderr); return 1
+    return 0
+
+if __name__ == "__main__": raise SystemExit(main())

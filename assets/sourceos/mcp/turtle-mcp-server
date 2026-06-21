@@ -634,6 +634,25 @@ TOOLS = [
     {"name": "install_hooks", "description": "Install TurtleTerm pre-commit hooks (secrets, shellcheck, policy) in a git repo", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}, "hooks": {"type": "array"}}}},
     {"name": "uninstall_hooks", "description": "Remove TurtleTerm pre-commit hooks", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}}},
     {"name": "dashboard", "description": "Get a structured dashboard snapshot: agent status, plan, perf, memory, errors", "inputSchema": {"type": "object", "properties": {}}},
+    # Gitea forge tools
+    {"name": "gitea_status", "description": "Check Gitea sovereign forge connection, version, and user", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "gitea_repo_list", "description": "List Gitea repositories", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
+    {"name": "gitea_pr_create", "description": "Create a PR on Gitea (AI-generates title if not provided)", "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}, "base": {"type": "string"}, "head": {"type": "string"}, "cwd": {"type": "string"}}}},
+    {"name": "gitea_pr_list", "description": "List PRs on Gitea", "inputSchema": {"type": "object", "properties": {"state": {"type": "string"}, "cwd": {"type": "string"}}}},
+    {"name": "gitea_issue_create", "description": "Create an issue on Gitea", "inputSchema": {"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["title"]}},
+    {"name": "gitea_release_create", "description": "Create a release/tag on Gitea", "inputSchema": {"type": "object", "properties": {"tag": {"type": "string"}, "name": {"type": "string"}, "body": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["tag"]}},
+    {"name": "gitea_snippet_create", "description": "Create a Gitea snippet (like gist). Falls back to GitHub gist.", "inputSchema": {"type": "object", "properties": {"content": {"type": "string"}, "filename": {"type": "string"}, "description": {"type": "string"}}, "required": ["content"]}},
+    {"name": "gitea_ci_runs", "description": "List recent Gitea Actions CI runs", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}, "cwd": {"type": "string"}}}},
+    {"name": "gitea_ci_watch", "description": "Watch a Gitea CI run until completion", "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string"}, "timeout": {"type": "integer"}, "cwd": {"type": "string"}}, "required": ["run_id"]}},
+    # Process watch
+    {"name": "process_watch", "description": "Start a supervised process that restarts on crash", "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "restart": {"type": "boolean"}, "max_restarts": {"type": "integer"}, "timeout": {"type": "integer"}}, "required": ["command"]}},
+    {"name": "process_watch_list", "description": "List all supervised processes and their status", "inputSchema": {"type": "object", "properties": {}}},
+    # Cost tracker
+    {"name": "cost_stats", "description": "Show AI API cost breakdown by action and model", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "cost_record", "description": "Record an AI API call cost entry", "inputSchema": {"type": "object", "properties": {"model": {"type": "string"}, "action_name": {"type": "string"}, "input_tokens": {"type": "integer"}, "output_tokens": {"type": "integer"}}}},
+    # Cross-session history
+    {"name": "history_index", "description": "Index all past session command history for semantic search", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "history_search", "description": "Search all past terminal session history (semantic + keyword)", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}, "success_only": {"type": "boolean"}}, "required": ["query"]}},
 ]
 
 
@@ -888,6 +907,21 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
                 ('errors', {'action':'error-patterns','threshold':2}),
             ]}
             return {'status':'ok','data':{k: (f.result() or {}).get('data',{}) for k,f in futs.items()}}
+    if name == 'gitea_status': return _agentd({'action': 'gitea-status'})
+    if name == 'gitea_repo_list': return _agentd({'action': 'gitea-repo-list', 'limit': arguments.get('limit', 20)})
+    if name == 'gitea_pr_create': return _agentd({'action': 'gitea-pr-create', 'title': arguments.get('title',''), 'body': arguments.get('body',''), 'base': arguments.get('base','main'), 'head': arguments.get('head',''), 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD','.'))})
+    if name == 'gitea_pr_list': return _agentd({'action': 'gitea-pr-list', 'state': arguments.get('state','open'), 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD','.'))})
+    if name == 'gitea_issue_create': return _agentd({'action': 'gitea-issue-create', 'title': arguments.get('title'), 'body': arguments.get('body',''), 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD','.'))})
+    if name == 'gitea_release_create': return _agentd({'action': 'gitea-release-create', 'tag': arguments.get('tag'), 'name': arguments.get('name',''), 'body': arguments.get('body',''), 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD','.'))})
+    if name == 'gitea_snippet_create': return _agentd({'action': 'gitea-snippet-create', 'content': arguments.get('content'), 'filename': arguments.get('filename','snippet.txt'), 'description': arguments.get('description','TurtleTerm export')})
+    if name == 'gitea_ci_runs': return _agentd({'action': 'gitea-ci-runs', 'limit': arguments.get('limit',10), 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD','.'))})
+    if name == 'gitea_ci_watch': return _agentd({'action': 'gitea-ci-watch', 'run_id': arguments.get('run_id'), 'timeout': arguments.get('timeout',120), 'cwd': arguments.get('cwd', __import__('os').environ.get('PWD','.'))})
+    if name == 'process_watch': return _agentd({'action': 'process-watch', 'command': arguments.get('command'), 'restart': arguments.get('restart', True), 'max_restarts': arguments.get('max_restarts', 5), 'timeout': arguments.get('timeout', 3600)})
+    if name == 'process_watch_list': return _agentd({'action': 'process-watch-list'})
+    if name == 'cost_stats': return _agentd({'action': 'cost-stats'})
+    if name == 'cost_record': return _agentd({'action': 'cost-record', 'model': arguments.get('model','claude-sonnet-4-6'), 'action_name': arguments.get('action_name',''), 'input_tokens': arguments.get('input_tokens',0), 'output_tokens': arguments.get('output_tokens',0)})
+    if name == 'history_index': return _agentd({'action': 'history-index'})
+    if name == 'history_search': return _agentd({'action': 'history-search', 'query': arguments.get('query'), 'limit': arguments.get('limit',20), 'success_only': arguments.get('success_only',False)})
     return {"error": f"unknown tool: {name}"}
 
 
@@ -911,7 +945,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turtleterm", "version": "0.8.0"},
+                "serverInfo": {"name": "turtleterm", "version": "0.9.0"},
             },
         }
 

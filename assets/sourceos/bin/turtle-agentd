@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TurtleTerm local agent gateway v0.9.1.
+"""TurtleTerm local agent gateway v1.1.0.
 
 Conservative local JSON gateway for TurtleTerm. Supports:
 - stdio (one request / one response)
@@ -535,6 +535,62 @@ def smart_chat(
     return noetica_chat(text, session_id=session_id, context=context)
 
 
+def _gitea(endpoint: str, method: str = "GET", payload: dict | None = None, timeout: int = 10) -> dict:
+    """Route to Gitea (GITEA_URL) primary, fall back to GitHub API."""
+    import urllib.request as _ur_gt, urllib.error as _ue_gt
+    base    = env("GITEA_URL", "").rstrip("/")          # e.g. http://org-gitea:3000
+    token   = env("GITEA_TOKEN", "") or env("GITHUB_TOKEN", "")
+    if not base:
+        # Fallback: try to derive from git remote
+        remote = _git_module_level("remote", "get-url", "origin") or ""
+        if "gitea" in remote or "forgejo" in remote:
+            import re as _re_gt
+            m = _re_gt.match(r'(https?://[^/]+)', remote)
+            if m:
+                base = m.group(1)
+    if not base:
+        return {"ok": False, "error": "GITEA_URL not set", "fallback": True}
+    url  = f"{base}/api/v1/{endpoint.lstrip('/')}"
+    data = json.dumps(payload).encode() if payload else None
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"token {token}"
+    req = _ur_gt.Request(url, data=data, method=method, headers=headers)
+    try:
+        with _ur_gt.urlopen(req, timeout=timeout) as r:
+            return {"ok": True, "status": r.status, "data": json.loads(r.read() or b"{}")}
+    except _ue_gt.HTTPError as e:
+        try:
+            body = json.loads(e.read())
+        except Exception:
+            body = {}
+        return {"ok": False, "status": e.code, "error": body.get("message", str(e)), "data": body}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _git_module_level(*args: str, cwd: str = ".") -> str:
+    """Run git at module level (used by _gitea before local _git helpers are defined)."""
+    try:
+        r = subprocess.run(
+            ["git"] + list(args),
+            capture_output=True, text=True, cwd=cwd, timeout=5,
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _forge_owner_repo(cwd: str = ".") -> tuple[str, str]:
+    """Extract owner/repo from git remote, supporting Gitea + GitHub remotes."""
+    import re as _re_fr
+    remote = _git_module_level("remote", "get-url", "origin", cwd=cwd) or ""
+    m = _re_fr.search(r'[:/]([^/:]+)/([^/:]+?)(?:\.git)?$', remote)
+    if m:
+        return m.group(1), m.group(2)
+    return "", ""
+
+
 # ---------------------------------------------------------------------------
 # Session context helpers
 # ---------------------------------------------------------------------------
@@ -756,7 +812,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         noetica_reachable = noetica_get("/api/status", timeout=1) is not None
         return response("pong", {
             "service": "turtle-agentd",
-            "version": "0.9.1",
+            "version": "1.1.0",
             "noetica_url": noetica_url(),
             "noetica_reachable": noetica_reachable,
         })
@@ -3018,24 +3074,21 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             out_path = str(Path.home() / "Desktop" / f"{filename}.html")
             Path(out_path).write_text(html)
         elif fmt == "gist":
+            r = _gitea("gists", method="POST", payload={"description": f"TurtleTerm export: {filename}", "public": False, "files": {f"{filename}.txt": {"content": content}}})
+            if r.get("ok"):
+                g = r.get("data", {})
+                return response("output_export", {"exported": True, "format": "gitea_snippet", "url": g.get("html_url"), "path": ""})
+            # GitHub fallback
             gh_token = env("GITHUB_TOKEN", "")
             if not gh_token:
-                return response("output_export", {"exported": False, "reason": "GITHUB_TOKEN not set"})
-            import urllib.request as _ur, urllib.error as _ue  # noqa: F401
-            payload = json.dumps({
-                "description": f"TurtleTerm export: {filename}",
-                "public": False,
-                "files": {f"{filename}.txt": {"content": content}},
-            }).encode()
-            req = _ur.Request(
-                "https://api.github.com/gists",
-                data=payload,
-                headers={"Authorization": f"token {gh_token}", "Content-Type": "application/json", "User-Agent": "TurtleTerm"},
-            )
+                return response("output_export", {"exported": False, "reason": "GITEA_URL not set and GITHUB_TOKEN not set"})
+            import urllib.request as _ur_ge
+            payload_bytes = json.dumps({"description": f"TurtleTerm export: {filename}", "public": False, "files": {f"{filename}.txt": {"content": content}}}).encode()
+            req = _ur_ge.Request("https://api.github.com/gists", data=payload_bytes, headers={"Authorization": f"token {gh_token}", "Content-Type": "application/json", "User-Agent": "TurtleTerm"})
             try:
-                with _ur.urlopen(req, timeout=10) as resp:
-                    gist_data = json.loads(resp.read())
-                return response("output_export", {"exported": True, "format": "gist", "url": gist_data.get("html_url",""), "id": gist_data.get("id","")})
+                with _ur_ge.urlopen(req, timeout=10) as resp:
+                    g = json.loads(resp.read())
+                    return response("output_export", {"exported": True, "format": "github_gist", "url": g.get("html_url"), "path": ""})
             except Exception as e:
                 return response("output_export", {"exported": False, "reason": str(e)})
         else:
@@ -3621,6 +3674,320 @@ done
         hook_path.unlink()
         return response("uninstall_hooks", {"removed": True, "path": str(hook_path)})
 
+    # ------------------------------------------------------------------
+    # Gitea forge actions
+    # ------------------------------------------------------------------
+    if action in ("gitea_status", "gitea-status"):
+        r = _gitea("version")
+        if not r.get("ok"):
+            return response("gitea_status", {"online": False, "error": r.get("error", ""), "gitea_url": env("GITEA_URL", "")})
+        ver = r.get("data", {}).get("version", "?")
+        # Get current user
+        me = _gitea("user")
+        user = me.get("data", {}).get("login", "?") if me.get("ok") else "?"
+        # Get orgs
+        orgs_r = _gitea("admin/orgs?limit=5") if user != "?" else {"ok": False}
+        orgs = [o.get("username") for o in orgs_r.get("data", [])] if orgs_r.get("ok") else []
+        return response("gitea_status", {"online": True, "version": ver, "user": user, "orgs": orgs, "gitea_url": env("GITEA_URL", "")})
+
+    if action in ("gitea_repo_list", "gitea-repo-list"):
+        limit = int(request.get("limit", 20))
+        r = _gitea(f"repos/search?limit={limit}&token={env('GITEA_TOKEN','')}")
+        if not r.get("ok"):
+            return response("gitea_repo_list", {"repos": [], "error": r.get("error", "")})
+        repos = [{"name": x.get("name"), "full_name": x.get("full_name"), "private": x.get("private"), "stars": x.get("stars_count", 0), "updated": x.get("updated")} for x in r.get("data", {}).get("data", r.get("data", []))]
+        return response("gitea_repo_list", {"repos": repos, "count": len(repos)})
+
+    if action in ("gitea_pr_create", "gitea-pr-create"):
+        cwd    = request.get("cwd", ".") or "."
+        title  = request.get("title", "").strip()
+        body   = request.get("body", "").strip()
+        base   = request.get("base", "main")
+        head   = request.get("head", "") or _git_module_level("rev-parse", "--abbrev-ref", "HEAD", cwd=cwd)
+        owner, repo = _forge_owner_repo(cwd)
+        if not owner or not repo:
+            return response("gitea_pr_create", {"created": False, "reason": "could not determine owner/repo from git remote"})
+        if not title:
+            # AI-generate title from recent commits
+            log = _git_module_level("log", "--oneline", "-5", cwd=cwd)
+            _persona = _load_persona_system(); _mems = _load_memories_context()
+            _prefix = "\n\n".join(x for x in [_persona, _mems] if x)
+            system = (_prefix + "\n\n" if _prefix else "") + "Generate a concise PR title (under 72 chars) from these commits. Return ONLY the title."
+            ai = _claude_chat(log, system=system, timeout=10)
+            title = (ai.get("response") or "").strip()[:72] if ai else f"Changes from {head}"
+        r = _gitea(f"repos/{owner}/{repo}/pulls", method="POST", payload={"title": title, "body": body, "head": head, "base": base})
+        if r.get("ok"):
+            pr = r.get("data", {})
+            return response("gitea_pr_create", {"created": True, "number": pr.get("number"), "url": pr.get("html_url"), "title": title})
+        return response("gitea_pr_create", {"created": False, "reason": r.get("error", "gitea error"), "status": r.get("status")})
+
+    if action in ("gitea_pr_list", "gitea-pr-list"):
+        cwd   = request.get("cwd", ".") or "."
+        state = request.get("state", "open")
+        owner, repo = _forge_owner_repo(cwd)
+        if not owner:
+            return response("gitea_pr_list", {"prs": [], "reason": "no remote"})
+        r = _gitea(f"repos/{owner}/{repo}/pulls?state={state}&limit=20")
+        prs = [{"number": p.get("number"), "title": p.get("title"), "state": p.get("state"), "url": p.get("html_url"), "user": p.get("user", {}).get("login"), "updated": p.get("updated_at")} for p in (r.get("data") or [])] if r.get("ok") else []
+        return response("gitea_pr_list", {"prs": prs, "count": len(prs), "state": state})
+
+    if action in ("gitea_issue_create", "gitea-issue-create"):
+        cwd   = request.get("cwd", ".") or "."
+        title = request.get("title", "").strip()
+        body  = request.get("body", "").strip()
+        labels = request.get("labels", [])
+        owner, repo = _forge_owner_repo(cwd)
+        if not owner:
+            return response("gitea_issue_create", {"created": False, "reason": "no remote"})
+        r = _gitea(f"repos/{owner}/{repo}/issues", method="POST", payload={"title": title, "body": body, "labels": labels})
+        if r.get("ok"):
+            iss = r.get("data", {})
+            return response("gitea_issue_create", {"created": True, "number": iss.get("number"), "url": iss.get("html_url"), "title": title})
+        return response("gitea_issue_create", {"created": False, "reason": r.get("error", "")})
+
+    if action in ("gitea_release_create", "gitea-release-create"):
+        cwd         = request.get("cwd", ".") or "."
+        tag         = request.get("tag", "").strip()
+        name        = request.get("name", tag)
+        body        = request.get("body", "").strip()
+        draft       = bool(request.get("draft", False))
+        prerelease  = bool(request.get("prerelease", False))
+        owner, repo = _forge_owner_repo(cwd)
+        if not owner or not tag:
+            return response("gitea_release_create", {"created": False, "reason": "owner/repo and tag required"})
+        r = _gitea(f"repos/{owner}/{repo}/releases", method="POST", payload={"tag_name": tag, "name": name, "body": body, "draft": draft, "prerelease": prerelease})
+        if r.get("ok"):
+            rel = r.get("data", {})
+            return response("gitea_release_create", {"created": True, "id": rel.get("id"), "tag": tag, "url": rel.get("html_url")})
+        return response("gitea_release_create", {"created": False, "reason": r.get("error", "")})
+
+    if action in ("gitea_snippet_create", "gitea-snippet-create"):
+        # Gitea Gist-compatible endpoint
+        content     = request.get("content", "").strip()
+        description = request.get("description", "TurtleTerm export")
+        filename    = request.get("filename", "export.txt")
+        public      = bool(request.get("public", False))
+        r = _gitea("gists", method="POST", payload={"description": description, "public": public, "files": {filename: {"content": content}}})
+        if r.get("ok"):
+            g = r.get("data", {})
+            return response("gitea_snippet_create", {"created": True, "url": g.get("html_url"), "id": g.get("id")})
+        # Fallback: GitHub gist
+        gh_token = env("GITHUB_TOKEN", "")
+        if gh_token:
+            import urllib.request as _ur_gs
+            payload = json.dumps({"description": description, "public": public, "files": {filename: {"content": content}}}).encode()
+            req = _ur_gs.Request("https://api.github.com/gists", data=payload, headers={"Authorization": f"token {gh_token}", "Content-Type": "application/json", "User-Agent": "TurtleTerm"})
+            try:
+                with _ur_gs.urlopen(req, timeout=10) as resp:
+                    g = json.loads(resp.read())
+                    return response("gitea_snippet_create", {"created": True, "url": g.get("html_url"), "id": g.get("id"), "via": "github_fallback"})
+            except Exception as e:
+                return response("gitea_snippet_create", {"created": False, "reason": str(e)})
+        return response("gitea_snippet_create", {"created": False, "reason": r.get("error", "no gitea or github token")})
+
+    if action in ("gitea_ci_runs", "gitea-ci-runs"):
+        cwd         = request.get("cwd", ".") or "."
+        limit       = int(request.get("limit", 10))
+        owner, repo = _forge_owner_repo(cwd)
+        if not owner:
+            return response("gitea_ci_runs", {"runs": [], "reason": "no remote"})
+        r = _gitea(f"repos/{owner}/{repo}/actions/runs?limit={limit}")
+        runs = []
+        if r.get("ok"):
+            for run in r.get("data", {}).get("workflow_runs", r.get("data", [])):
+                runs.append({"id": run.get("id"), "name": run.get("name"), "status": run.get("status"), "conclusion": run.get("conclusion"), "event": run.get("event"), "created": run.get("created_at"), "updated": run.get("updated_at"), "url": run.get("html_url")})
+        return response("gitea_ci_runs", {"runs": runs, "count": len(runs), "owner": owner, "repo": repo})
+
+    if action in ("gitea_ci_watch", "gitea-ci-watch"):
+        cwd         = request.get("cwd", ".") or "."
+        run_id      = request.get("run_id", "")
+        timeout_s   = int(request.get("timeout", 120))
+        poll_s      = int(request.get("poll", 5))
+        owner, repo = _forge_owner_repo(cwd)
+        if not owner or not run_id:
+            return response("gitea_ci_watch", {"done": False, "reason": "owner/repo and run_id required"})
+        import time as _time_ci
+        start = _time_ci.time()
+        conclusion = None
+        status     = "unknown"
+        while _time_ci.time() - start < timeout_s:
+            r = _gitea(f"repos/{owner}/{repo}/actions/runs/{run_id}")
+            if r.get("ok"):
+                run = r.get("data", {})
+                status     = run.get("status", "unknown")
+                conclusion = run.get("conclusion")
+                if status in ("completed", "failure", "cancelled", "skipped"):
+                    break
+            _time_ci.sleep(poll_s)
+        elapsed = int(_time_ci.time() - start)
+        return response("gitea_ci_watch", {"done": True, "status": status, "conclusion": conclusion, "run_id": run_id, "elapsed_s": elapsed})
+
+    # ------------------------------------------------------------------
+    # Process Supervisor
+    # ------------------------------------------------------------------
+    if action in ("process_watch", "process-watch"):
+        cmd        = request.get("command", "").strip()
+        restart    = bool(request.get("restart", True))
+        max_restarts = int(request.get("max_restarts", 5))
+        log_lines  = int(request.get("log_lines", 20))
+        timeout_s  = int(request.get("timeout", 300))
+        if not cmd:
+            return response("process_watch", {"started": False, "reason": "command required"})
+        import subprocess as _sp_pw, time as _t_pw, threading as _thr_pw
+        pw_dir = Path.home() / ".config" / "turtleterm" / "process_watch"
+        pw_dir.mkdir(parents=True, exist_ok=True)
+        import uuid as _uuid_pw
+        wid = str(_uuid_pw.uuid4())[:8]
+        log_path = pw_dir / f"{wid}.log"
+        state_path = pw_dir / f"{wid}.json"
+        state = {"wid": wid, "command": cmd, "restarts": 0, "status": "starting", "log": str(log_path)}
+        state_path.write_text(json.dumps(state))
+
+        def _run():
+            restarts = 0
+            with open(log_path, "w") as log_f:
+                start = _t_pw.time()
+                while _t_pw.time() - start < timeout_s and restarts <= max_restarts:
+                    proc = _sp_pw.Popen(cmd, shell=True, stdout=log_f, stderr=log_f, start_new_session=True)
+                    state["pid"] = proc.pid; state["status"] = "running"; state["restarts"] = restarts
+                    state_path.write_text(json.dumps(state))
+                    rc = proc.wait()
+                    if rc == 0 or not restart:
+                        state["status"] = "exited"; state["exit_code"] = rc
+                        break
+                    restarts += 1
+                    log_f.write(f"\n--- restart {restarts}/{max_restarts} (exit {rc}) ---\n"); log_f.flush()
+                    state["status"] = "restarting"; state["restarts"] = restarts
+                    state_path.write_text(json.dumps(state))
+                    _t_pw.sleep(min(2 ** restarts, 30))
+                if restarts > max_restarts:
+                    state["status"] = "max_restarts_exceeded"
+                state_path.write_text(json.dumps(state))
+        _thr_pw.Thread(target=_run, daemon=True).start()
+        import time as _tw; _tw.sleep(0.3)
+        return response("process_watch", {"started": True, "wid": wid, "log": str(log_path), "command": cmd})
+
+    if action in ("process_watch_list", "process-watch-list"):
+        pw_dir = Path.home() / ".config" / "turtleterm" / "process_watch"
+        procs = []
+        if pw_dir.exists():
+            for f in sorted(pw_dir.glob("*.json"), reverse=True)[:20]:
+                try: procs.append(json.loads(f.read_text()))
+                except: pass
+        return response("process_watch_list", {"processes": procs, "count": len(procs)})
+
+    # ------------------------------------------------------------------
+    # API Cost Tracker
+    # ------------------------------------------------------------------
+    if action in ("cost_record", "cost-record"):
+        model     = request.get("model", "claude-sonnet-4-6")
+        action_nm = request.get("action_name", "")
+        in_tokens = int(request.get("input_tokens", 0))
+        out_tokens= int(request.get("output_tokens", 0))
+        # Pricing per 1M tokens (approximate Claude rates)
+        PRICES = {"claude-opus-4-8": (15.0, 75.0), "claude-sonnet-4-6": (3.0, 15.0), "claude-haiku-4-5": (0.25, 1.25)}
+        p_in, p_out = PRICES.get(model, (3.0, 15.0))
+        cost_usd = (in_tokens / 1_000_000 * p_in) + (out_tokens / 1_000_000 * p_out)
+        cost_path = Path.home() / ".config" / "turtleterm" / "cost.ndjson"
+        import datetime as _dt_cost
+        entry = {"ts": _dt_cost.datetime.utcnow().isoformat(), "model": model, "action": action_nm, "in": in_tokens, "out": out_tokens, "usd": round(cost_usd, 6)}
+        with open(cost_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        return response("cost_record", {"recorded": True, "usd": entry["usd"], "total_tokens": in_tokens + out_tokens})
+
+    if action in ("cost_stats", "cost-stats"):
+        cost_path = Path.home() / ".config" / "turtleterm" / "cost.ndjson"
+        if not cost_path.exists():
+            return response("cost_stats", {"total_usd": 0.0, "total_calls": 0, "by_action": {}, "by_model": {}})
+        entries = []
+        for line in cost_path.read_text().splitlines():
+            try: entries.append(json.loads(line))
+            except: pass
+        from collections import defaultdict as _dd
+        total_usd   = sum(e.get("usd", 0) for e in entries)
+        by_action   = _dd(float)
+        by_model    = _dd(float)
+        for e in entries:
+            by_action[e.get("action", "?")] += e.get("usd", 0)
+            by_model[e.get("model", "?")]   += e.get("usd", 0)
+        top_actions = sorted(by_action.items(), key=lambda x: -x[1])[:5]
+        return response("cost_stats", {
+            "total_usd": round(total_usd, 4),
+            "total_calls": len(entries),
+            "by_model": {k: round(v, 4) for k, v in by_model.items()},
+            "top_actions": [{"action": a, "usd": round(u, 4)} for a, u in top_actions],
+            "entries_today": sum(1 for e in entries if e.get("ts", "")[:10] == __import__('datetime').date.today().isoformat()),
+        })
+
+    # ------------------------------------------------------------------
+    # Cross-session Semantic History
+    # ------------------------------------------------------------------
+    if action in ("history_index", "history-index"):
+        # Index all past NDJSON session files into a searchable flat index
+        streams_dir = Path.home() / ".config" / "turtleterm"
+        index_path  = streams_dir / "history_index.ndjson"
+        indexed     = 0
+        seen_cmds   = set()
+        # Try to read existing index size
+        existing_lines = index_path.read_text().splitlines() if index_path.exists() else []
+        existing_count = len(existing_lines)
+        with open(index_path, "a") as idx:
+            for f in sorted(streams_dir.glob("events_*.ndjson")):
+                for line in f.read_text().splitlines():
+                    try:
+                        e = json.loads(line)
+                        if e.get("event_type") != "command.completed":
+                            continue
+                        cmd = e.get("command", "")
+                        if not cmd or cmd in seen_cmds:
+                            continue
+                        seen_cmds.add(cmd)
+                        entry = {"cmd": cmd, "exit": e.get("exit_code", 0), "ts": e.get("timestamp", ""), "out": (e.get("output_preview") or "")[:200], "src": f.name}
+                        idx.write(json.dumps(entry) + "\n")
+                        indexed += 1
+                    except: pass
+        return response("history_index", {"indexed": indexed, "total": existing_count + indexed, "index": str(index_path)})
+
+    if action in ("history_search", "history-search"):
+        query   = request.get("query", "").strip().lower()
+        limit   = int(request.get("limit", 20))
+        success_only = bool(request.get("success_only", False))
+        if not query:
+            return response("history_search", {"results": [], "reason": "query required"})
+        index_path = Path.home() / ".config" / "turtleterm" / "history_index.ndjson"
+        if not index_path.exists():
+            return response("history_search", {"results": [], "reason": "run history-index first"})
+        results = []
+        for line in index_path.read_text().splitlines():
+            try:
+                e = json.loads(line)
+                if success_only and e.get("exit", 0) != 0:
+                    continue
+                if query in e.get("cmd", "").lower() or query in e.get("out", "").lower():
+                    results.append(e)
+                    if len(results) >= limit:
+                        break
+            except: pass
+        # AI semantic re-rank if API key present and result set > 5
+        if results and len(results) > 5 and env("ANTHROPIC_API_KEY"):
+            _persona = _load_persona_system(); _mems = _load_memories_context()
+            _prefix = "\n\n".join(x for x in [_persona, _mems] if x)
+            system = (_prefix + "\n\n" if _prefix else "") + "Rank these shell history matches by relevance to the query. Return a JSON array of cmd strings, most relevant first."
+            cmds_text = "\n".join(f"- {r['cmd']}" for r in results[:20])
+            ai = _claude_chat(f"Query: {query}\n\nMatches:\n{cmds_text}", system=system, timeout=8)
+            if ai and ai.get("response"):
+                import re as _re_hs
+                ranked_cmds = []
+                try:
+                    m = _re_hs.search(r'\[.*?\]', ai["response"], _re_hs.DOTALL)
+                    if m:
+                        ranked_cmds = json.loads(m.group())
+                except: pass
+                if ranked_cmds:
+                    cmd_order = {c: i for i, c in enumerate(ranked_cmds)}
+                    results.sort(key=lambda r: cmd_order.get(r["cmd"], 999))
+        return response("history_search", {"results": results[:limit], "count": len(results), "query": query})
+
     return response("error", {"message": f"unknown action: {action}"}, status="error")
 
 
@@ -3672,7 +4039,7 @@ def serve_http(port: int) -> int:
             if self.path in ('/health', '/healthz'):
                 body = json.dumps({
                     "status": "ok", "service": "turtle-agentd",
-                    "version": "0.9.1", "mode": "http-daemon",
+                    "version": "1.1.0", "mode": "http-daemon",
                 }).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')

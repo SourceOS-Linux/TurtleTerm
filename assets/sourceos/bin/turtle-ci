@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""turtle-ci — CI/CD pipeline view in your terminal.
+
+Gitea Actions is the primary surface. Falls back to GitHub CLI (gh) if
+GITEA_URL is not set.
+
+Usage:
+  turtle-ci                   List recent CI runs
+  turtle-ci watch [RUN_ID]    Watch a run live (latest if no ID)
+  turtle-ci pass              Block until latest run passes (or fails)
+  turtle-ci logs RUN_ID       Show logs for a run
+"""
+from __future__ import annotations
+import json, subprocess, sys, time
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'; GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'
+
+def agentd(payload: dict, timeout: int = 180) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def d(r) -> dict: return (r or {}).get("data", {})
+
+def status_icon(status: str, conclusion: str | None) -> str:
+    if conclusion == "success": return f"{GREEN}✓{RESET}"
+    if conclusion in ("failure", "error"): return f"{RED}✗{RESET}"
+    if status in ("running", "in_progress"): return f"{YELLOW}⟳{RESET}"
+    if status == "queued": return f"{GRAY}·{RESET}"
+    return "?"
+
+def main() -> int:
+    args = sys.argv[1:]
+    sub = args[0] if args else "list"
+
+    if sub in ("-h", "--help"):
+        print(__doc__); return 0
+
+    if sub in ("list", ""):
+        r = agentd({"action": "gitea-ci-runs"})
+        data = d(r)
+        runs = data.get("runs", [])
+        if not runs:
+            print("No CI runs found.")
+            print("  Make sure GITEA_URL and GITEA_TOKEN are set, or run from a git repo")
+            # Fallback: try gh
+            gh = subprocess.run(["gh", "run", "list", "--limit", "10"], capture_output=True, text=True)
+            if gh.returncode == 0:
+                print(f"\n{GRAY}(GitHub Actions fallback):{RESET}")
+                print(gh.stdout)
+            return 0
+        print(f"\n{BOLD}CI Runs — {data.get('owner','?')}/{data.get('repo','?')}{RESET}")
+        print(f"{'ID':>10}  {'Status':12}  {'Name':30}  Event")
+        print("─" * 68)
+        for run in runs:
+            icon = status_icon(run.get("status",""), run.get("conclusion"))
+            print(f"  {icon}  {str(run.get('id','?')):>8}  {run.get('status','?'):12}  {run.get('name','?'):28}  {run.get('event','?')}")
+        return 0
+
+    if sub == "watch":
+        run_id = args[1] if len(args) > 1 else ""
+        if not run_id:
+            # Get latest run ID
+            r = agentd({"action": "gitea-ci-runs", "limit": 1})
+            runs = d(r).get("runs", [])
+            if not runs: print("No runs found"); return 1
+            run_id = str(runs[0].get("id",""))
+        print(f"Watching run {run_id}... (Ctrl+C to stop)")
+        r = agentd({"action": "gitea-ci-watch", "run_id": run_id}, timeout=300)
+        data = d(r)
+        icon = status_icon(data.get("status",""), data.get("conclusion"))
+        print(f"\n  {icon}  {data.get('status','?')} / {data.get('conclusion','pending')}  ({data.get('elapsed_s',0)}s)")
+        return 0 if data.get("conclusion") == "success" else 1
+
+    if sub == "pass":
+        print("Waiting for latest CI run to complete...")
+        r = agentd({"action": "gitea-ci-runs", "limit": 1})
+        runs = d(r).get("runs", [])
+        if not runs: print("No runs"); return 1
+        run_id = str(runs[0].get("id",""))
+        r2 = agentd({"action": "gitea-ci-watch", "run_id": run_id, "timeout": 600}, timeout=620)
+        data = d(r2)
+        if data.get("conclusion") == "success":
+            print(f"{GREEN}✓ CI passed{RESET}  ({data.get('elapsed_s',0)}s)")
+            return 0
+        print(f"{RED}✗ CI {data.get('conclusion','failed')}{RESET}")
+        return 1
+
+    print(f"Unknown: {sub}", file=sys.stderr); return 1
+
+if __name__ == "__main__": raise SystemExit(main())

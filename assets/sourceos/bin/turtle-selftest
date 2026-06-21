@@ -492,7 +492,7 @@ def test_mcp_plan_tools() -> None:
         else:
             fail(f'mcp tool: {tool}', f'not found in turtle-mcp-server')
 
-    if '0.8.0' in content or '0.7.0' in content or '0.6.0' in content or '0.5.0' in content:
+    if '0.9.0' in content or '0.8.0' in content or '0.7.0' in content or '0.6.0' in content or '0.5.0' in content:
         ok('mcp version current')
     else:
         fail('mcp version current', 'version not updated')
@@ -859,7 +859,7 @@ def test_mcp_v06():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert "0.5.0" in r.stdout or "0.6.0" in r.stdout or "0.7.0" in r.stdout or "0.8.0" in r.stdout, f"MCP not reporting v0.5.0, v0.6.0, v0.7.0, or v0.8.0: {r.stdout[:300]}"
+    assert "0.5.0" in r.stdout or "0.6.0" in r.stdout or "0.7.0" in r.stdout or "0.8.0" in r.stdout or "0.9.0" in r.stdout, f"MCP not reporting any known version: {r.stdout[:300]}"
     ok("mcp_v0.5.0_or_later")
 
 
@@ -1076,7 +1076,7 @@ def test_mcp_tool_count():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert "0.8.0" in r.stdout or "0.7.0" in r.stdout or "0.6.0" in r.stdout, f"MCP version unexpected: {r.stdout[:200]}"
+    assert "0.9.0" in r.stdout or "0.8.0" in r.stdout or "0.7.0" in r.stdout or "0.6.0" in r.stdout, f"MCP version unexpected: {r.stdout[:200]}"
     ok("mcp_v0.8.0")
 
 def test_persona_injection():
@@ -1179,8 +1179,83 @@ def test_mcp_v08():
         input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         capture_output=True, text=True, timeout=10,
     )
-    assert "0.8.0" in r.stdout or "0.7.0" in r.stdout, f"MCP version: {r.stdout[:200]}"
+    assert "0.8.0" in r.stdout or "0.7.0" in r.stdout or "0.9.0" in r.stdout, f"MCP version: {r.stdout[:200]}"
     _ok("mcp_v0.8.0")
+
+
+def test_gitea_surface():
+    r = agentd({"action": "gitea-status"})
+    assert r and r.get("status") == "ok", f"gitea-status failed: {r}"
+    d = r["data"]
+    # Online OR offline with correct structure — both valid without live Gitea
+    assert "online" in d, f"bad gitea-status response: {d}"
+    if d.get("online"):
+        ok(f"gitea status (ONLINE v{d.get('version','?')} user={d.get('user','?')})")
+    else:
+        ok(f"gitea status (offline — GITEA_URL not set, expected in dev)")
+    # PR list should handle gracefully even without Gitea
+    r2 = agentd({"action": "gitea-pr-list", "cwd": "/tmp"})
+    assert r2 and r2.get("status") == "ok"
+    ok("gitea_pr_list (graceful without remote)")
+
+def test_process_watch():
+    r = agentd({"action": "process-watch", "command": "echo turtle-selftest-proc", "restart": False, "timeout": 5})
+    assert r and r.get("status") == "ok", f"process-watch failed: {r}"
+    d = r["data"]
+    assert d.get("started") == True, f"not started: {d}"
+    import time; time.sleep(0.5)
+    r2 = agentd({"action": "process-watch-list"})
+    assert r2 and r2.get("status") == "ok"
+    ok(f"process_watch start + list (wid={d.get('wid','?')})")
+
+def test_cost_tracker():
+    r = agentd({"action": "cost-record", "model": "claude-sonnet-4-6", "action_name": "selftest", "input_tokens": 100, "output_tokens": 50})
+    assert r and r.get("status") == "ok"
+    assert r["data"].get("recorded") == True
+    r2 = agentd({"action": "cost-stats"})
+    assert r2 and r2.get("status") == "ok"
+    d = r2["data"]
+    assert "total_usd" in d and d.get("total_calls", 0) >= 1
+    ok(f"cost_tracker (total=${d['total_usd']:.4f} calls={d['total_calls']})")
+
+def test_history_search():
+    # Index first
+    r = agentd({"action": "history-index"})
+    assert r and r.get("status") == "ok", f"history-index failed: {r}"
+    d = r["data"]
+    # Search
+    r2 = agentd({"action": "history-search", "query": "git", "limit": 5})
+    assert r2 and r2.get("status") == "ok", f"history-search failed: {r2}"
+    d2 = r2["data"]
+    assert "results" in d2
+    ok(f"history_search (indexed={d.get('indexed',0)} results={len(d2['results'])})")
+
+def test_mcp_v09():
+    mcp_path = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "mcp" / "turtle-mcp-server"
+    r = subprocess.run(
+        [sys.executable, str(mcp_path)],
+        input=json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+        capture_output=True, text=True, timeout=10,
+    )
+    assert any(v in r.stdout for v in ["0.9.0","0.8.0","0.7.0"]), f"MCP version not found: {r.stdout[:200]}"
+    ok("mcp_v0.9.0")
+
+def test_new_scripts_v3():
+    scripts = ["turtle-gitea", "turtle-ci", "turtle-review", "turtle-watch", "turtle-cost"]
+    bin_dir = Path.home() / "dev" / "TurtleTerm" / "assets" / "sourceos" / "bin"
+    for name in scripts:
+        p = bin_dir / name
+        assert p.exists(), f"missing: {name}"
+        r = subprocess.run([sys.executable, str(p), "--help"], capture_output=True, text=True, timeout=10)
+        assert r.returncode in (0, 1), f"{name} --help crashed: {r.stderr[:80]}"
+    ok("new scripts: turtle-gitea, turtle-ci, turtle-review, turtle-watch, turtle-cost")
+
+def test_agentd_version_v11():
+    r = agentd({"action": "ping"})
+    assert r and r.get("status") == "ok"
+    ver = r.get("data", {}).get("version", "")
+    assert ver == "1.1.0", f"expected 1.1.0 got {ver}"
+    ok(f"agentd version aligned (v{ver})")
 
 
 # ---------------------------------------------------------------------------
@@ -1244,6 +1319,14 @@ def main() -> int:
     test_neovim_plugin()
     test_language_binary()
     test_lua_config()
+    # v1.1.0 tests
+    test_gitea_surface()
+    test_process_watch()
+    test_cost_tracker()
+    test_history_search()
+    test_mcp_v09()
+    test_new_scripts_v3()
+    test_agentd_version_v11()
 
     passed = sum(1 for r in results if r['status'] == 'pass')
     failed = sum(1 for r in results if r['status'] == 'fail')

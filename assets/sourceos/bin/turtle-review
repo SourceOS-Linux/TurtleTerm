@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""turtle-review — Pull a PR diff into your terminal, annotated by AI.
+
+Gitea is the primary forge surface. Falls back to GitHub CLI.
+
+Usage:
+  turtle-review [PR_NUMBER]     Review a PR (latest open if omitted)
+  turtle-review --diff          Review staged local diff instead
+  turtle-review --summary       Just summary, no line-by-line
+"""
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'; GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'
+
+def agentd(payload: dict, timeout: int = 60) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def run(*args: str, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(list(args), capture_output=True, text=True, **kw)
+
+def d(r) -> dict: return (r or {}).get("data", {})
+
+def main() -> int:
+    args = sys.argv[1:]
+    local_diff  = "--diff" in args
+    summary_only = "--summary" in args
+    pr_num = next((a for a in args if a.isdigit()), "")
+
+    diff_text = ""
+
+    if local_diff:
+        result = run("git", "diff", "--staged")
+        if not result.stdout.strip():
+            result = run("git", "diff", "HEAD")
+        diff_text = result.stdout
+        source = "local staged diff"
+    else:
+        # Try Gitea first
+        if not pr_num:
+            r = agentd({"action": "gitea-pr-list", "state": "open"})
+            prs = d(r).get("prs", [])
+            if prs:
+                pr_num = str(prs[0].get("number", ""))
+                print(f"Reviewing latest open PR: #{pr_num} — {prs[0].get('title','')}")
+
+        if pr_num:
+            # Try gh CLI for the diff (works for both Gitea and GitHub remotes with gh)
+            gh_diff = run("gh", "pr", "diff", pr_num)
+            if gh_diff.returncode == 0:
+                diff_text = gh_diff.stdout
+                source = f"PR #{pr_num}"
+            else:
+                # Fallback: git diff against base
+                base_result = run("git", "merge-base", "HEAD", "origin/main")
+                base = base_result.stdout.strip() or "HEAD~5"
+                diff_text = run("git", "diff", base, "HEAD").stdout
+                source = f"PR #{pr_num} (local diff)"
+        else:
+            # No PR, just review local changes
+            diff_text = run("git", "diff", "HEAD~1", "HEAD").stdout
+            source = "last commit"
+
+    if not diff_text.strip():
+        print("No diff to review."); return 1
+
+    print(f"\n{BOLD}AI Code Review — {source}{RESET}")
+    print(f"{GRAY}{'─'*60}{RESET}")
+
+    # Call AI review via agentd's explain_selection with review framing
+    r = agentd({"action": "explain-selection", "text": diff_text[:6000], "context": "code review: identify bugs, security issues, style violations, missing tests. Be specific about line numbers where possible."}, timeout=60)
+    review_text = d(r).get("explanation", d(r).get("response", "")).strip()
+
+    if not review_text:
+        print(f"{RED}AI review failed (no response){RESET}"); return 1
+
+    print(review_text)
+    print(f"\n{GRAY}{'─'*60}")
+    print(f"Diff: {len(diff_text.splitlines())} lines  Source: {source}{RESET}")
+    return 0
+
+if __name__ == "__main__": raise SystemExit(main())

@@ -335,6 +335,40 @@ def main(argv: list[str]) -> int:
     unhk_p.add_argument("cwd", nargs="?", default="")
     sub.add_parser("dashboard")
 
+    # Forge / Gitea
+    sub.add_parser("gitea-status")
+    sub.add_parser("gitea-repo-list")
+    gtpr_p = sub.add_parser("gitea-pr-create")
+    gtpr_p.add_argument("--title", default="")
+    gtpr_p.add_argument("--base", default="main")
+    gtpr_p.add_argument("--body", default="")
+    sub.add_parser("gitea-pr-list")
+    gtis_p = sub.add_parser("gitea-issue-create")
+    gtis_p.add_argument("title", nargs="?", default="")
+    gtis_p.add_argument("--body", default="")
+    gtrel_p = sub.add_parser("gitea-release-create")
+    gtrel_p.add_argument("tag", nargs="?", default="")
+    gtrel_p.add_argument("--name", default="")
+    sub.add_parser("gitea-snippet-create")
+    sub.add_parser("gitea-ci-runs")
+    gtciw_p = sub.add_parser("gitea-ci-watch")
+    gtciw_p.add_argument("run_id", nargs="?", default="")
+    # Process watch
+    pw_p = sub.add_parser("process-watch")
+    pw_p.add_argument("command", nargs="?", default="")
+    pw_p.add_argument("--max-restarts", type=int, default=5)
+    pw_p.add_argument("--no-restart", action="store_true")
+    sub.add_parser("process-watch-list")
+    # Cost
+    sub.add_parser("cost-stats")
+    sub.add_parser("cost-record")
+    # History
+    sub.add_parser("history-index")
+    hsch_p = sub.add_parser("history-search")
+    hsch_p.add_argument("query", nargs="?", default="")
+    hsch_p.add_argument("--success-only", action="store_true")
+    hsch_p.add_argument("--limit", type=int, default=20)
+
     args, _remainder = parser.parse_known_args(argv)
 
     if args.command == "ping":
@@ -579,6 +613,38 @@ def main(argv: list[str]) -> int:
         request = {"action": "uninstall_hooks", "cwd": getattr(args, "cwd", "") or os.getcwd()}
     elif args.command == "dashboard":
         request = {"action": "dashboard"}
+    elif args.command == "gitea-status":
+        request = {"action": "gitea_status"}
+    elif args.command == "gitea-repo-list":
+        request = {"action": "gitea_repo_list"}
+    elif args.command == "gitea-pr-create":
+        request = {"action": "gitea_pr_create", "title": getattr(args, "title", ""), "base": getattr(args, "base", "main"), "body": getattr(args, "body", ""), "cwd": os.getcwd()}
+    elif args.command == "gitea-pr-list":
+        request = {"action": "gitea_pr_list", "cwd": os.getcwd()}
+    elif args.command == "gitea-issue-create":
+        request = {"action": "gitea_issue_create", "title": getattr(args, "title", ""), "body": getattr(args, "body", ""), "cwd": os.getcwd()}
+    elif args.command == "gitea-release-create":
+        request = {"action": "gitea_release_create", "tag": getattr(args, "tag", ""), "name": getattr(args, "name", ""), "cwd": os.getcwd()}
+    elif args.command == "gitea-snippet-create":
+        import sys as _sys_gs
+        content = _sys_gs.stdin.read()
+        request = {"action": "gitea_snippet_create", "content": content}
+    elif args.command == "gitea-ci-runs":
+        request = {"action": "gitea_ci_runs", "cwd": os.getcwd()}
+    elif args.command == "gitea-ci-watch":
+        request = {"action": "gitea_ci_watch", "run_id": getattr(args, "run_id", ""), "cwd": os.getcwd()}
+    elif args.command == "process-watch":
+        request = {"action": "process_watch", "command": getattr(args, "command", ""), "restart": not getattr(args, "no_restart", False), "max_restarts": getattr(args, "max_restarts", 5)}
+    elif args.command == "process-watch-list":
+        request = {"action": "process_watch_list"}
+    elif args.command == "cost-stats":
+        request = {"action": "cost_stats"}
+    elif args.command == "cost-record":
+        request = {"action": "cost_record"}
+    elif args.command == "history-index":
+        request = {"action": "history_index"}
+    elif args.command == "history-search":
+        request = {"action": "history_search", "query": getattr(args, "query", ""), "limit": getattr(args, "limit", 20), "success_only": getattr(args, "success_only", False)}
     elif args.command is None and _remainder:
         # Passthrough: unknown subcommand treated as action name
         # Converts CLI → JSON payload for agentd
@@ -707,6 +773,14 @@ def main(argv: list[str]) -> int:
             "uninstall_hooks":       ["cwd"],
             "uninstall-hooks":       ["cwd"],
             "dashboard":             [],
+            "gitea-pr-create":       ["title"],
+            "gitea-issue-create":    ["title"],
+            "gitea-release-create":  ["tag"],
+            "gitea-ci-watch":        ["run_id"],
+            "process-watch":         ["command"],
+            "history-search":        ["query"],
+            "scratchpad-write":      ["content", "key"],
+            "scratchpad-read":       ["key"],
         }
         field_names = _pos_map.get(raw_action, ["text"])
         for idx, val in enumerate(pos_args):

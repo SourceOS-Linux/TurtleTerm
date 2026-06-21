@@ -30,6 +30,50 @@ _turtle_agentctl() {
         plugin-install)  _message 'name: plugin name or URL' ;;
         sftp-browse|sftp-download)  _message 'host: SSH host or profile name' ;;
         team-config-set)  _message 'key=value: configuration key and value' ;;
+        # Surface 2 — bg agent, webhooks, scratchpad, policy, hooks
+        (bg-plan-start)   _message 'goal: describe what to do in the background' ;;
+        (bg-plan-status)  _message 'plan_id: leave blank for most recent' ;;
+        (bg-plan-cancel)  _message 'plan_id: ID from bg-plan-list' ;;
+        (bg-plan-list)    # no args
+            ;;
+        (webhook-add)     _message 'url: https://your-endpoint/hook  [name]' ;;
+        (webhook-remove)  _message 'url: webhook URL to remove' ;;
+        (webhook-dispatch) _message 'event_type: e.g. command.completed' ;;
+        (webhook-list)    # no args
+            ;;
+        (error-patterns)  _message 'threshold: minimum occurrence count (default 2)' ;;
+        (scratchpad-write) _message 'content: text to save  [key: note name]' ;;
+        (scratchpad-read) _message 'key: note name (default: default)' ;;
+        (scratchpad-list) # no args
+            ;;
+        (policy-check)    _message 'command: shell command to check against .turtle/policy.yaml' ;;
+        (install-hooks)   _message 'cwd: git repo path (default: current dir)' ;;
+        (uninstall-hooks) _message 'cwd: git repo path (default: current dir)' ;;
+        (dashboard)       # no args
+            ;;
+        # Forge / Gitea
+        (gitea-status)    # no args
+            ;;
+        (gitea-repo-list) _message '[--limit N]' ;;
+        (gitea-pr-create) _message '[--title "PR title"] [--base main]' ;;
+        (gitea-pr-list)   _message '[--state open|closed|all]' ;;
+        (gitea-issue-create) _message '[--title "title"] [--body "body"]' ;;
+        (gitea-release-create) _message '[--tag v1.0.0] [--name "Release name"]' ;;
+        (gitea-snippet-create) _message 'content: text for snippet' ;;
+        (gitea-ci-runs)   _message '[--limit N]' ;;
+        (gitea-ci-watch)  _message 'run_id: CI run ID to watch' ;;
+        # Process watch
+        (process-watch)   _message 'command: shell command to supervise' ;;
+        (process-watch-list) # no args
+            ;;
+        # Cost tracker
+        (cost-record)     _message 'action_name: agentd action  in: input tokens  out: output tokens' ;;
+        (cost-stats)      # no args
+            ;;
+        # Cross-session history
+        (history-index)   # no args
+            ;;
+        (history-search)  _message 'query: search all past session history' ;;
       esac ;;
   esac
 }
@@ -141,6 +185,42 @@ _turtle_agentctl_cmds() {
     # SFTP
     'sftp-browse:Browse remote files via SFTP'
     'sftp-download:Download a file via SFTP'
+    # Surface 2 — bg agent, webhooks, scratchpad, policy, hooks
+    'bg-plan-start:Start an AI agent plan in the background'
+    'bg-plan-list:List all background plans'
+    'bg-plan-status:Get status of a background plan'
+    'bg-plan-cancel:Cancel a running background plan'
+    'webhook-add:Register a webhook URL to receive terminal events'
+    'webhook-list:List registered webhooks'
+    'webhook-remove:Remove a webhook by URL'
+    'webhook-dispatch:Manually dispatch an event to all matching webhooks'
+    'error-patterns:Detect repeated failing command patterns'
+    'scratchpad-write:Write a note to the AI scratchpad'
+    'scratchpad-read:Read a scratchpad note'
+    'scratchpad-list:List all scratchpad notes'
+    'policy-check:Check a command against .turtle/policy.yaml rules'
+    'install-hooks:Install TurtleTerm pre-commit hooks in a git repo'
+    'uninstall-hooks:Remove TurtleTerm pre-commit hooks'
+    'dashboard:Get a structured dashboard snapshot'
+    # Forge / Gitea
+    'gitea-status:Check Gitea sovereign forge connection and version'
+    'gitea-repo-list:List Gitea repositories'
+    'gitea-pr-create:Create a PR on Gitea'
+    'gitea-pr-list:List PRs on Gitea'
+    'gitea-issue-create:Create an issue on Gitea'
+    'gitea-release-create:Create a release/tag on Gitea'
+    'gitea-snippet-create:Create a Gitea snippet (like gist)'
+    'gitea-ci-runs:List recent Gitea Actions CI runs'
+    'gitea-ci-watch:Watch a Gitea CI run until completion'
+    # Process watch
+    'process-watch:Start a supervised process that restarts on crash'
+    'process-watch-list:List all supervised processes and their status'
+    # Cost tracker
+    'cost-record:Record an AI API call cost entry'
+    'cost-stats:Show AI API cost breakdown by action and model'
+    # Cross-session history
+    'history-index:Index all past session command history for semantic search'
+    'history-search:Search all past terminal session history'
   )
   _describe 'turtle-agentctl command' cmds
 }

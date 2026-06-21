@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""turtle-cost — Track AI API costs across TurtleTerm sessions.
+
+Usage:
+  turtle-cost                  Show cost summary
+  turtle-cost today            Today's cost breakdown
+  turtle-cost reset            Clear cost log
+"""
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'; GRAY='\033[90m'; BOLD='\033[1m'
+
+def agentd(payload: dict) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=10)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def d(r) -> dict: return (r or {}).get("data", {})
+
+def main() -> int:
+    args = sys.argv[1:]
+    sub = args[0] if args else "stats"
+
+    if sub in ("-h", "--help"):
+        print(__doc__); return 0
+
+    if sub == "reset":
+        cost_path = Path.home() / ".config" / "turtleterm" / "cost.ndjson"
+        if cost_path.exists():
+            cost_path.unlink()
+            print("Cost log cleared.")
+        else:
+            print("No cost log found.")
+        return 0
+
+    r = agentd({"action": "cost-stats"})
+    data = d(r)
+
+    total    = data.get("total_usd", 0.0)
+    calls    = data.get("total_calls", 0)
+    today_n  = data.get("entries_today", 0)
+
+    print(f"\n{BOLD}TurtleTerm AI Cost Tracker{RESET}")
+    print(f"{'─'*40}")
+    print(f"  Total spent   : {GREEN}${total:.4f}{RESET}")
+    print(f"  Total calls   : {calls}")
+    print(f"  Today's calls : {today_n}")
+
+    by_model = data.get("by_model", {})
+    if by_model:
+        print(f"\n{BOLD}By Model:{RESET}")
+        for model, usd in sorted(by_model.items(), key=lambda x: -x[1]):
+            print(f"  {model:35}  ${usd:.4f}")
+
+    top = data.get("top_actions", [])
+    if top:
+        print(f"\n{BOLD}Top Actions by Cost:{RESET}")
+        for item in top:
+            print(f"  {item.get('action','?'):30}  ${item.get('usd',0):.4f}")
+
+    print()
+    return 0
+
+if __name__ == "__main__": raise SystemExit(main())

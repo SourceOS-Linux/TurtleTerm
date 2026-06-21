@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""turtle-gitea — Manage your Gitea-sovereign forge from the terminal.
+
+Gitea is the primary forge surface. GitHub is fallback only.
+
+Usage:
+  turtle-gitea status                   Check Gitea connection + version
+  turtle-gitea repos [--limit N]        List repositories
+  turtle-gitea pr create [--title T]    Create PR from current branch
+  turtle-gitea pr list [--state open]   List PRs
+  turtle-gitea issue create --title T   Create issue
+  turtle-gitea release --tag v1.0.0     Create release
+  turtle-gitea ci                       Show recent CI runs
+  turtle-gitea ci watch RUN_ID          Watch CI run to completion
+  turtle-gitea snippet FILE             Create a snippet from file
+
+Environment:
+  GITEA_URL    http://org-gitea:3000   (required for Gitea, fallback: GitHub)
+  GITEA_TOKEN  your-access-token
+"""
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+
+def agentd(payload: dict, timeout: int = 30) -> dict | None:
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
+def d(r) -> dict:
+    return (r or {}).get("data", {})
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); return 0
+
+    sub = args[0]
+    rest = args[1:]
+
+    if sub == "status":
+        r = agentd({"action": "gitea-status"})
+        if not r: print("agentd not responding", file=sys.stderr); return 1
+        data = d(r)
+        if not data.get("online"):
+            print(f"Gitea OFFLINE  url={data.get('gitea_url','not set')}  error={data.get('error','')}")
+            print("Set GITEA_URL and GITEA_TOKEN to connect.")
+        else:
+            print(f"Gitea ONLINE   v{data.get('version','?')}  user={data.get('user','?')}  {data.get('gitea_url','')}")
+            if data.get("orgs"):
+                print(f"  Orgs: {', '.join(data['orgs'])}")
+        return 0
+
+    if sub == "repos":
+        limit = int(rest[rest.index("--limit") + 1]) if "--limit" in rest else 20
+        r = agentd({"action": "gitea-repo-list", "limit": limit})
+        repos = d(r).get("repos", [])
+        if not repos: print("No repos (or Gitea not connected)")
+        for repo in repos:
+            icon = "🔒" if repo.get("private") else "🌐"
+            print(f"  {icon}  {repo.get('full_name','?'):40}  ★{repo.get('stars',0)}")
+        return 0
+
+    if sub == "pr":
+        subcmd = rest[0] if rest else "list"
+        if subcmd == "create":
+            title = rest[rest.index("--title") + 1] if "--title" in rest else ""
+            base  = rest[rest.index("--base") + 1] if "--base" in rest else "main"
+            r = agentd({"action": "gitea-pr-create", "title": title, "base": base}, timeout=30)
+            data = d(r)
+            if data.get("created"):
+                print(f"✓ PR #{data['number']}: {data['title']}")
+                print(f"  {data.get('url','')}")
+            else:
+                print(f"Failed: {data.get('reason','?')}", file=sys.stderr); return 1
+        elif subcmd == "list":
+            state = rest[rest.index("--state") + 1] if "--state" in rest else "open"
+            r = agentd({"action": "gitea-pr-list", "state": state})
+            prs = d(r).get("prs", [])
+            if not prs: print(f"No {state} PRs")
+            for pr in prs:
+                print(f"  #{pr.get('number'):4}  [{pr.get('state','?'):6}]  {pr.get('title','')[:55]}  @{pr.get('user','?')}")
+        return 0
+
+    if sub == "issue":
+        subcmd = rest[0] if rest else "list"
+        if subcmd == "create":
+            title = rest[rest.index("--title") + 1] if "--title" in rest else ""
+            body  = rest[rest.index("--body") + 1] if "--body" in rest else ""
+            if not title: title = input("Issue title: ").strip()
+            r = agentd({"action": "gitea-issue-create", "title": title, "body": body})
+            data = d(r)
+            if data.get("created"):
+                print(f"✓ Issue #{data['number']}: {data['title']}")
+                print(f"  {data.get('url','')}")
+            else:
+                print(f"Failed: {data.get('reason','?')}", file=sys.stderr); return 1
+        return 0
+
+    if sub == "release":
+        tag  = rest[rest.index("--tag") + 1] if "--tag" in rest else (rest[0] if rest else "")
+        name = rest[rest.index("--name") + 1] if "--name" in rest else tag
+        body = rest[rest.index("--notes") + 1] if "--notes" in rest else ""
+        if not tag: tag = input("Release tag (e.g. v1.0.0): ").strip()
+        r = agentd({"action": "gitea-release-create", "tag": tag, "name": name, "body": body})
+        data = d(r)
+        if data.get("created"):
+            print(f"✓ Release {tag}  {data.get('url','')}")
+        else:
+            print(f"Failed: {data.get('reason','?')}", file=sys.stderr); return 1
+        return 0
+
+    if sub == "ci":
+        subcmd = rest[0] if rest else "list"
+        if subcmd == "watch" and len(rest) > 1:
+            run_id = rest[1]
+            print(f"Watching CI run {run_id}...")
+            r = agentd({"action": "gitea-ci-watch", "run_id": run_id}, timeout=180)
+            data = d(r)
+            icon = "✓" if data.get("conclusion") == "success" else "✗"
+            print(f"  {icon}  {data.get('status','?')} / {data.get('conclusion','?')}  ({data.get('elapsed_s',0)}s)")
+        else:
+            r = agentd({"action": "gitea-ci-runs"})
+            runs = d(r).get("runs", [])
+            if not runs: print("No CI runs (or Gitea Actions not configured)")
+            for run in runs:
+                icon = {"success": "✓", "failure": "✗", "running": "⟳", "queued": "·"}.get(run.get("conclusion") or run.get("status",""), "?")
+                print(f"  {icon}  {run.get('id','?'):8}  {run.get('name','?'):30}  {run.get('status','?')}")
+        return 0
+
+    if sub == "snippet":
+        path = Path(rest[0]) if rest else None
+        if not path or not path.exists():
+            content = sys.stdin.read()
+            fname = "snippet.txt"
+        else:
+            content = path.read_text()
+            fname = path.name
+        r = agentd({"action": "gitea-snippet-create", "content": content, "filename": fname})
+        data = d(r)
+        if data.get("created"):
+            print(f"✓ Snippet created: {data.get('url','')}")
+        else:
+            print(f"Failed: {data.get('reason','?')}", file=sys.stderr); return 1
+        return 0
+
+    print(f"Unknown: {sub}", file=sys.stderr); return 1
+
+if __name__ == "__main__": raise SystemExit(main())
