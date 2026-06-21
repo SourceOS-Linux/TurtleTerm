@@ -231,6 +231,49 @@ function M.synapseiq_status()
   run_language('TurtleTerm SynapseIQ status', 'synapseiq-status')
 end
 
+function M.synapseiq_lsp_snippet()
+  local lines = {
+    'Add to your Neovim config (requires nvim-lspconfig):',
+    '',
+    '  local lspconfig = require("lspconfig")',
+    '  local configs = require("lspconfig.configs")',
+    '',
+    '  if not configs.synapseiq then',
+    '    configs.synapseiq = {',
+    '      default_config = {',
+    '        cmd = { "synapseiq-lsp" },',
+    '        filetypes = {',
+    '          "python", "typescript", "javascript",',
+    '          "lua", "rust", "go", "sh", "json", "yaml",',
+    '          "ruby", "java", "cpp", "c",',
+    '        },',
+    '        root_dir = lspconfig.util.root_pattern(".git", "."),',
+    '        single_file_support = true,',
+    '        settings = {},',
+    '      },',
+    '    }',
+    '  end',
+    '  lspconfig.synapseiq.setup({})',
+    '',
+    'Or with vim.lsp.start (no lspconfig dependency):',
+    '',
+    '  vim.api.nvim_create_autocmd("FileType", {',
+    '    pattern = { "python","typescript","javascript","lua","rust","go" },',
+    '    callback = function(ev)',
+    '      vim.lsp.start({',
+    '        name = "synapseiq-lsp",',
+    '        cmd = { "synapseiq-lsp" },',
+    '        root_dir = vim.fs.dirname(vim.fs.find({ ".git" }, { upward = true })[1]),',
+    '      })',
+    '    end,',
+    '  })',
+  }
+  -- Print to messages as a fallback; callers can use s:show_float via the .vim plugin
+  for _, line in ipairs(lines) do
+    vim.notify(line, vim.log.levels.INFO)
+  end
+end
+
 function M.agent_machine_surfaces()
   run_agentctl('TurtleTerm Agent Machine surfaces', 'agent-machine-surfaces')
 end

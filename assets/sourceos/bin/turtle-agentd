@@ -1154,6 +1154,158 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             ),
         })
 
+    # ------------------------------------------------------------------
+    # Agent planner loop — multi-step command planning with confirmation
+    # ------------------------------------------------------------------
+    if action == "plan_execute":
+        import re as _re
+        goal = request.get("goal", "").strip()
+        if not goal:
+            return response("error", {"message": "goal is required"}, status="error")
+
+        system_prompt = (
+            "You are a shell command planner for a terminal intelligence system. "
+            "Given a user goal, generate a step-by-step plan as JSON. "
+            "Output ONLY valid JSON with this exact schema (no markdown, no prose):\n"
+            '{"goal":"...","steps":[{"description":"...","command":"...","reversible":true}]}\n'
+            "Rules: each step is ONE shell command; max 8 steps; prefer safe, reversible commands; "
+            "mark reversible=false only for delete/overwrite operations."
+        )
+        session_ctx = _get_session_context()
+        user_msg = f"Goal: {goal}"
+        if session_ctx:
+            user_msg += f"\n\n{session_ctx}"
+
+        ai_resp = _claude_chat(user_msg, system=system_prompt, timeout=20)
+        if ai_resp is None:
+            ai_resp = smart_chat(user_msg, system=system_prompt)
+        if ai_resp is None:
+            return response("error", {"message": "AI backend unavailable — set ANTHROPIC_API_KEY or start Noetica"}, status="error")
+
+        raw = (ai_resp.get("response") or ai_resp.get("message") or ai_resp.get("raw") or "")
+        json_match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        steps: list[dict[str, Any]] = []
+        parsed_goal = goal
+        if json_match:
+            try:
+                plan = json.loads(json_match.group(0))
+                steps = plan.get("steps", [])
+                parsed_goal = plan.get("goal", goal)
+            except json.JSONDecodeError:
+                pass
+        if not steps:
+            return response("error", {"message": "AI did not return a valid plan", "raw": raw[:500]}, status="error")
+
+        pending_dir = Path.home() / ".local" / "state" / "sourceos" / "terminal"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        plan_data: dict[str, Any] = {
+            "goal": parsed_goal,
+            "steps": steps,
+            "current_step": 0,
+            "created_at": utc_now(),
+            "source": "plan_execute",
+        }
+        (pending_dir / "current_plan.json").write_text(json.dumps(plan_data, indent=2))
+
+        first_cmd = steps[0].get("command", "") if steps else ""
+        if first_cmd:
+            tmp = pending_dir / "pending_command.tmp"
+            tmp.write_text(first_cmd)
+            tmp.rename(pending_dir / "pending_command")
+            meta: dict[str, Any] = {
+                "command": first_cmd,
+                "description": steps[0].get("description", ""),
+                "requested_at": utc_now(),
+                "source": "plan",
+                "plan_step": 0,
+                "plan_total": len(steps),
+                "goal": parsed_goal,
+            }
+            mtmp = pending_dir / "pending_command.json.tmp"
+            mtmp.write_text(json.dumps(meta, indent=2))
+            mtmp.rename(pending_dir / "pending_command.json")
+
+        return response("plan_execute", {
+            "goal": parsed_goal,
+            "step_count": len(steps),
+            "steps": steps,
+            "current_step": 0,
+            "status": "first_step_ready",
+            "note": "Step 1 written to terminal prompt. Run it, then call plan_next to advance.",
+        })
+
+    if action == "plan_next":
+        pending_dir = Path.home() / ".local" / "state" / "sourceos" / "terminal"
+        plan_file = pending_dir / "current_plan.json"
+        if not plan_file.exists():
+            return response("error", {"message": "no active plan — call plan_execute first"}, status="error")
+        try:
+            plan_data = json.loads(plan_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            return response("error", {"message": "could not read current plan"}, status="error")
+        steps = plan_data.get("steps", [])
+        next_idx = plan_data.get("current_step", 0) + 1
+        if next_idx >= len(steps):
+            plan_file.unlink(missing_ok=True)
+            return response("plan_complete", {
+                "goal": plan_data.get("goal"),
+                "total_steps": len(steps),
+                "status": "all_steps_complete",
+            })
+        plan_data["current_step"] = next_idx
+        plan_file.write_text(json.dumps(plan_data, indent=2))
+        next_cmd = steps[next_idx].get("command", "")
+        if next_cmd:
+            tmp = pending_dir / "pending_command.tmp"
+            tmp.write_text(next_cmd)
+            tmp.rename(pending_dir / "pending_command")
+            meta = {
+                "command": next_cmd,
+                "description": steps[next_idx].get("description", ""),
+                "requested_at": utc_now(),
+                "source": "plan",
+                "plan_step": next_idx,
+                "plan_total": len(steps),
+                "goal": plan_data.get("goal"),
+            }
+            mtmp = pending_dir / "pending_command.json.tmp"
+            mtmp.write_text(json.dumps(meta, indent=2))
+            mtmp.rename(pending_dir / "pending_command.json")
+        return response("plan_next", {
+            "goal": plan_data.get("goal"),
+            "step": next_idx,
+            "step_count": len(steps),
+            "command": next_cmd,
+            "description": steps[next_idx].get("description", ""),
+            "status": "step_ready",
+            "remaining": len(steps) - next_idx - 1,
+        })
+
+    if action == "plan_status":
+        pending_dir = Path.home() / ".local" / "state" / "sourceos" / "terminal"
+        plan_file = pending_dir / "current_plan.json"
+        if not plan_file.exists():
+            return response("plan_status", {"active": False})
+        try:
+            plan_data = json.loads(plan_file.read_text())
+            return response("plan_status", {
+                "active": True,
+                "goal": plan_data.get("goal"),
+                "current_step": plan_data.get("current_step", 0),
+                "step_count": len(plan_data.get("steps", [])),
+                "steps": plan_data.get("steps", []),
+            })
+        except (json.JSONDecodeError, OSError):
+            return response("plan_status", {"active": False})
+
+    if action == "plan_abort":
+        pending_dir = Path.home() / ".local" / "state" / "sourceos" / "terminal"
+        plan_file = pending_dir / "current_plan.json"
+        plan_file.unlink(missing_ok=True)
+        (pending_dir / "pending_command").unlink(missing_ok=True)
+        (pending_dir / "pending_command.json").unlink(missing_ok=True)
+        return response("plan_abort", {"status": "aborted"})
+
     return response("error", {"message": f"unknown action: {action}"}, status="error")
 
 

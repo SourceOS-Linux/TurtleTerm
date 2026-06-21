@@ -41,6 +41,8 @@ for script in \
   turtle-session \
   turtle-synapseiq \
   synapseiq-lsp \
+  turtle-plan-view \
+  turtle-selftest \
   turtleterm \
   turtleterm-mux-server; do
   cp "$repo_root/assets/sourceos/bin/$script" "$stage/bin/"

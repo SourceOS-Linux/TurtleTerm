@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Display the current TurtleTerm agent plan with step indicators.
+
+Usage:
+  turtle-plan-view              pretty-print current_plan.json
+  turtle-plan-view --json       raw JSON dump
+  turtle-plan-view --watch      refresh every 2 seconds until complete
+"""
+
+from __future__ import annotations
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+PLAN_FILE = Path.home() / '.local' / 'state' / 'sourceos' / 'terminal' / 'current_plan.json'
+
+RESET  = '\033[0m'
+BOLD   = '\033[1m'
+DIM    = '\033[2m'
+GREEN  = '\033[32m'
+YELLOW = '\033[33m'
+CYAN   = '\033[36m'
+RED    = '\033[31m'
+GRAY   = '\033[90m'
+
+
+def render(plan: dict) -> str:
+    goal = plan.get('goal', '(no goal)')
+    steps = plan.get('steps', [])
+    current = plan.get('current_step', 0)
+    created = plan.get('created_at', '')
+    total = len(steps)
+
+    lines = ['']
+    lines.append(f'{BOLD}{CYAN}  ✦ TurtleTerm Agent Plan{RESET}')
+    lines.append(f'{GRAY}  created: {created[:19] if created else "?"}  steps: {total}{RESET}')
+    lines.append('')
+    lines.append(f'{BOLD}  Goal:{RESET} {goal}')
+    lines.append('')
+
+    for i, step in enumerate(steps):
+        desc = step.get('description', '')
+        cmd = step.get('command', '')
+        rev = step.get('reversible', True)
+
+        if i < current:
+            indicator = f'{GREEN}✓{RESET}'
+            desc_color = GRAY
+            cmd_color = GRAY
+        elif i == current:
+            indicator = f'{YELLOW}→{RESET}'
+            desc_color = BOLD
+            cmd_color = YELLOW
+        else:
+            indicator = f'{DIM}○{RESET}'
+            desc_color = DIM
+            cmd_color = GRAY
+
+        rev_flag = '' if rev else f' {RED}[!destructive]{RESET}'
+        lines.append(f'  {indicator} {BOLD}step {i+1}/{total}{RESET}{rev_flag}')
+        lines.append(f'    {desc_color}{desc}{RESET}')
+        lines.append(f'    {cmd_color}$ {cmd}{RESET}')
+        lines.append('')
+
+    if current < total:
+        lines.append(f'{BOLD}  Next:{RESET} run the → step above, then press {BOLD}CTRL+SHIFT+N{RESET} to advance.')
+    else:
+        lines.append(f'{GREEN}{BOLD}  ✓ All steps complete.{RESET}')
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    as_json = '--json' in args
+    watch = '--watch' in args
+
+    if not PLAN_FILE.exists():
+        print('\n  No active plan.\n  Start one with CTRL+SHIFT+M or: turtle-agentctl plan <goal>\n')
+        return 1
+
+    try:
+        while True:
+            plan = json.loads(PLAN_FILE.read_text())
+            if as_json:
+                print(json.dumps(plan, indent=2))
+                return 0
+
+            if watch:
+                # Clear screen
+                print('\033[2J\033[H', end='')
+            print(render(plan))
+
+            if not watch:
+                return 0
+
+            current = plan.get('current_step', 0)
+            total = len(plan.get('steps', []))
+            if current >= total:
+                return 0
+
+            time.sleep(2)
+            if not PLAN_FILE.exists():
+                print('\n  Plan completed or aborted.\n')
+                return 0
+    except (json.JSONDecodeError, OSError) as e:
+        print(f'  error reading plan: {e}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

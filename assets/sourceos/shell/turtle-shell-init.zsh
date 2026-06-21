@@ -161,16 +161,16 @@ EOF
 }
 
 # ============================================================
-# AI ghost-text completion via zsh widget
-# Bound to ALT+/ — complete current buffer with AI suggestion
-# Also bound to CTRL+SPACE (^@) for terminal compatibility
+# AI ghost-text — two modes:
+#   1. Explicit: ALT+/ or CTRL+SPACE fires immediately (synchronous)
+#   2. Debounced: auto-fires after ~1s of idle if ANTHROPIC_API_KEY set
+#      Uses background process + TRAPALRM — never blocks the prompt
 # ============================================================
 
 _turtle_ai_complete() {
     local current_buffer="$BUFFER"
     [[ -z "$current_buffer" ]] && return
 
-    # Call nl-to-shell synchronously
     local result
     result=$(turtle-agentctl nl-to-shell "$current_buffer" 2>/dev/null | \
              python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('data',{}).get('command',''))" 2>/dev/null)
@@ -179,9 +179,88 @@ _turtle_ai_complete() {
         BUFFER="$result"
         CURSOR=${#BUFFER}
         zle reset-prompt
-        zle -M "AI: $result"
+        zle -M "  AI: $result"
     fi
 }
 zle -N _turtle_ai_complete
 bindkey '\e/' _turtle_ai_complete   # ALT+/
-bindkey '^@' _turtle_ai_complete    # CTRL+SPACE (terminal sends ^@)
+bindkey '^@' _turtle_ai_complete    # CTRL+SPACE
+
+# ---- Debounced auto-ghost (only when ANTHROPIC_API_KEY is set) ----
+
+if [[ -n "${ANTHROPIC_API_KEY:-}" || "${TURTLE_GHOST_TEXT:-}" == "1" ]]; then
+
+_TURTLE_GHOST_BUF=""       # buffer seen last tick
+_TURTLE_GHOST_STABLE=0     # 1 = buffer unchanged for one tick → ready to fetch
+_TURTLE_GHOST_PID=0        # pid of background nl-to-shell process
+_TURTLE_GHOST_FILE="/tmp/turtle-ghost-$$.txt"
+
+# Cleanup on shell exit
+trap 'rm -f "$_TURTLE_GHOST_FILE"; [[ $_TURTLE_GHOST_PID -gt 0 ]] && kill "$_TURTLE_GHOST_PID" 2>/dev/null' EXIT
+
+_turtle_ghost_tick() {
+    local buf="$BUFFER"
+
+    # --- Phase 1: consume a finished result ---
+    if [[ $_TURTLE_GHOST_PID -gt 0 && -f "$_TURTLE_GHOST_FILE" ]]; then
+        if ! kill -0 "$_TURTLE_GHOST_PID" 2>/dev/null; then
+            local result; result="$(cat "$_TURTLE_GHOST_FILE" 2>/dev/null)"
+            rm -f "$_TURTLE_GHOST_FILE"
+            _TURTLE_GHOST_PID=0
+            # Only inject if buffer hasn't changed since we kicked off the fetch
+            if [[ -n "$result" && "$result" != "$buf" && "$buf" == "$_TURTLE_GHOST_BUF" ]]; then
+                BUFFER="$result"
+                CURSOR=${#BUFFER}
+                zle reset-prompt
+                zle -M "  AI▸ $result"
+                _TURTLE_GHOST_STABLE=0
+                return
+            fi
+        fi
+    fi
+
+    # --- Phase 2: maybe launch a new fetch ---
+    # Don't launch if: buffer too short, fetch running, or buffer is empty
+    [[ ${#buf} -lt 4 || $_TURTLE_GHOST_PID -gt 0 || -z "$buf" ]] && return
+
+    if [[ "$buf" == "$_TURTLE_GHOST_BUF" ]]; then
+        if [[ $_TURTLE_GHOST_STABLE -eq 1 ]]; then
+            # Buffer stable for 2 ticks (~2s) → fire
+            _TURTLE_GHOST_STABLE=0
+            local writer; writer="$(_turtle_writer)"
+            local outfile="$_TURTLE_GHOST_FILE"
+            local json_buf
+            json_buf=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$buf" 2>/dev/null) || return
+            printf '{"action":"nl_to_shell","text":%s}\n' "$json_buf" \
+                | python3 "$writer" --stdio 2>/dev/null \
+                | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("data",{}).get("command",""))' \
+                > "$outfile" 2>/dev/null &
+            _TURTLE_GHOST_PID=$!
+        else
+            _TURTLE_GHOST_STABLE=1
+        fi
+    else
+        # Buffer changed — reset and cancel any in-flight fetch
+        _TURTLE_GHOST_BUF="$buf"
+        _TURTLE_GHOST_STABLE=0
+        if [[ $_TURTLE_GHOST_PID -gt 0 ]]; then
+            kill "$_TURTLE_GHOST_PID" 2>/dev/null
+            rm -f "$_TURTLE_GHOST_FILE"
+            _TURTLE_GHOST_PID=0
+        fi
+    fi
+}
+zle -N _turtle_ghost_tick
+
+# TRAPALRM fires every TMOUT seconds while the line editor is active.
+# We set TMOUT=1 only if not already set to something smaller.
+if [[ -z "${TMOUT:-}" || "${TMOUT:-0}" -gt 1 ]]; then
+    TMOUT=1
+fi
+
+TRAPALRM() {
+    # zle _turtle_ghost_tick is safe — zle ignores the call outside the editor
+    zle _turtle_ghost_tick 2>/dev/null || true
+}
+
+fi  # end ANTHROPIC_API_KEY guard

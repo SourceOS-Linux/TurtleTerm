@@ -170,6 +170,14 @@ def main(argv: list[str]) -> int:
     policy_local_p = sub.add_parser("policy-evaluate-local", help="evaluate a command against the built-in local policy rule engine")
     policy_local_p.add_argument("cmd", nargs=argparse.REMAINDER, help="command to evaluate")
 
+    # Agent planner loop
+    plan_p = sub.add_parser("plan", help="generate a multi-step command plan for a goal and inject step 1 into the terminal")
+    plan_p.add_argument("goal", nargs=argparse.REMAINDER, help="what you want to accomplish")
+
+    sub.add_parser("plan-next", help="advance the active plan to the next step")
+    sub.add_parser("plan-status", help="show the current plan and step index")
+    sub.add_parser("plan-abort", help="cancel the active plan")
+
     args = parser.parse_args(argv)
 
     if args.command == "ping":
@@ -243,6 +251,18 @@ def main(argv: list[str]) -> int:
             print(json.dumps({"status": "error", "message": "provide a natural-language request"}))
             return 2
         request = {"action": "nl_to_shell", "text": text, "context": {"cwd": os.getcwd()}}
+    elif args.command == "plan":
+        goal = join_remainder(args.goal)
+        if not goal:
+            print(json.dumps({"status": "error", "message": "plan requires a goal"}))
+            return 2
+        request = {"action": "plan_execute", "goal": goal}
+    elif args.command == "plan-next":
+        request = {"action": "plan_next"}
+    elif args.command == "plan-status":
+        request = {"action": "plan_status"}
+    elif args.command == "plan-abort":
+        request = {"action": "plan_abort"}
     elif args.command == "atlas-context":
         request = {"action": "atlas_context", "cwd": getattr(args, "cwd", None) or os.getcwd()}
     elif args.command == "atlas-register":

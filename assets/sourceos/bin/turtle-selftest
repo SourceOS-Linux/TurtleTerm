@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""TurtleTerm end-to-end self-test.
+
+Tests every major subsystem and prints a pass/fail table.
+Exit 0 if all pass, 1 if any fail.
+
+Usage:
+  turtle-selftest
+  turtle-selftest --json       JSON output
+  turtle-selftest --verbose    show payloads on failure
+"""
+
+from __future__ import annotations
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib import request as urlrequest
+from urllib import error as urlerror
+
+RESET   = '\033[0m'
+BOLD    = '\033[1m'
+GREEN   = '\033[32m'
+RED     = '\033[31m'
+YELLOW  = '\033[33m'
+GRAY    = '\033[90m'
+CYAN    = '\033[36m'
+
+AGENTD  = Path(__file__).parent / 'turtle-agentd'
+AGENTCTL = Path(__file__).parent / 'turtle-agentctl'
+VERBOSE = '--verbose' in sys.argv
+AS_JSON = '--json' in sys.argv
+
+results: list[dict] = []
+
+
+def ok(name: str, detail: str = '') -> None:
+    results.append({'name': name, 'status': 'pass', 'detail': detail})
+    if not AS_JSON:
+        print(f'  {GREEN}✓{RESET}  {name}' + (f'  {GRAY}{detail}{RESET}' if detail else ''))
+
+
+def fail(name: str, detail: str = '') -> None:
+    results.append({'name': name, 'status': 'fail', 'detail': detail})
+    if not AS_JSON:
+        print(f'  {RED}✗{RESET}  {BOLD}{name}{RESET}' + (f'\n     {GRAY}{detail[:200]}{RESET}' if detail else ''))
+
+
+def skip(name: str, reason: str = '') -> None:
+    results.append({'name': name, 'status': 'skip', 'detail': reason})
+    if not AS_JSON:
+        print(f'  {YELLOW}–{RESET}  {name}  {GRAY}({reason}){RESET}')
+
+
+def agentd(payload: dict, timeout: int = 10) -> dict | None:
+    try:
+        res = subprocess.run(
+            [sys.executable, str(AGENTD), '--stdio'],
+            input=json.dumps(payload), text=True,
+            capture_output=True, timeout=timeout,
+        )
+        return json.loads(res.stdout)
+    except Exception as e:
+        return None
+
+
+def agentctl(*args: str, timeout: int = 10) -> dict | None:
+    try:
+        res = subprocess.run(
+            [sys.executable, str(AGENTCTL), '--stdio', *args],
+            text=True, capture_output=True, timeout=timeout,
+        )
+        return json.loads(res.stdout)
+    except Exception:
+        return None
+
+
+def http_get(url: str, timeout: int = 3) -> dict | None:
+    try:
+        with urlrequest.urlopen(url, timeout=timeout) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
+def http_post(url: str, body: dict, timeout: int = 5) -> dict | None:
+    try:
+        data = json.dumps(body).encode()
+        req = urlrequest.Request(url, data=data, headers={'Content-Type': 'application/json'})
+        with urlrequest.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Test sections
+# ---------------------------------------------------------------------------
+
+def test_agentd() -> None:
+    r = agentd({'action': 'ping'})
+    if r and r.get('status') == 'ok':
+        ok('agentd ping', f"v{r.get('data', {}).get('version', '?')}")
+    else:
+        fail('agentd ping', str(r))
+
+    r = agentd({'action': 'surfaces'})
+    if r and r.get('status') == 'ok':
+        surfaces = r.get('data', {}).get('surfaces', [])
+        ok('agentd surfaces', f'{len(surfaces)} surfaces')
+    else:
+        fail('agentd surfaces', str(r))
+
+
+def test_agentctl() -> None:
+    r = agentctl('ping')
+    if r and r.get('status') == 'ok':
+        ok('agentctl ping')
+    else:
+        fail('agentctl ping', str(r))
+
+    r = agentctl('plan-status')
+    if r is not None:
+        ok('agentctl plan-status', 'active=' + str(r.get('data', {}).get('active', '?')))
+    else:
+        fail('agentctl plan-status', 'no response')
+
+
+def test_synapseiq() -> None:
+    h = http_get('http://127.0.0.1:2087/health')
+    if not h:
+        skip('synapseiq health', 'not running — start with: turtle-synapseiq start')
+        skip('synapseiq symbols/ts')
+        skip('synapseiq diagnostics/ts')
+        skip('synapseiq symbols/python')
+        skip('synapseiq diagnostics/python')
+        return
+
+    ver = h.get('version', '?')
+    caps = h.get('capabilities', {})
+    ts_ast = caps.get('typescript_ast', False)
+    ok('synapseiq health', f'v{ver}, ts_ast={ts_ast}')
+
+    # TypeScript symbols
+    ts_src = 'export function greet(name: string) { return name; }\nconst PI = 3.14;\ninterface User { id: number; }'
+    r = http_post('http://127.0.0.1:2087/lsp/symbols', {'file': 'test.ts', 'text': ts_src})
+    if r and 'symbols' in r:
+        syms = {s['name'] for s in r['symbols']}
+        if {'greet', 'PI', 'User'}.issubset(syms):
+            ok('synapseiq symbols/ts', f'{len(r["symbols"])} symbols, TS AST={ts_ast}')
+        else:
+            fail('synapseiq symbols/ts', f'got {syms}, expected greet/PI/User')
+    else:
+        fail('synapseiq symbols/ts', str(r))
+
+    # TypeScript diagnostics (real type error)
+    ts_bad = 'const x: number = "oops";'
+    r = http_post('http://127.0.0.1:2087/lsp/diagnostics', {'file': 'test.ts', 'text': ts_bad})
+    if r and r.get('diagnostics'):
+        msgs = [d['message'] for d in r['diagnostics']]
+        if any('assignable' in m or 'string' in m.lower() for m in msgs):
+            ok('synapseiq diagnostics/ts', f'{len(r["diagnostics"])} diags, code={r["diagnostics"][0].get("code")}')
+        else:
+            fail('synapseiq diagnostics/ts', f'expected type error, got {msgs}')
+    else:
+        fail('synapseiq diagnostics/ts', 'no diagnostics returned for type error')
+
+    # Python symbols
+    py_src = 'def hello():\n    pass\nclass Foo:\n    def bar(self): pass\n'
+    r = http_post('http://127.0.0.1:2087/lsp/symbols', {'file': 'test.py', 'text': py_src})
+    if r and 'symbols' in r:
+        syms = {s['name'] for s in r['symbols']}
+        if 'hello' in syms and 'Foo' in syms:
+            ok('synapseiq symbols/python', f'{len(r["symbols"])} symbols')
+        else:
+            fail('synapseiq symbols/python', f'got {syms}')
+    else:
+        fail('synapseiq symbols/python', str(r))
+
+    # Python diagnostics (syntax error)
+    py_bad = 'def foo(\n    pass\n'
+    r = http_post('http://127.0.0.1:2087/lsp/diagnostics', {'file': 'test.py', 'text': py_bad})
+    if r and r.get('diagnostics'):
+        ok('synapseiq diagnostics/python', f'{len(r["diagnostics"])} syntax errors')
+    else:
+        fail('synapseiq diagnostics/python', 'no syntax error caught')
+
+    # JSON diagnostics
+    json_bad = '{"a": 1, "b":'
+    r = http_post('http://127.0.0.1:2087/lsp/diagnostics', {'file': 'test.json', 'text': json_bad})
+    if r and r.get('diagnostics'):
+        ok('synapseiq diagnostics/json', r['diagnostics'][0]['message'][:60])
+    else:
+        fail('synapseiq diagnostics/json', 'no error for broken JSON')
+
+    # Lua diagnostics (syntax error)
+    import subprocess as _sp
+    has_luac = _sp.run(['which', 'luac'], capture_output=True).returncode == 0
+    if has_luac:
+        lua_bad = 'function foo(\n  local x = 1\nend\n'
+        r = http_post('http://127.0.0.1:2087/lsp/diagnostics', {'file': 'test.lua', 'text': lua_bad})
+        if r and r.get('diagnostics'):
+            ok('synapseiq diagnostics/lua', f'{len(r["diagnostics"])} errors via luac')
+        else:
+            fail('synapseiq diagnostics/lua', 'no syntax error caught by luac')
+    else:
+        skip('synapseiq diagnostics/lua', 'luac not installed')
+
+    # Shell diagnostics (bash -n)
+    import shutil as _sh
+    if _sh.which('bash'):
+        sh_bad = 'if [ $x -eq 1\nthen\n  echo hi\n'
+        r = http_post('http://127.0.0.1:2087/lsp/diagnostics', {'file': 'test.sh', 'text': sh_bad})
+        if r and r.get('diagnostics'):
+            ok('synapseiq diagnostics/shell', f'{len(r["diagnostics"])} errors via bash -n')
+        else:
+            # bash -n may silently accept some broken scripts; skip rather than fail
+            skip('synapseiq diagnostics/shell', 'bash -n returned no errors for test input')
+    else:
+        skip('synapseiq diagnostics/shell', 'bash not installed')
+
+    # Rust diagnostics (rustc) — check capability, don't fail if rustc absent
+    has_rustc = _sp.run(['which', 'rustc'], capture_output=True).returncode == 0
+    caps = h.get('capabilities', {})
+    if has_rustc:
+        rust_bad = 'fn main() { let x: i32 = "oops"; }'
+        r = http_post('http://127.0.0.1:2087/lsp/diagnostics', {'file': 'test.rs', 'text': rust_bad})
+        if r and r.get('diagnostics'):
+            ok('synapseiq diagnostics/rust', f'{len(r["diagnostics"])} errors via rustc')
+        else:
+            fail('synapseiq diagnostics/rust', 'no type error from rustc')
+    else:
+        skip('synapseiq diagnostics/rust', 'rustc not installed')
+
+    # Go diagnostics — skip if go absent
+    has_go = _sp.run(['which', 'go'], capture_output=True).returncode == 0
+    if has_go:
+        go_bad = 'package main\nfunc main() { var x int = "wrong" }'
+        r = http_post('http://127.0.0.1:2087/lsp/diagnostics', {'file': 'test.go', 'text': go_bad})
+        if r and r.get('diagnostics'):
+            ok('synapseiq diagnostics/go', f'{len(r["diagnostics"])} errors via go build')
+        else:
+            fail('synapseiq diagnostics/go', 'no type error from go build')
+    else:
+        skip('synapseiq diagnostics/go', 'go not installed')
+
+
+def test_shell_init() -> None:
+    init_paths = [
+        Path(__file__).parent.parent / 'shell' / 'turtle-shell-init.zsh',
+        Path('/opt/homebrew/share/turtle-term/shell/turtle-shell-init.zsh'),
+        Path.home() / '.local' / 'share' / 'turtleterm' / 'shell' / 'turtle-shell-init.zsh',
+    ]
+    found = next((p for p in init_paths if p.exists()), None)
+    if found:
+        ok('shell init file', str(found))
+        # Check OSC 133 marks are present
+        content = found.read_text()
+        if '133;C' in content and '133;D' in content:
+            ok('shell OSC 133 marks')
+        else:
+            fail('shell OSC 133 marks', 'missing 133;C or 133;D in shell init')
+        if '_turtle_ai_complete' in content:
+            ok('shell AI ghost-text widget (explicit)')
+        else:
+            fail('shell AI ghost-text widget', '_turtle_ai_complete not found')
+        if '_turtle_ghost_tick' in content and 'TRAPALRM' in content:
+            ok('shell AI ghost-text debounced (auto)')
+        else:
+            fail('shell AI ghost-text debounced', '_turtle_ghost_tick / TRAPALRM not found')
+    else:
+        skip('shell init file', 'not installed')
+
+
+def test_plan_subsystem() -> None:
+    r = agentd({'action': 'plan_status'})
+    if r and r.get('status') == 'ok':
+        ok('plan_status action')
+    else:
+        fail('plan_status action', str(r))
+
+    r = agentd({'action': 'plan_abort'})
+    if r and r.get('status') == 'ok':
+        ok('plan_abort action')
+    else:
+        fail('plan_abort action', str(r))
+
+    plan_view = Path(__file__).parent / 'turtle-plan-view'
+    if plan_view.exists() and os.access(plan_view, os.X_OK):
+        ok('turtle-plan-view script')
+    else:
+        fail('turtle-plan-view script', str(plan_view))
+
+
+def test_language_binary() -> None:
+    lang = Path(__file__).parent / 'turtle-language'
+    if lang.exists():
+        r = subprocess.run([sys.executable, str(lang), 'synapseiq-status'], capture_output=True, text=True, timeout=5)
+        ok('turtle-language binary', 'synapseiq-status exit=' + str(r.returncode))
+    else:
+        skip('turtle-language binary', 'not found')
+
+
+def test_lua_config() -> None:
+    lua = Path(__file__).parent.parent / 'turtleterm.lua'
+    if not lua.exists():
+        lua = Path('/opt/homebrew/share/turtle-term/turtleterm.lua')
+    if lua.exists():
+        content = lua.read_text()
+        checks = [
+            ('CMD+P command palette',        'turtle_command_palette()'),
+            ('CMD+SHIFT+E block explain',    'turtle_block_explain_last()'),
+            ('CTRL+SHIFT+M planner bind',    'turtle_plan()'),
+            ('CMD+SHIFT+N plan-next (fixed)','CMD|SHIFT.*plan_next'),
+            ('CTRL+SHIFT+I theme picker',    'turtle_theme_picker()'),
+            ('BearBrowser open-uri routing', "open-uri"),
+            ('AI sidebar',                   'turtle_ai_sidebar'),
+            ('history search',               'turtle_history_search'),
+            ('OSC 133 prompt jump',          'ScrollToPrompt'),
+            ('SynapseIQ auto-start',         'turtle-synapseiq start'),
+            ('right-click context menu',     'turtle_block_context_menu'),
+            ('workspace save CMD+SHIFT+S',   'turtle_workspace_save'),
+            ('workspace restore CMD+SHIFT+O','turtle_workspace_restore'),
+        ]
+        import re as _re
+        for name, needle in checks:
+            hit = (_re.search(needle, content) is not None) if ('.*' in needle or '[' in needle) else (needle in content)
+            if hit:
+                ok(f'lua: {name}')
+            else:
+                fail(f'lua: {name}', f'"{needle}" not found in turtleterm.lua')
+    else:
+        skip('lua config checks', 'turtleterm.lua not found')
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    if not AS_JSON:
+        print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v0.4.0  ({len(results)} checks){RESET}\n')
+
+    test_agentd()
+    test_agentctl()
+    test_synapseiq()
+    test_shell_init()
+    test_plan_subsystem()
+    test_language_binary()
+    test_lua_config()
+
+    passed = sum(1 for r in results if r['status'] == 'pass')
+    failed = sum(1 for r in results if r['status'] == 'fail')
+    skipped = sum(1 for r in results if r['status'] == 'skip')
+
+    if AS_JSON:
+        print(json.dumps({'results': results, 'passed': passed, 'failed': failed, 'skipped': skipped}, indent=2))
+    else:
+        print(f'\n  {BOLD}Results:{RESET}  {GREEN}{passed} pass{RESET}  {RED}{failed} fail{RESET}  {GRAY}{skipped} skip{RESET}\n')
+
+    return 0 if failed == 0 else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

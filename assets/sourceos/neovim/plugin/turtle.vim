@@ -194,6 +194,65 @@ function! turtle#synapseiq_lsp_snippet() abort
 endfunction
 
 " ---------------------------------------------------------------------------
+" :TurtlePlan — agent planner loop
+" ---------------------------------------------------------------------------
+
+function! turtle#plan(...) abort
+  let goal = a:0 > 0 ? join(a:000, ' ') : ''
+  if goal ==# ''
+    let goal = input('Agent plan goal: ')
+  endif
+  if goal ==# '' | return | endif
+  echo 'TurtleTerm: planning...'
+  let out = s:run_agentctl('plan ' . shellescape(goal), '')
+  let status = s:json_get(out, 'status')
+  let step_count = s:json_get(out, 'step_count')
+  if status ==# 'ok'
+    let msg = 'Plan ready (' . (step_count !=# '' ? step_count : '?') . ' steps). :TurtlePlanNext to advance.'
+    echo 'TurtleTerm: ' . msg
+  else
+    echo 'TurtleTerm: planning failed — ' . out[:120]
+  endif
+endfunction
+
+function! turtle#plan_next() abort
+  let out = s:run_agentctl('plan-next', '')
+  let status = s:json_get(out, 'status')
+  let kind = s:json_get(out, 'kind')
+  if kind ==# 'plan_complete'
+    echo 'TurtleTerm: ✓ Plan complete!'
+  elseif status ==# 'ok'
+    let cmd = s:json_get_nested(out, 'data', 'command')
+    let desc = s:json_get_nested(out, 'data', 'description')
+    if cmd !=# ''
+      let @" = cmd
+      echo 'TurtleTerm step: ' . (desc !=# '' ? desc : cmd)
+      call feedkeys(':!' . cmd, 'n')
+    endif
+  else
+    echo 'TurtleTerm: no active plan — use :TurtlePlan <goal>'
+  endif
+endfunction
+
+function! turtle#plan_status() abort
+  let out = s:run_agentctl('plan-status', '')
+  let active = s:json_get_nested(out, 'data', 'active')
+  if active ==# 'true' || active ==# '1'
+    let goal = s:json_get_nested(out, 'data', 'goal')
+    let step = s:json_get_nested(out, 'data', 'current_step')
+    let total = s:json_get_nested(out, 'data', 'step_count')
+    echo 'TurtleTerm plan: ' . goal . ' [step ' . step . '/' . total . ']'
+  else
+    echo 'TurtleTerm: no active plan'
+  endif
+endfunction
+
+function! turtle#plan_abort() abort
+  call s:run_agentctl('plan-abort', '')
+  echo 'TurtleTerm: plan aborted'
+endfunction
+
+" ---------------------------------------------------------------------------
 " Commands
 " ---------------------------------------------------------------------------
 
@@ -203,6 +262,10 @@ command! -nargs=* TurtleNL call turtle#nl(<f-args>)
 command! TurtleContext call turtle#context()
 command! TurtleStatus call turtle#status()
 command! SynapseIQLSP call turtle#synapseiq_lsp_snippet()
+command! -nargs=* TurtlePlan call turtle#plan(<f-args>)
+command! TurtlePlanNext call turtle#plan_next()
+command! TurtlePlanStatus call turtle#plan_status()
+command! TurtlePlanAbort call turtle#plan_abort()
 
 " ---------------------------------------------------------------------------
 " Key mappings (only if not already mapped)
@@ -217,4 +280,10 @@ if !hasmapto('<Plug>TurtleRun')
 endif
 if !hasmapto('<Plug>TurtleNL')
   nmap <unique> <Leader>tn :TurtleNL<CR>
+endif
+if !hasmapto('<Plug>TurtlePlan')
+  nmap <unique> <Leader>tp :TurtlePlan<CR>
+endif
+if !hasmapto('<Plug>TurtlePlanNext')
+  nmap <unique> <Leader>tN :TurtlePlanNext<CR>
 endif
