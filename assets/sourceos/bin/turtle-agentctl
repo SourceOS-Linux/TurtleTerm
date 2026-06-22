@@ -178,6 +178,14 @@ def main(argv: list[str]) -> int:
     sub.add_parser("plan-status", help="show the current plan and step index")
     sub.add_parser("plan-abort", help="cancel the active plan")
 
+    agent_run_p = sub.add_parser("agent-run", help="governed autonomous loop (plan/execute/verify); dry-run by default")
+    agent_run_p.add_argument("goal", nargs="*", default=[], help="what the agent should accomplish")
+    agent_run_p.add_argument("--goal", dest="goal_opt", default="", help="goal (alternative to positional)")
+    agent_run_p.add_argument("--execute", action="store_true", help="run non-destructive steps (default: dry-run plan only)")
+    agent_run_p.add_argument("--max-steps", type=int, default=6, help="cap on planned steps")
+    agent_run_p.add_argument("--confirm-destructive", action="store_true", help="acknowledge destructive steps (still default-denied)")
+    agent_run_p.add_argument("--cwd", default=None, help="working directory for executed steps")
+
     # G-series bookmark/history
     bm_add_p = sub.add_parser("bookmark-add")
     bm_add_p.add_argument("label", nargs="?", default="")
@@ -527,6 +535,20 @@ def main(argv: list[str]) -> int:
             print(json.dumps({"status": "error", "message": "plan requires a goal"}))
             return 2
         request = {"action": "plan_execute", "goal": goal}
+    elif args.command == "agent-run":
+        goal = join_remainder(args.goal) or getattr(args, "goal_opt", "")
+        if not goal:
+            print(json.dumps({"status": "error", "message": "agent-run requires a goal"}))
+            return 2
+        request = {
+            "action": "agent_run",
+            "goal": goal,
+            "execute": bool(getattr(args, "execute", False)),
+            "max_steps": int(getattr(args, "max_steps", 6)),
+            "confirm_destructive": bool(getattr(args, "confirm_destructive", False)),
+        }
+        if getattr(args, "cwd", None):
+            request["cwd"] = args.cwd
     elif args.command == "plan-next":
         request = {"action": "plan_next"}
     elif args.command == "plan-status":

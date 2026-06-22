@@ -11,6 +11,7 @@ Usage:
   turtle-copilot stop                   Stop the watcher
   turtle-copilot status                 Show status + recent suggestions
   turtle-copilot chat [message]         Multi-turn conversation
+  turtle-copilot auto "GOAL" [--execute]  Governed autonomous loop (plan/execute/verify)
   turtle-copilot suggest                Show latest proactive suggestions
   turtle-copilot recall [QUERY]         Recall past fixes (fast local lookup, no model call)
   turtle-copilot context                Show gathered context (git, project, recent cmds/errors)
@@ -136,6 +137,48 @@ def main() -> int:
         if not running:
             print(f"\n  {GRAY}Run: turtle-copilot start{RESET}")
         return 0
+
+    # ── auto ──────────────────────────────────────────────────────────────────
+    # Governed autonomous agent loop (plan/execute/verify). Forwards to agent_run.
+    if sub == "auto":
+        execute = "--execute" in rest
+        as_json = "--json" in rest
+        max_steps = 6
+        if "--max-steps" in rest:
+            mi = rest.index("--max-steps")
+            try: max_steps = int(rest[mi+1])
+            except (IndexError, ValueError): max_steps = 6
+        skip = set()
+        if "--max-steps" in rest:
+            skip.add(rest.index("--max-steps")); skip.add(rest.index("--max-steps")+1)
+        goal = " ".join(a for j, a in enumerate(rest)
+                        if not a.startswith("--") and j not in skip).strip()
+        if not goal:
+            print('Usage: turtle-copilot auto "GOAL" [--execute] [--max-steps N] [--json]', file=sys.stderr); return 1
+        ctl_args = ["agent-run", "--goal", goal, "--max-steps", str(max_steps)]
+        if execute:
+            ctl_args.append("--execute")
+        r = agentctl(*ctl_args, timeout=180)
+        data = d(r)
+        if as_json:
+            print(json.dumps(r, indent=2)); return 0 if (r or {}).get("status") == "ok" else 1
+        mode = f"{YELLOW}dry-run{RESET}" if data.get("dry_run") else f"{GREEN}execute{RESET}"
+        header(f"Autonomous Agent · {mode}")
+        print(f"  goal : {BOLD}{goal}{RESET}")
+        if not data.get("planned"):
+            print(f"  {RED}Planning failed: {data.get('reason','unknown')}{RESET}")
+        else:
+            outcomes = {o.get("step"): o for o in data.get("outcomes", [])}
+            for idx, s in enumerate(data.get("steps", []), start=1):
+                o = outcomes.get(idx, {})
+                flag = f" {RED}[destructive]{RESET}" if s.get("destructive") else ""
+                ran = o.get("ran"); blocked = o.get("blocked")
+                tag = (f"{RED}blocked{RESET}" if blocked else
+                       (f"{GREEN}ran exit={o.get('exit')}{RESET}" if ran else f"{GRAY}would run{RESET}"))
+                print(f"  {BOLD}{idx}.{RESET} {s.get('intent','')}{flag}  [{tag}]")
+                print(f"     {GRAY}$ {s.get('command','')}{RESET}")
+        print(f"\n  {GRAY}run={data.get('reasoning_run','-')}  receipt={data.get('reasoning_receipt','-')}  replay-plan={data.get('replay_plan','-')}{RESET}")
+        return 0 if (r or {}).get("status") == "ok" else 1
 
     # ── chat ──────────────────────────────────────────────────────────────────
     if sub == "chat":
