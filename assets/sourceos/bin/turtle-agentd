@@ -606,6 +606,8 @@ def _copilot_config() -> dict:
         "slow_threshold_ms": 10000,
         "context_lines": 20,
         "enabled": False,
+        "auto_route": False,
+        "recall": True,
     }
     if cfg_path.exists():
         try:
@@ -615,17 +617,279 @@ def _copilot_config() -> dict:
             pass
     return defaults
 
+
+# ── Copilot context + memory engine ───────────────────────────────────────────
+_COPILOT_MEMORY_PATH = Path.home() / ".config" / "turtleterm" / "copilot_memory.ndjson"
+_COPILOT_MEMORY_CAP = 500
+
+_COPILOT_ERROR_KEYWORDS: list[tuple[str, str]] = [
+    # (normalized keyword, regex)
+    ("command not found", r"command not found"),
+    ("no such file or directory", r"no such file or directory"),
+    ("permission denied", r"permission denied"),
+    ("connection refused", r"connection refused"),
+    ("cannot find module", r"cannot find module|module not found"),
+    ("syntax error", r"syntax\s*error|syntaxerror"),
+    ("undefined", r"undefined"),
+    ("timeout", r"timed?\s*out|timeout"),
+    ("out of memory", r"out of memory|oom|cannot allocate memory"),
+    ("address already in use", r"address already in use|eaddrinuse"),
+    ("merge conflict", r"merge conflict|conflict\b.*\bmerge|automatic merge failed"),
+    ("test failed", r"test(s)? failed|assertion|assert(ion)?error|failing test"),
+]
+
+
+def _copilot_error_signature(command: str, output: str) -> str:
+    """Deterministic signature for matching recurring errors."""
+    try:
+        cmd = (command or "").strip()
+        prog = cmd.split()[0].lower() if cmd.split() else ""
+        out = (output or "").lower()
+        found = sorted({kw for kw, rx in _COPILOT_ERROR_KEYWORDS if re.search(rx, out)})
+        if found:
+            return f"{prog}|" + ",".join(found)
+        # Fallback: normalized tail of output
+        lines = [ln for ln in (output or "").splitlines() if ln.strip()]
+        tail = lines[-1] if lines else ""
+        tail = tail.lower()
+        tail = re.sub(r"[0-9]+", "", tail)             # strip digits
+        tail = re.sub(r"[/~][^\s]*", "", tail)         # strip paths
+        tail = re.sub(r"\s+", " ", tail).strip()
+        tail = tail[:40]
+        return f"{prog}|{tail}" if tail else prog
+    except Exception:
+        return (command or "").strip().split(" ")[0].lower()
+
+
+def _copilot_error_keywords(output: str) -> list[str]:
+    out = (output or "").lower()
+    return sorted({kw for kw, rx in _COPILOT_ERROR_KEYWORDS if re.search(rx, out)})
+
+
+def _copilot_gather_context(cwd: str | None = None, evt: dict | None = None) -> dict:
+    """Assemble rich, fast, exception-safe context for the copilot."""
+    cwd = cwd or (evt.get("cwd") if evt else None) or os.getcwd()
+    ctx: dict = {
+        "cwd": cwd,
+        "project_type": "unknown",
+        "tools": [],
+        "git_branch": "",
+        "git_dirty": False,
+        "git_ahead_behind": "",
+        "recent_commands": [],
+        "recent_errors": [],
+        "recurring_error": False,
+    }
+
+    # Project type + tools (reuse workspace_scan marker logic)
+    try:
+        base = Path(cwd)
+        markers = {
+            "node": ["package.json", "node_modules"],
+            "python": ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile"],
+            "rust": ["Cargo.toml"],
+            "go": ["go.mod", "go.sum"],
+            "ruby": ["Gemfile", "Rakefile"],
+        }
+        found_types = [pt for pt, mfiles in markers.items() if any((base / m).exists() for m in mfiles)]
+        ctx["project_type"] = found_types[0] if found_types else "unknown"
+        tool_checks = {
+            "git": ".git", "docker-compose": "docker-compose.yml",
+            "makefile": "Makefile", "turtle": ".turtle",
+            "nix": "flake.nix", "github-actions": ".github/workflows",
+            "gitea-actions": ".gitea/workflows",
+        }
+        ctx["tools"] = [t for t, m in tool_checks.items() if (base / m).exists()]
+    except Exception:
+        pass
+
+    # Git context (best-effort, bounded)
+    try:
+        branch = _git_module_level("branch", "--show-current", cwd=cwd) or ""
+        ctx["git_branch"] = branch.strip()
+        if ctx["git_branch"]:
+            porcelain = _git_module_level("status", "--porcelain", cwd=cwd) or ""
+            ctx["git_dirty"] = bool(porcelain.strip())
+            ab = _git_module_level("rev-list", "--left-right", "--count", "@{u}...HEAD", cwd=cwd) or ""
+            if ab.strip():
+                parts = ab.split()
+                if len(parts) == 2:
+                    ctx["git_ahead_behind"] = f"behind {parts[0]}, ahead {parts[1]}"
+    except Exception:
+        pass
+
+    # Recent commands + errors from the event stream
+    try:
+        events = read_ndjson(event_stream_path(), limit=200)
+        sess = evt.get("session_id") if evt else None
+        evt_cwd = (evt.get("cwd") if evt else None) or cwd
+        recent_cmds: list[str] = []
+        recent_errs: list[dict] = []
+        sig_counts: dict[str, int] = {}
+        for row in events:
+            if row.get("event_type") != "command.completed":
+                continue
+            row_cwd = row.get("cwd") or evt_cwd
+            row_sess = row.get("session_id")
+            # Scope to same cwd OR same session when known
+            if sess and row_sess and row_sess != sess and row_cwd != evt_cwd:
+                continue
+            rcmd = (row.get("command") or "").strip()
+            if rcmd:
+                recent_cmds.append(rcmd)
+            rc = row.get("exit_code", 0)
+            if rc not in (0, None):
+                rout = row.get("output_preview", "") or ""
+                rsig = _copilot_error_signature(rcmd, rout)
+                recent_errs.append({"command": rcmd, "exit_code": rc, "signature": rsig})
+                sig_counts[rsig] = sig_counts.get(rsig, 0) + 1
+        # last 8 distinct commands, most-recent order preserved
+        seen: set = set()
+        distinct: list[str] = []
+        for c in reversed(recent_cmds):
+            if c not in seen:
+                seen.add(c)
+                distinct.append(c)
+            if len(distinct) >= 8:
+                break
+        ctx["recent_commands"] = list(reversed(distinct))
+        ctx["recent_errors"] = recent_errs[-5:]
+        if evt is not None:
+            cur_sig = _copilot_error_signature(evt.get("command", ""), evt.get("output_preview", ""))
+            ctx["recurring_error"] = sig_counts.get(cur_sig, 0) >= 2
+    except Exception:
+        pass
+
+    return ctx
+
+
+def _copilot_remember(signature: str, command: str, fix: str,
+                      source: str = "auto", error_keywords: list | None = None) -> bool:
+    """Append a fix entry to the memory store, de-duping and capping size."""
+    try:
+        path = _COPILOT_MEMORY_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fix = (fix or "").strip()
+        if not fix:
+            return False
+        entries: list[dict] = []
+        if path.exists():
+            for line in path.read_text().splitlines():
+                try:
+                    entries.append(json.loads(line))
+                except Exception:
+                    pass
+        # De-dupe: same signature AND near-identical fix
+        norm = lambda s: re.sub(r"\s+", " ", (s or "").strip().lower())
+        nfix = norm(fix)
+        for e in entries:
+            if e.get("signature") == signature and norm(e.get("fix", "")) == nfix:
+                return False
+        entry = {
+            "ts": dt.datetime.utcnow().isoformat(),
+            "signature": signature,
+            "command": command,
+            "error_keywords": error_keywords or [],
+            "fix": fix,
+            "source": source,
+        }
+        entries.append(entry)
+        if len(entries) > _COPILOT_MEMORY_CAP:
+            entries = entries[-_COPILOT_MEMORY_CAP:]
+        path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def _copilot_recall(query: str = "", signature: str = "", limit: int = 3) -> list[dict]:
+    """Pure-local lookup of past fixes. Exact signature first, then keyword overlap."""
+    try:
+        path = _COPILOT_MEMORY_PATH
+        if not path.exists():
+            return []
+        entries: list[dict] = []
+        for line in path.read_text().splitlines():
+            try:
+                entries.append(json.loads(line))
+            except Exception:
+                pass
+        entries.reverse()  # most-recent first
+
+        results: list[dict] = []
+        seen_idx: set = set()
+
+        if signature:
+            for i, e in enumerate(entries):
+                if e.get("signature") == signature:
+                    results.append(e)
+                    seen_idx.add(i)
+                    if len(results) >= limit:
+                        return results[:limit]
+
+        if query:
+            qtokens = set(re.findall(r"[a-z0-9]+", query.lower()))
+            scored: list[tuple[int, int, dict]] = []
+            for i, e in enumerate(entries):
+                if i in seen_idx:
+                    continue
+                hay = " ".join([
+                    e.get("command", ""), e.get("fix", ""),
+                    " ".join(e.get("error_keywords", [])), e.get("signature", ""),
+                ]).lower()
+                htokens = set(re.findall(r"[a-z0-9]+", hay))
+                overlap = len(qtokens & htokens)
+                if overlap > 0:
+                    scored.append((overlap, -i, e))
+            scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+            for _, _, e in scored:
+                results.append(e)
+                if len(results) >= limit:
+                    break
+
+        return results[:limit]
+    except Exception:
+        return []
+
+
+def _copilot_route(task_type: str, cfg: dict) -> dict:
+    """Light, side-effect-free backend auto-routing by task type. No-op unless auto_route."""
+    try:
+        if not cfg.get("auto_route"):
+            return cfg
+        out = dict(cfg)
+        if task_type in ("error_explain", "perf_tip"):
+            has_ollama = cfg.get("backend") == "ollama" or bool(cfg.get("ollama_model"))
+            if has_ollama:
+                out["backend"] = "ollama"
+                if cfg.get("ollama_model"):
+                    out["model"] = cfg["ollama_model"]
+                if not out.get("endpoint"):
+                    out["endpoint"] = "http://localhost:11434"
+            return out
+        if task_type == "reason":
+            if env("ANTHROPIC_API_KEY"):
+                out["backend"] = "claude"
+                if not str(out.get("model", "")).startswith("claude"):
+                    out["model"] = "claude-sonnet-4-6"
+            return out
+        return out
+    except Exception:
+        return cfg
+
 def _copilot_backend_chat(prompt: str, system: str = "", config: dict | None = None) -> str:
     """Route to configured backend: claude / ollama / noetica / openai-compat."""
     cfg = config or _copilot_config()
     backend = cfg.get("backend", "claude")
     model   = cfg.get("model", "claude-sonnet-4-6")
 
+    # Build the persona + memories system prefix ONCE for all backends.
+    _persona = _load_persona_system()
+    _mems    = _load_memories_context()
+    _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
+    full_system = (_prefix + "\n\n" if _prefix else "") + (system or "You are a helpful terminal co-pilot.")
+
     if backend == "claude":
-        _persona = _load_persona_system()
-        _mems    = _load_memories_context()
-        _prefix  = "\n\n".join(x for x in [_persona, _mems] if x)
-        full_system = (_prefix + "\n\n" if _prefix else "") + (system or "You are a helpful terminal co-pilot.")
         ai = _claude_chat(prompt, system=full_system, timeout=15)
         return (ai.get("response") or "").strip() if ai else ""
 
@@ -639,7 +903,7 @@ def _copilot_backend_chat(prompt: str, system: str = "", config: dict | None = N
         payload = json.dumps({
             "model": model,
             "messages": [
-                {"role": "system", "content": system or "You are a helpful terminal co-pilot."},
+                {"role": "system", "content": full_system},
                 {"role": "user",   "content": prompt},
             ],
             "max_tokens": 512,
@@ -660,7 +924,9 @@ def _copilot_backend_chat(prompt: str, system: str = "", config: dict | None = N
         import urllib.request as _ur_noe
         endpoint = cfg.get("endpoint") or "http://127.0.0.1:8080"
         url = f"{endpoint.rstrip('/')}/api/chat"
-        payload = json.dumps({"message": prompt, "stream": False}).encode()
+        # Noetica /api/chat has no system field — prepend the prefix to the message.
+        noe_message = (full_system + "\n\n" + prompt) if full_system else prompt
+        payload = json.dumps({"message": noe_message, "stream": False}).encode()
         req = _ur_noe.Request(url, data=payload, headers={"Content-Type": "application/json"})
         try:
             with _ur_noe.urlopen(req, timeout=15) as r:
@@ -703,20 +969,66 @@ def _copilot_watcher(config: dict) -> None:
                 trigger = None
 
                 if evt_type == "command.completed" and rc != 0 and config.get("auto_explain_errors"):
-                    # Proactive error explanation
-                    prompt = f"Command failed (exit {rc}):\n$ {cmd}\n\nOutput:\n{out}\n\nIn 2 sentences: what went wrong and how to fix it."
-                    reply = _copilot_backend_chat(prompt, system="You are a terminal co-pilot. Be concise and specific.", config=config)
-                    if reply:
-                        suggestion = {"type": "error_explain", "command": cmd, "exit_code": rc, "suggestion": reply}
-                        trigger = "auto_error"
+                    sig = _copilot_error_signature(cmd, out)
+                    recalled = _copilot_recall(signature=sig, limit=1)
+                    if recalled and config.get("recall"):
+                        # Fast + free: we've seen this exact error before.
+                        suggestion = {
+                            "type": "recall",
+                            "command": cmd,
+                            "signature": sig,
+                            "suggestion": "Seen before — last fix: " + recalled[0]["fix"],
+                            "recalled_ts": recalled[0]["ts"],
+                        }
+                        trigger = "recall"
+                    else:
+                        # Proactive error explanation, enriched with gathered context.
+                        ctx = _copilot_gather_context(evt=evt)
+                        recent_err_lines = "; ".join(
+                            f"{e['command']} (exit {e['exit_code']}, {e['signature']})"
+                            for e in ctx.get("recent_errors", [])[-2:]
+                        )
+                        ctx_blurb = (
+                            f"Context: project={ctx['project_type']}, "
+                            f"git_branch={ctx['git_branch'] or 'n/a'}, "
+                            f"git_dirty={ctx['git_dirty']}, "
+                            f"recurring_error={ctx['recurring_error']}."
+                            + (f"\nRecent failures: {recent_err_lines}" if recent_err_lines else "")
+                        )
+                        conv_text = "\n".join(f"{t['role']}: {t['content']}" for t in conversation[-6:])
+                        prompt = (
+                            (f"Recent co-pilot turns:\n{conv_text}\n\n" if conv_text else "")
+                            + f"{ctx_blurb}\n\n"
+                            + f"Command failed (exit {rc}):\n$ {cmd}\n\nOutput:\n{out}\n\n"
+                            + "In 2 sentences: what went wrong and how to fix it."
+                        )
+                        rcfg = _copilot_route("error_explain", config)
+                        reply = _copilot_backend_chat(prompt, system="You are a terminal co-pilot. Be concise and specific.", config=rcfg)
+                        if reply:
+                            suggestion = {"type": "error_explain", "command": cmd, "exit_code": rc, "signature": sig, "suggestion": reply}
+                            trigger = "auto_error"
+                            # Remember this fix for next time.
+                            _copilot_remember(sig, cmd, reply, source="auto",
+                                              error_keywords=_copilot_error_keywords(out))
+                            conversation.append({"role": "user", "content": f"$ {cmd} (exit {rc})"})
+                            conversation.append({"role": "assistant", "content": reply})
+                            conversation[:] = conversation[-6:]
 
                 elif evt_type == "command.completed" and wall_ms > config.get("slow_threshold_ms", 10000) and config.get("auto_suggest_slow"):
-                    # Slow command tip
-                    prompt = f"Command took {wall_ms}ms:\n$ {cmd}\n\nIn 1 sentence: is there a faster alternative?"
-                    reply = _copilot_backend_chat(prompt, system="You are a terminal performance expert. Be very concise.", config=config)
+                    # Slow command tip (with project_type context)
+                    ctx = _copilot_gather_context(evt=evt)
+                    rcfg = _copilot_route("perf_tip", config)
+                    prompt = (
+                        f"Context: project={ctx['project_type']}.\n\n"
+                        f"Command took {wall_ms}ms:\n$ {cmd}\n\nIn 1 sentence: is there a faster alternative?"
+                    )
+                    reply = _copilot_backend_chat(prompt, system="You are a terminal performance expert. Be very concise.", config=rcfg)
                     if reply:
-                        suggestion = {"type": "perf_tip", "command": cmd, "wall_ms": wall_ms, "suggestion": reply}
+                        suggestion = {"type": "perf_tip", "command": cmd, "wall_ms": wall_ms, "project_type": ctx["project_type"], "suggestion": reply}
                         trigger = "slow_command"
+                        conversation.append({"role": "user", "content": f"slow: $ {cmd} ({wall_ms}ms)"})
+                        conversation.append({"role": "assistant", "content": reply})
+                        conversation[:] = conversation[-6:]
 
                 if suggestion:
                     import datetime as _dt_cp
@@ -4295,6 +4607,46 @@ done
         except Exception:
             backends.append({"id": "noetica", "available": False, "note": "not running — start with: dev-backend.sh"})
         return response("copilot_backends", {"backends": backends, "current": _copilot_config().get("backend")})
+
+    if action in ("copilot_context", "copilot-context"):
+        cwd = request.get("cwd") or os.getcwd()
+        ctx = _copilot_gather_context(cwd=cwd)
+        return response("copilot_context", ctx)
+
+    if action in ("copilot_recall", "copilot-recall"):
+        query     = request.get("query", "") or ""
+        signature = request.get("signature", "") or ""
+        limit     = int(request.get("limit", 3))
+        matches = _copilot_recall(query=query, signature=signature, limit=limit)
+        return response("copilot_recall", {"matches": matches, "count": len(matches)})
+
+    if action in ("copilot_remember", "copilot-remember"):
+        cmd       = request.get("command", "") or ""
+        fix       = request.get("fix", "") or ""
+        signature = request.get("signature", "") or ""
+        source    = request.get("source", "manual") or "manual"
+        if not signature:
+            signature = _copilot_error_signature(cmd, fix)
+        stored = _copilot_remember(signature, cmd, fix, source=source,
+                                   error_keywords=request.get("error_keywords"))
+        return response("copilot_remember", {"stored": stored, "signature": signature})
+
+    if action in ("copilot_memory_list", "copilot-memory-list"):
+        path = _COPILOT_MEMORY_PATH
+        entries: list[dict] = []
+        if path.exists():
+            for line in path.read_text().splitlines():
+                try:
+                    entries.append(json.loads(line))
+                except Exception:
+                    pass
+        entries.reverse()  # most-recent first
+        if "limit" in request:
+            try:
+                entries = entries[: int(request["limit"])]
+            except Exception:
+                pass
+        return response("copilot_memory_list", {"entries": entries, "count": len(entries), "path": str(path)})
 
     # ------------------------------------------------------------------
     # gh-parity forge actions
