@@ -401,6 +401,11 @@ def main(argv: list[str]) -> int:
     cop_mem_p.add_argument("--limit", type=int, default=0)
     cop_ev_p = sub.add_parser("copilot-evidence", help="show recent reasoning evidence (ReasoningEvents)")
     cop_ev_p.add_argument("--limit", type=int, default=20)
+    # reasoning seal (agentplane)
+    seal_p = sub.add_parser("reasoning-seal", help="seal a local reasoning receipt via agentplane")
+    seal_p.add_argument("run", nargs="?", default="latest", help="run hex/urn or 'latest'")
+    seal_verify_p = sub.add_parser("reasoning-seal-verify", help="verify a sealed reasoning record")
+    seal_verify_p.add_argument("sealed_path", help="path to the sealed record")
     # gh parity
     repo_create_p = sub.add_parser("gh-repo-create")
     repo_create_p.add_argument("name", nargs="?", default="")
@@ -769,6 +774,10 @@ def main(argv: list[str]) -> int:
         request = {"action": "copilot_memory_list", "limit": getattr(args, "limit", 0)}
     elif args.command == "copilot-evidence":
         request = {"action": "copilot_evidence", "limit": getattr(args, "limit", 20)}
+    elif args.command == "reasoning-seal":
+        request = {"action": "reasoning_seal", "run": getattr(args, "run", "latest")}
+    elif args.command == "reasoning-seal-verify":
+        request = {"action": "reasoning_seal_verify", "sealed_path": getattr(args, "sealed_path", "")}
     elif args.command == "gh-repo-create":
         request = {"action": "gh_repo_create", "name": getattr(args, "name", ""), "private": getattr(args, "private", False), "org": getattr(args, "org", "")}
     elif args.command == "gh-repo-fork":
