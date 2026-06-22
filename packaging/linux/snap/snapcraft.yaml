@@ -1,0 +1,57 @@
+name: turtleterm
+base: core22
+version: '1.4.0'
+summary: AI agent terminal fabric for SourceOS
+description: |
+  TurtleTerm is a WezTerm-based terminal emulator with a full AI agent fabric:
+  self-hosted co-pilot (Claude/Ollama/Noetica), gh CLI parity via turtle-gh
+  with Gitea-sovereign, 38+ agent commands, MCP server for Claude Code.
+grade: stable
+confinement: classic
+
+apps:
+  turtleterm:
+    command: bin/turtleterm
+    environment:
+      TURTLE_TERM_RUNTIME_DIR: $SNAP/lib/turtleterm
+      TURTLETERM_CONFIG: $SNAP/etc/turtleterm/turtleterm.lua
+  turtle-agentctl:
+    command: bin/turtle-agentctl
+  turtle-copilot:
+    command: bin/turtle-copilot
+  turtle-gh:
+    command: bin/turtle-gh
+
+parts:
+  turtleterm:
+    plugin: rust
+    source: .
+    rust-features: []
+    build-packages:
+      - cmake
+      - pkg-config
+      - libfontconfig1-dev
+      - libfreetype-dev
+      - libssl-dev
+      - libx11-dev
+      - libxcb1-dev
+      - libxkbcommon-dev
+      - zlib1g-dev
+    stage-packages:
+      - python3
+      - libfontconfig1
+      - libfreetype6
+      - libxkbcommon0
+    override-build: |
+      cargo build --release --locked -p wezterm -p wezterm-gui -p wezterm-mux-server
+      install -Dm755 target/release/wezterm           $SNAPCRAFT_PART_INSTALL/lib/turtleterm/wezterm
+      install -Dm755 target/release/wezterm-gui        $SNAPCRAFT_PART_INSTALL/lib/turtleterm/wezterm-gui
+      install -Dm755 target/release/wezterm-mux-server $SNAPCRAFT_PART_INSTALL/lib/turtleterm/wezterm-mux-server
+      for s in $(ls assets/sourceos/bin/turtle-* assets/sourceos/bin/sourceos-term assets/sourceos/bin/synapseiq-lsp 2>/dev/null); do
+        install -Dm755 "$s" "$SNAPCRAFT_PART_INSTALL/bin/$(basename $s)"
+      done
+      [ -f assets/sourceos/mcp/turtle-mcp-server ] && install -Dm755 assets/sourceos/mcp/turtle-mcp-server $SNAPCRAFT_PART_INSTALL/bin/turtle-mcp-server || true
+      mkdir -p $SNAPCRAFT_PART_INSTALL/etc/turtleterm
+      [ -f assets/sourceos/turtleterm.lua ] && install -Dm644 assets/sourceos/turtleterm.lua $SNAPCRAFT_PART_INSTALL/etc/turtleterm/turtleterm.lua || true
+      printf '#!/bin/sh\nexport TURTLE_TERM_RUNTIME_DIR=$SNAP/lib/turtleterm\nexec $SNAP/lib/turtleterm/wezterm-gui "$@"\n' > $SNAPCRAFT_PART_INSTALL/bin/turtleterm
+      chmod 755 $SNAPCRAFT_PART_INSTALL/bin/turtleterm
