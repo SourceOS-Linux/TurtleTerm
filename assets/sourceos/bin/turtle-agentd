@@ -360,6 +360,169 @@ def _emit_replay_plan(run: dict[str, Any], replay_class: str,
     return plan_id
 
 
+# ---------------------------------------------------------------------------
+# agentplane seal client (Advance 2)
+#
+# Seal local reasoning receipts via agentplane (the evidence-sealing authority),
+# turning local receipts into externally-verifiable sealed evidence. The shared
+# seal contract is documented in the task spec; the agentplane side is built by
+# a parallel agent to match exactly.
+# ---------------------------------------------------------------------------
+
+def agentplane_dir() -> Path:
+    return Path(env("AGENTPLANE_DIR", str(Path.home() / "dev" / "agentplane")))
+
+
+def agentplane_seal_tool() -> Path:
+    return agentplane_dir() / "tools" / "seal_reasoning_receipt.py"
+
+
+def _resolve_reasoning_run_dir(run_spec: str) -> Path | None:
+    """Resolve a run dir under reasoning_evidence_root().
+
+    `run_spec` is a run hex, a full run URN, or "latest". For "latest", pick the
+    most recently modified <hex>/receipt.json. Returns the run dir or None.
+    """
+    root = reasoning_evidence_root()
+    spec = (run_spec or "latest").strip()
+    if spec and spec.lower() != "latest":
+        run_hex = spec.rsplit(":", 1)[-1] if ":" in spec else spec
+        cand = root / run_hex
+        if (cand / "receipt.json").exists():
+            return cand
+        return None
+    # latest: newest receipt.json by mtime
+    best: tuple[float, Path] | None = None
+    try:
+        for d in root.iterdir():
+            if not d.is_dir():
+                continue
+            rc = d / "receipt.json"
+            if rc.exists():
+                m = rc.stat().st_mtime
+                if best is None or m > best[0]:
+                    best = (m, d)
+    except FileNotFoundError:
+        return None
+    return best[1] if best else None
+
+
+def _do_reasoning_seal(request: dict[str, Any]) -> dict[str, Any]:
+    """Seal a local reasoning receipt via the agentplane seal tool.
+
+    Exception-safe and graceful: if agentplane is absent, returns
+    {sealed: false, reason: "agentplane not available", ...} rather than erroring.
+    """
+    try:
+        explicit_receipt = request.get("receipt")
+        if explicit_receipt:
+            receipt_path = Path(str(explicit_receipt)).expanduser()
+            run_dir = receipt_path.parent
+        else:
+            run_dir = _resolve_reasoning_run_dir(str(request.get("run", "latest")))
+            if run_dir is None:
+                return response("reasoning_seal", {
+                    "sealed": False,
+                    "reason": "no reasoning receipt found",
+                    "run": request.get("run", "latest"),
+                })
+            receipt_path = run_dir / "receipt.json"
+
+        run_json = run_dir / "run.json"
+        events_path = reasoning_event_stream_path()
+        sealed_dir = run_dir / "sealed"
+
+        tool = agentplane_seal_tool()
+        if not tool.exists():
+            return response("reasoning_seal", {
+                "sealed": False,
+                "reason": "agentplane not available",
+                "checked": str(tool),
+                "run": request.get("run", "latest"),
+            })
+
+        sealed_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            sys.executable, str(tool),
+            "--receipt", str(receipt_path),
+            "--run", str(run_json),
+            "--events", str(events_path),
+            "--out-dir", str(sealed_dir),
+        ]
+        proc = subprocess.run(
+            cmd, check=False, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+        )
+        out = (proc.stdout or "").strip()
+        parsed: dict[str, Any] = {}
+        for line in reversed(out.splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    parsed = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if not parsed:
+            return response("reasoning_seal", {
+                "sealed": False,
+                "reason": "seal tool returned no parseable result",
+                "stderr": redact_secrets((proc.stderr or "")[:200]),
+                "run": request.get("run", "latest"),
+            })
+        return response("reasoning_seal", {
+            "sealed": bool(parsed.get("sealed")),
+            "evidence_id": parsed.get("evidence_id"),
+            "sealed_path": parsed.get("sealed_path"),
+            "seal_hash": parsed.get("seal_hash"),
+            "run": request.get("run", "latest"),
+        })
+    except Exception as exc:
+        return response("reasoning_seal", {
+            "sealed": False,
+            "reason": f"seal error: {exc}",
+            "run": request.get("run", "latest"),
+        })
+
+
+def _do_reasoning_seal_verify(request: dict[str, Any]) -> dict[str, Any]:
+    """Verify a sealed reasoning record via the agentplane seal tool."""
+    try:
+        sealed_path = request.get("sealed_path")
+        if not sealed_path:
+            return response("reasoning_seal_verify", {
+                "verified": False, "reason": "sealed_path required"})
+        tool = agentplane_seal_tool()
+        if not tool.exists():
+            return response("reasoning_seal_verify", {
+                "verified": False,
+                "reason": "agentplane not available",
+                "checked": str(tool),
+            })
+        proc = subprocess.run(
+            [sys.executable, str(tool), "--verify", str(sealed_path)],
+            check=False, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+        )
+        out = (proc.stdout or "").strip()
+        for line in reversed(out.splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    parsed = json.loads(line)
+                    return response("reasoning_seal_verify", parsed)
+                except json.JSONDecodeError:
+                    continue
+        return response("reasoning_seal_verify", {
+            "verified": False,
+            "reason": "verify tool returned no parseable result",
+            "stderr": redact_secrets((proc.stderr or "")[:200]),
+        })
+    except Exception as exc:
+        return response("reasoning_seal_verify", {
+            "verified": False, "reason": f"verify error: {exc}"})
+
+
 def git_info(cwd: str | None = None) -> dict[str, str | None]:
     """Return {repo_root, git_branch} for cwd, or nulls if not a git repo."""
     kwargs: dict[str, Any] = {
@@ -1555,10 +1718,152 @@ def _adaptive_plan_step(goal: str, step_idx: int, step: dict[str, Any], step_out
 
 
 # ---------------------------------------------------------------------------
+# Forge / chain action governance (Advance 1)
+#
+# Every attestable forge/chain action is governed at the dispatch chokepoint:
+# we open a ReasoningRun, run the real handler, emit a single safe ReasoningEvent
+# summarizing the outcome, close the run, and inject the run + receipt URNs into
+# the returned payload. This means 30+ action branches are attested without
+# touching any of them. ALL governing is exception-safe: any failure falls back
+# to the un-governed inner result so evidence emission can never break an action.
+# ---------------------------------------------------------------------------
+
+# Substrings that mark a forge/chain action as mutating (has side effects).
+_MUTATING_FORGE_TOKENS = (
+    "create", "fork", "merge", "close", "comment", "delete", "release",
+    "secret", "label_create", "edit", "update",
+)
+# Actions that are always mutating regardless of token analysis.
+_ALWAYS_MUTATING_ACTIONS = ("chain_run", "session_to_pr")
+
+
+def _normalize_action(action: Any) -> str:
+    """Lowercase + dashes->underscores for policy classification."""
+    if not isinstance(action, str):
+        return ""
+    return action.strip().lower().replace("-", "_")
+
+
+def is_attestable_action(action: Any) -> bool:
+    """True if `action` is a forge/chain control op that must be governed."""
+    norm = _normalize_action(action)
+    if not norm:
+        return False
+    if norm in ("chain_run", "session_to_pr"):
+        return True
+    return norm.startswith("gh_") or norm.startswith("gitea_")
+
+
+def is_mutating_action(action: Any) -> bool:
+    """Classify an attestable action as mutating (side-effect) vs read-only."""
+    norm = _normalize_action(action)
+    if norm in _ALWAYS_MUTATING_ACTIONS:
+        return True
+    return any(tok in norm for tok in _MUTATING_FORGE_TOKENS)
+
+
+def _forge_event_summary(action: str, resp: dict[str, Any]) -> str:
+    """Derive a short, safe one-liner from the response's top-level fields.
+
+    NEVER dumps the full resp. Looks only at coarse status fields.
+    """
+    data = resp.get("data") if isinstance(resp, dict) else None
+    src = data if isinstance(data, dict) else (resp if isinstance(resp, dict) else {})
+    bits: list[str] = []
+    for key in ("created", "merged", "closed", "forge", "repo", "name",
+                "number", "url", "online", "ok", "run"):
+        if key in src and not isinstance(src[key], (dict, list)):
+            bits.append(f"{key}={src[key]}")
+    tail = ", ".join(bits[:4]) if bits else "done"
+    return redact_secrets(f"{action} -> {tail}")[:200]
+
+
+def _resp_indicates_failure(resp: dict[str, Any]) -> bool:
+    """Heuristic: did the wrapped action fail?
+
+    Conservative: only the top-level error status, or an explicit mutating-action
+    failure flag (ok/created/merged == False), counts as a failure. A benign
+    field like `online: false` or `error` on a read-only status response is NOT a
+    failure — being offline is a valid, successful read-only observation.
+    """
+    if not isinstance(resp, dict):
+        return False
+    if resp.get("status") == "error":
+        return True
+    data = resp.get("data")
+    if isinstance(data, dict):
+        for key in ("created", "merged", "closed", "deleted", "ok"):
+            if data.get(key) is False:
+                return True
+    return False
+
+
+def handle_request(request: dict[str, Any]) -> dict[str, Any]:
+    """Governing wrapper around dispatch.
+
+    For attestable forge/chain actions, open a ReasoningRun, run the real
+    handler, emit a safe summary event, close the run, and inject the run +
+    receipt URNs into the returned payload. Otherwise dispatch unchanged.
+    """
+    action = request.get("action")
+    if not is_attestable_action(action):
+        return _handle_request_inner(request)
+
+    # Open the run BEFORE dispatch, but keep the run open in a way that a
+    # failure during governing never re-runs the (possibly mutating) action.
+    run: dict[str, Any] | None = None
+    try:
+        run = _open_reasoning_run(
+            task_summary=f"forge action: {action}", agent="turtle-forge")
+    except Exception:
+        run = None
+
+    # Dispatch the real action exactly once, OUTSIDE the governing try/except.
+    resp = _handle_request_inner(request)
+
+    if run is None:
+        return resp
+
+    try:
+        action_norm = _normalize_action(action)
+        action_dashed = action_norm.replace("_", "-")
+        mutating = is_mutating_action(action)
+        replay_class = "non-replayable-side-effect" if mutating else "evidence-only"
+
+        failed = _resp_indicates_failure(resp)
+        run_status = "failed" if failed else "completed"
+        data = resp.get("data") if isinstance(resp, dict) else None
+        forge_val = data.get("forge") if isinstance(data, dict) else None
+        _emit_reasoning_event(
+            run,
+            event_type=f"forge.{action_dashed}",
+            summary=_forge_event_summary(action_norm, resp),
+            trust_level="trusted-control-input",
+            trace_level="workspace-safe",
+            extra={
+                "action": action_norm,
+                "forge": forge_val,
+                "ok": not failed,
+            },
+        )
+        receipt = _close_reasoning_run(run, status=run_status, replay_class=replay_class)
+
+        # Inject run + receipt URNs into the returned payload's data dict.
+        if isinstance(resp, dict) and isinstance(resp.get("data"), dict):
+            resp["data"]["reasoning_run"] = run.get("id", "")
+            resp["data"]["reasoning_receipt"] = receipt.get("id", "")
+        return resp
+    except Exception:
+        # Evidence/governing failures must never break the action: the action
+        # already ran exactly once above, so just return its result unwrapped.
+        return resp
+
+
+# ---------------------------------------------------------------------------
 # Request handler
 # ---------------------------------------------------------------------------
 
-def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
+def _handle_request_inner(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
     action = request.get("action")
 
     # ------------------------------------------------------------------
@@ -3204,7 +3509,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             "steps": [{"command": s.get("cmd", s) if isinstance(s, dict) else str(s),
                         "description": s.get("desc", "") if isinstance(s, dict) else ""} for s in steps],
         }
-        return handle_request(plan_request)
+        return _handle_request_inner(plan_request)
 
     if action in ("coach_analyze", "coach-analyze"):
         """Detect inefficient command patterns and teach better alternatives."""
@@ -5269,6 +5574,15 @@ done
             "stream": str(stream_path),
             "runs": run_count,
         })
+
+    # ------------------------------------------------------------------
+    # agentplane seal client (Advance 2)
+    # ------------------------------------------------------------------
+    if action in ("reasoning_seal", "reasoning-seal"):
+        return _do_reasoning_seal(request)
+
+    if action in ("reasoning_seal_verify", "reasoning-seal-verify"):
+        return _do_reasoning_seal_verify(request)
 
     # ------------------------------------------------------------------
     # gh-parity forge actions

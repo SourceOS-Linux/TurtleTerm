@@ -1672,6 +1672,147 @@ def test_new_scripts_v4():
 # Main
 # ---------------------------------------------------------------------------
 
+def test_forge_governance():
+    """Prove every forge/chain action is governed at the dispatch chokepoint.
+
+    Drive a READ-ONLY attestable action that works offline (gitea-status returns
+    {online:false} when GITEA_URL is unset) and assert the response now carries
+    reasoning_run + reasoning_receipt URNs, a run dir + receipt.json were written,
+    the receipt validates against ReasoningReceipt.json (if jsonschema + spec are
+    present), and the forge event's replayClass is evidence-only for a read-only.
+    """
+    import os as _os
+    spec_dir = Path("/Users/michaelheller/dev/sourceos-spec/schemas")
+
+    r = agentd({"action": "gitea-status"})
+    assert r and r.get("status") == "ok", f"gitea-status failed: {r}"
+    data = r.get("data", {})
+    run_id = data.get("reasoning_run")
+    receipt_id = data.get("reasoning_receipt")
+    assert run_id and run_id.startswith("urn:srcos:reasoning-run:"), \
+        f"forge action not governed (no reasoning_run): {data}"
+    assert receipt_id and receipt_id.startswith("urn:srcos:receipt:reasoning:"), \
+        f"forge action not governed (no reasoning_receipt): {data}"
+
+    run_hex = run_id.rsplit(":", 1)[-1]
+    evid_root = Path(_os.environ.get(
+        "SOURCEOS_REASONING_EVIDENCE",
+        _os.path.expanduser("~/.local/state/sourceos/reasoning")))
+    run_dir = evid_root / run_hex
+    run_path = run_dir / "run.json"
+    receipt_path = run_dir / "receipt.json"
+    try:
+        assert run_path.exists(), f"run.json not written: {run_path}"
+        assert receipt_path.exists(), f"receipt.json not written: {receipt_path}"
+        receipt_doc = json.loads(receipt_path.read_text())
+
+        # Read-only action → evidence-only replay class.
+        assert receipt_doc.get("replayClass") == "evidence-only", \
+            f"read-only forge action should be evidence-only: {receipt_doc.get('replayClass')}"
+
+        # The forge event must carry the forge.* eventType + control-input trust.
+        ev_stream = evid_root / "reasoning-events.ndjson"
+        forge_ev = None
+        if ev_stream.exists():
+            for ln in reversed(ev_stream.read_text().splitlines()):
+                if not ln.strip():
+                    continue
+                try:
+                    e = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("runRef") == run_id:
+                    forge_ev = e
+                    break
+        assert forge_ev is not None, "no forge ReasoningEvent emitted for the run"
+        assert forge_ev.get("eventType", "").startswith("forge."), \
+            f"unexpected eventType: {forge_ev.get('eventType')}"
+        assert forge_ev.get("trustLevel") == "trusted-control-input", \
+            f"unexpected trustLevel: {forge_ev.get('trustLevel')}"
+
+        # Schema validation (graceful skip if spec/jsonschema absent).
+        if spec_dir.exists():
+            try:
+                import jsonschema  # type: ignore
+                receipt_schema = json.loads((spec_dir / "ReasoningReceipt.json").read_text())
+                jsonschema.validate(receipt_doc, receipt_schema)
+                ok("forge governance (jsonschema, read-only=evidence-only)")
+            except ImportError:
+                for f in ("id", "type", "specVersion", "runRef", "taskRef",
+                          "status", "traceHash", "replayClass", "capturedAt"):
+                    assert f in receipt_doc, f"receipt missing field {f}"
+                ok("forge governance (manual, read-only=evidence-only)")
+        else:
+            ok("forge governance (URNs + receipt, spec absent)")
+    finally:
+        # Clean up the test run dir.
+        try:
+            import shutil as _shutil
+            if run_dir.exists():
+                _shutil.rmtree(run_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def test_reasoning_seal():
+    """Prove the agentplane seal bridge behaves correctly in BOTH states.
+
+    Seal a synthetic reasoning receipt via reasoning-seal. Since the parallel
+    agentplane tool may or may not exist, EITHER outcome passes:
+      - sealed: true with a urn: evidence_id (and re-verify returns verified:true)
+      - graceful sealed: false, reason: "agentplane not available"
+    """
+    import os as _os
+    evid_root = Path(_os.environ.get(
+        "SOURCEOS_REASONING_EVIDENCE",
+        _os.path.expanduser("~/.local/state/sourceos/reasoning")))
+    run_hex = "selftestseal" + format(abs(hash("seal")) % (10 ** 8), "08d")
+    run_dir = evid_root / run_hex
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_urn = f"urn:srcos:reasoning-run:{run_hex}"
+        (run_dir / "run.json").write_text(json.dumps({
+            "id": run_urn, "type": "ReasoningRun", "specVersion": "2.0.0",
+            "status": "completed", "eventRefs": [], "artifactRefs": [],
+        }))
+        (run_dir / "receipt.json").write_text(json.dumps({
+            "id": f"urn:srcos:receipt:reasoning:{run_hex}",
+            "type": "ReasoningReceipt", "specVersion": "2.0.0",
+            "runRef": run_urn, "taskRef": f"urn:srcos:task:{run_hex}",
+            "status": "completed", "traceHash": "sha256:0", "replayClass": "evidence-only",
+            "capturedAt": "1970-01-01T00:00:00Z",
+        }))
+
+        r = agentd({"action": "reasoning-seal", "run": run_hex}, timeout=40)
+        assert r and r.get("status") == "ok", f"reasoning-seal failed: {r}"
+        data = r.get("data", {})
+        sealed = bool(data.get("sealed"))
+        if sealed:
+            ev_id = data.get("evidence_id", "")
+            assert isinstance(ev_id, str) and ev_id.startswith("urn:"), \
+                f"sealed but no urn evidence_id: {data}"
+            sealed_path = data.get("sealed_path")
+            if sealed_path:
+                v = agentd({"action": "reasoning-seal-verify",
+                            "sealed_path": sealed_path}, timeout=40)
+                assert v and v.get("status") == "ok", f"verify failed: {v}"
+                assert v.get("data", {}).get("verified") is True, \
+                    f"re-verify did not return verified:true: {v.get('data')}"
+            ok(f"reasoning seal (sealed, evidence_id={ev_id[:40]})")
+        else:
+            reason = str(data.get("reason", ""))
+            assert "available" in reason, \
+                f"unexpected non-sealed reason (expected graceful unavailability): {data}"
+            ok("reasoning seal (graceful: agentplane not available)")
+    finally:
+        try:
+            import shutil as _shutil
+            if run_dir.exists():
+                _shutil.rmtree(run_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def main() -> int:
     if not AS_JSON:
         print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v1.0.0{RESET}\n')
@@ -1741,6 +1882,8 @@ def main() -> int:
     test_copilot()
     test_copilot_memory()
     test_reasoning_evidence_conformance()
+    test_forge_governance()
+    test_reasoning_seal()
     test_agent_run_autonomous()
     test_gh_parity()
     test_turtle_gh_script()

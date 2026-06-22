@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""turtle-seal — seal local reasoning receipts via agentplane.
+
+Turns a local sourceos-spec reasoning receipt into externally-verifiable sealed
+evidence by invoking the agentplane evidence-sealing authority. Deepens the
+governed-evidence moat: local receipts become attestable beyond this host.
+
+Usage:
+  turtle-seal                  Seal the latest reasoning receipt.
+  turtle-seal --latest         Seal the latest reasoning receipt (explicit).
+  turtle-seal RUN_HEX          Seal a specific run by its hex id (or full URN).
+  turtle-seal --verify PATH    Verify a previously sealed record.
+
+Options:
+  --json   Emit the raw turtle-agentd JSON response.
+
+If agentplane is not available the command exits gracefully (it is not an error)
+and tells you what was checked — the bridge behaves correctly in both states.
+"""
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+AGENTD = Path(__file__).parent / "turtle-agentd"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'; MAGENTA='\033[35m'
+
+
+def agentd(payload: dict, timeout: int = 60) -> dict | None:
+    """Dispatch a request to turtle-agentd via its --stdio one-shot mode."""
+    try:
+        r = subprocess.run([sys.executable, str(AGENTD), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def d(r) -> dict:
+    return (r or {}).get("data", {})
+
+
+def usage() -> int:
+    print(__doc__)
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args and args[0] in ("-h", "--help"):
+        return usage()
+
+    as_json = "--json" in args
+    args = [a for a in args if a != "--json"]
+
+    # --verify PATH
+    if args and args[0] == "--verify":
+        if len(args) < 2:
+            print(f"{RED}--verify requires a sealed path{RESET}", file=sys.stderr)
+            return 2
+        sealed_path = args[1]
+        r = agentd({"action": "reasoning-seal-verify", "sealed_path": sealed_path})
+        if as_json:
+            print(json.dumps(r, indent=2))
+            return 0 if (r or {}).get("status") == "ok" else 1
+        if r is None:
+            print(f"{RED}No response from turtle-agentd.{RESET}", file=sys.stderr)
+            return 1
+        data = d(r)
+        verified = bool(data.get("verified"))
+        if "reason" in data and not verified and "available" in str(data.get("reason", "")):
+            print(f"{YELLOW}agentplane not available{RESET}  "
+                  f"{GRAY}({data.get('checked','')}){RESET}")
+            return 0
+        mark = f"{GREEN}verified{RESET}" if verified else f"{RED}NOT verified{RESET}"
+        print(f"{BOLD}Seal verification:{RESET} {mark}")
+        if data.get("reason"):
+            print(f"  {GRAY}{data['reason']}{RESET}")
+        if data.get("evidence_id"):
+            print(f"  evidence : {MAGENTA}{data['evidence_id']}{RESET}")
+        return 0 if verified else 1
+
+    # seal: latest or a specific run hex/urn
+    run_spec = "latest"
+    for a in args:
+        if a == "--latest":
+            run_spec = "latest"
+        elif a.startswith("--"):
+            print(f"{RED}unknown option: {a}{RESET}", file=sys.stderr)
+            return 2
+        else:
+            run_spec = a
+
+    r = agentd({"action": "reasoning-seal", "run": run_spec})
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return 0 if (r or {}).get("status") == "ok" else 1
+    if r is None:
+        print(f"{RED}No response from turtle-agentd.{RESET}", file=sys.stderr)
+        return 1
+
+    data = d(r)
+    if data.get("sealed"):
+        print(f"{BOLD}{GREEN}Sealed reasoning evidence{RESET}")
+        print(f"  evidence-id : {MAGENTA}{data.get('evidence_id','-')}{RESET}")
+        print(f"  sealed-path : {CYAN}{data.get('sealed_path','-')}{RESET}")
+        print(f"  seal-hash   : {GRAY}{data.get('seal_hash','-')}{RESET}")
+        print(f"  run         : {data.get('run','-')}")
+        return 0
+
+    reason = str(data.get("reason", "unknown"))
+    if "available" in reason:
+        print(f"{YELLOW}agentplane not available{RESET}  "
+              f"{GRAY}(checked {data.get('checked','?')}){RESET}")
+        print(f"  {GRAY}local receipt remains valid; seal once agentplane is built.{RESET}")
+        return 0
+    print(f"{YELLOW}Not sealed:{RESET} {reason}")
+    return 0 if (r or {}).get("status") == "ok" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
