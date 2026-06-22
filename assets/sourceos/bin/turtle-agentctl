@@ -391,6 +391,8 @@ def main(argv: list[str]) -> int:
     cop_rem_p.add_argument("--source", default="manual")
     cop_mem_p = sub.add_parser("copilot-memory-list", help="list stored co-pilot fix memories")
     cop_mem_p.add_argument("--limit", type=int, default=0)
+    cop_ev_p = sub.add_parser("copilot-evidence", help="show recent reasoning evidence (ReasoningEvents)")
+    cop_ev_p.add_argument("--limit", type=int, default=20)
     # gh parity
     repo_create_p = sub.add_parser("gh-repo-create")
     repo_create_p.add_argument("name", nargs="?", default="")
@@ -743,6 +745,8 @@ def main(argv: list[str]) -> int:
         request = {"action": "copilot_remember", "command": getattr(args, "cop_command", ""), "fix": getattr(args, "cop_fix", ""), "signature": getattr(args, "signature", ""), "source": getattr(args, "source", "manual")}
     elif args.command == "copilot-memory-list":
         request = {"action": "copilot_memory_list", "limit": getattr(args, "limit", 0)}
+    elif args.command == "copilot-evidence":
+        request = {"action": "copilot_evidence", "limit": getattr(args, "limit", 20)}
     elif args.command == "gh-repo-create":
         request = {"action": "gh_repo_create", "name": getattr(args, "name", ""), "private": getattr(args, "private", False), "org": getattr(args, "org", "")}
     elif args.command == "gh-repo-fork":

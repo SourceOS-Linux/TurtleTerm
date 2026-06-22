@@ -1340,6 +1340,95 @@ def test_copilot_memory():
             except OSError:
                 pass
 
+def test_reasoning_evidence_conformance():
+    """Prove the copilot emits sourceos-spec v2 conformant reasoning evidence.
+
+    Deterministic, model-free path: store a sentinel memory, drive copilot-recall
+    (which emits a copilot.recall ReasoningEvent on >=1 match), then read it back
+    via copilot-evidence and validate against the canonical schemas.
+    """
+    import os as _os
+    SENTINEL_CMD = "__selftest_evidence__"
+    SENTINEL_FIX = "__selftest_evidence_fix_set_upstream__"
+    spec_dir = Path("/Users/michaelheller/dev/sourceos-spec/schemas")
+
+    # 1. Store + recall to emit a ReasoningEvent deterministically (no model).
+    rs = agentd({"action": "copilot-remember", "command": SENTINEL_CMD,
+                 "fix": SENTINEL_FIX, "source": "selftest"})
+    assert rs and rs.get("status") == "ok", f"copilot-remember failed: {rs}"
+    sig = rs["data"].get("signature", "")
+    assert sig, f"expected a signature: {rs}"
+
+    try:
+        rr = agentd({"action": "copilot-recall", "query": SENTINEL_CMD})
+        assert rr and rr.get("status") == "ok", f"copilot-recall failed: {rr}"
+        run_id = rr["data"].get("reasoning_run")
+        assert run_id and run_id.startswith("urn:srcos:reasoning-run:"), \
+            f"recall did not emit a reasoning run: {rr['data']}"
+
+        # 2. Read back the latest reasoning evidence.
+        re_resp = agentd({"action": "copilot-evidence", "limit": 10})
+        assert re_resp and re_resp.get("status") == "ok", f"copilot-evidence failed: {re_resp}"
+        events = re_resp["data"].get("events", [])
+        assert events, "no reasoning events emitted"
+        ev = events[-1]
+        assert ev.get("eventType") == "copilot.recall", f"unexpected latest event: {ev}"
+
+        # Locate the written run.json / receipt.json for this run.
+        run_hex = run_id.rsplit(":", 1)[-1]
+        evid_root = Path(_os.environ.get(
+            "SOURCEOS_REASONING_EVIDENCE",
+            _os.path.expanduser("~/.local/state/sourceos/reasoning")))
+        run_path = evid_root / run_hex / "run.json"
+        receipt_path = evid_root / run_hex / "receipt.json"
+        assert run_path.exists(), f"run.json not written: {run_path}"
+        assert receipt_path.exists(), f"receipt.json not written: {receipt_path}"
+        run_doc = json.loads(run_path.read_text())
+        receipt_doc = json.loads(receipt_path.read_text())
+
+        # 3. Validate against the canonical schemas (skip gracefully if absent).
+        if not spec_dir.exists():
+            skip("reasoning evidence conformance", "sourceos-spec not present")
+            return
+        try:
+            import jsonschema  # type: ignore
+            ev_schema = json.loads((spec_dir / "ReasoningEvent.json").read_text())
+            run_schema = json.loads((spec_dir / "ReasoningRun.json").read_text())
+            receipt_schema = json.loads((spec_dir / "ReasoningReceipt.json").read_text())
+            jsonschema.validate(ev, ev_schema)
+            jsonschema.validate(run_doc, run_schema)
+            jsonschema.validate(receipt_doc, receipt_schema)
+            ok(f"reasoning evidence conformance (jsonschema, eventType={ev['eventType']})")
+        except ImportError:
+            # Fallback: required fields + URN patterns + enum membership.
+            for f in ("id", "type", "specVersion", "runRef", "eventType", "summary",
+                      "traceLevel", "trustLevel", "capturedAt"):
+                assert f in ev, f"event missing required field {f}: {ev}"
+            assert ev["id"].startswith("urn:srcos:reasoning-event:"), ev["id"]
+            assert ev["runRef"].startswith("urn:srcos:reasoning-run:"), ev["runRef"]
+            assert ev["type"] == "ReasoningEvent"
+            assert ev["traceLevel"] in ("public-safe", "workspace-safe", "operator-private", "restricted")
+            assert ev["trustLevel"] in ("trusted-control-input", "trusted-workspace-source",
+                                        "semi-trusted-project-source", "untrusted-observation",
+                                        "restricted-material")
+            for f in ("id", "type", "specVersion", "runRef", "taskRef", "status",
+                      "traceHash", "replayClass", "capturedAt"):
+                assert f in receipt_doc, f"receipt missing required field {f}"
+            assert receipt_doc["replayClass"] in ("exact", "best-effort", "evidence-only",
+                                                  "non-replayable-side-effect")
+            ok(f"reasoning evidence conformance (manual, eventType={ev['eventType']})")
+    finally:
+        # 4. Clean up sentinel memory + the test run dir.
+        mem_path = Path(_os.path.expanduser("~/.config/turtleterm/copilot_memory.ndjson"))
+        if mem_path.exists():
+            try:
+                kept = [ln for ln in mem_path.read_text().splitlines()
+                        if ln.strip() and SENTINEL_CMD not in ln]
+                mem_path.write_text(("\n".join(kept) + "\n") if kept else "")
+            except OSError:
+                pass
+
+
 def test_gh_parity():
     # gh-status (always works, even without forge configured)
     r = agentd({"action": "gh-status"})
@@ -1547,6 +1636,7 @@ def main() -> int:
     # v1.0.0 MCP + copilot + gh parity tests
     test_copilot()
     test_copilot_memory()
+    test_reasoning_evidence_conformance()
     test_gh_parity()
     test_turtle_gh_script()
     test_mcp_v10()

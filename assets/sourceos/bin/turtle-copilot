@@ -16,6 +16,7 @@ Usage:
   turtle-copilot context                Show gathered context (git, project, recent cmds/errors)
   turtle-copilot remember "CMD" "FIX"   Store a manual fix
   turtle-copilot memory [--limit N]     List stored fix memories (most recent first)
+  turtle-copilot evidence [--limit N]   Show recent reasoning evidence (ReasoningEvents)
   turtle-copilot backends               List available AI backends
   turtle-copilot config [key=value...]  Configure backend, model, etc.
   turtle-copilot use claude             Switch to Claude API backend
@@ -312,6 +313,34 @@ def main() -> int:
             if cmd:
                 print(f"     $ {cmd}")
             print(f"     {GREEN}{fix}{RESET}")
+        return 0
+
+    # ── evidence ──────────────────────────────────────────────────────────────
+    if sub == "evidence":
+        limit = 20
+        if "--limit" in rest:
+            idx = rest.index("--limit")
+            try: limit = int(rest[idx+1])
+            except (IndexError, ValueError): limit = 20
+        r = agentctl("copilot-evidence", "--limit", str(limit))
+        data = d(r)
+        if "--json" in rest:
+            print(json.dumps(data, indent=2)); return 0
+        events = data.get("events", [])
+        header("Reasoning Evidence")
+        print(f"  {GRAY}{data.get('count', len(events))} events · {data.get('runs', 0)} runs · {data.get('stream','')}{RESET}")
+        if not events:
+            print(f"  {GRAY}No reasoning evidence yet. Trigger a recall, chat, or proactive suggestion.{RESET}")
+            return 0
+        for e in events[-limit:]:
+            et = e.get("eventType", "?")
+            summary = e.get("summary", "")
+            trust = e.get("trustLevel", "?")
+            captured = e.get("capturedAt", "")[:19]
+            run_ref = e.get("runRef", "")
+            print(f"\n  {MAGENTA}◆{RESET} {BOLD}{et}{RESET}  {GRAY}{captured}{RESET}")
+            print(f"     {summary}")
+            print(f"     {GRAY}trust={trust}  run={run_ref}{RESET}")
         return 0
 
     # ── backends ──────────────────────────────────────────────────────────────

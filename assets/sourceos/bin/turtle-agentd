@@ -120,6 +120,165 @@ def compute_sha256(data: str | bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Reasoning evidence (sourceos-spec v2 ReasoningRun / ReasoningEvent / ReasoningReceipt)
+#
+# These emit SAFE OPERATIONAL TRACES ONLY — short summaries, posture, evidence
+# refs. They MUST NOT carry raw private reasoning content or full model output.
+# Every write is exception-safe: evidence emission can never break the copilot.
+# ---------------------------------------------------------------------------
+
+REASONING_SPEC_VERSION = "2.0.0"  # canonical value from sourceos-spec examples/reasoning_*.json
+
+
+def reasoning_evidence_root() -> Path:
+    return Path(env("SOURCEOS_REASONING_EVIDENCE",
+                    str(Path.home() / ".local" / "state" / "sourceos" / "reasoning")))
+
+
+def reasoning_event_stream_path() -> Path:
+    return reasoning_evidence_root() / "reasoning-events.ndjson"
+
+
+def _reasoning_run_id() -> str:
+    return f"urn:srcos:reasoning-run:{uuid.uuid4().hex}"
+
+
+def _reasoning_event_id() -> str:
+    return f"urn:srcos:reasoning-event:{uuid.uuid4().hex}"
+
+
+def _reasoning_receipt_id() -> str:
+    return f"urn:srcos:receipt:reasoning:{uuid.uuid4().hex}"
+
+
+def _reasoning_run_hex(run_id: str) -> str:
+    """Derive the on-disk dir name from the run id's trailing hex segment."""
+    return run_id.rsplit(":", 1)[-1] or uuid.uuid4().hex
+
+
+def _open_reasoning_run(task_summary: str, agent: str = "turtle-copilot") -> dict[str, Any]:
+    """Build an open (running) ReasoningRun conforming to the v2 schema.
+
+    `task` is a structured object (schema requires {id, title}). `safeTrace` is the
+    canonical operational-trace-only posture object. Caller accumulates eventRefs,
+    then finalizes via _close_reasoning_run.
+    """
+    run_id = _reasoning_run_id()
+    workspace = env("SOURCEOS_WORKSPACE", "default")
+    return {
+        "id": run_id,
+        "type": "ReasoningRun",
+        "specVersion": REASONING_SPEC_VERSION,
+        "status": "running",
+        "task": {
+            "id": f"urn:srcos:reasoning-task:{_reasoning_run_hex(run_id)}",
+            "title": task_summary[:200],
+        },
+        "agentRef": f"urn:srcos:agent:{agent}",
+        "workspaceRef": f"urn:srcos:workspace:{workspace}",
+        "safeTrace": {
+            "mode": "operational-trace-only",
+            "rawPrivateReasoning": "not-collected",
+            "eventCount": 0,
+        },
+        "eventRefs": [],
+        "artifactRefs": [],
+        "startedAt": utc_now(),
+    }
+
+
+def _emit_reasoning_event(run: dict[str, Any], event_type: str, summary: str,
+                          trust_level: str, trace_level: str = "workspace-safe",
+                          extra: dict[str, Any] | None = None) -> str:
+    """Build + append a conformant ReasoningEvent. Returns the event id.
+
+    `summary` MUST be a short safe human summary — never the full model output.
+    Appends the event id to run["eventRefs"]. Exception-safe.
+    """
+    event_id = _reasoning_event_id()
+    try:
+        event = {
+            "id": event_id,
+            "type": "ReasoningEvent",
+            "specVersion": REASONING_SPEC_VERSION,
+            "runRef": run["id"],
+            "eventType": event_type,
+            "summary": summary[:500],
+            "traceLevel": trace_level,
+            "trustLevel": trust_level,
+            "capturedAt": utc_now(),
+        }
+        if extra:
+            for k, v in extra.items():
+                if k not in event:
+                    event[k] = v
+        path = reasoning_event_stream_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event) + "\n")
+        run.setdefault("eventRefs", []).append(event_id)
+        st = run.get("safeTrace")
+        if isinstance(st, dict):
+            st["eventCount"] = len(run["eventRefs"])
+    except Exception:
+        pass
+    return event_id
+
+
+def _close_reasoning_run(run: dict[str, Any], status: str, replay_class: str,
+                         task_ref: str | None = None) -> dict[str, Any]:
+    """Finalize a run: write run.json + a conformant ReasoningReceipt. Returns the receipt.
+
+    traceHash = sha256 over the concatenated event-id lines. Exception-safe.
+    """
+    receipt: dict[str, Any] = {}
+    try:
+        run_hex = _reasoning_run_hex(run["id"])
+        run_dir = reasoning_evidence_root() / run_hex
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        run["status"] = status
+        run["completedAt"] = utc_now()
+        st = run.get("safeTrace")
+        if isinstance(st, dict):
+            st["eventCount"] = len(run.get("eventRefs", []))
+
+        receipt_path = run_dir / "receipt.json"
+        # Record the receipt as an artifact ref before writing the run JSON.
+        receipt_ref = receipt_path.as_uri()
+        if receipt_ref not in run.get("artifactRefs", []):
+            run.setdefault("artifactRefs", []).append(receipt_ref)
+
+        run_path = run_dir / "run.json"
+        run_path.write_text(json.dumps(run, indent=2), encoding="utf-8")
+
+        digest = hashlib.sha256(
+            "\n".join(run.get("eventRefs", [])).encode("utf-8", errors="replace")
+        ).hexdigest()
+        task_obj = run.get("task")
+        derived_task_ref = (
+            task_ref
+            or (task_obj.get("id") if isinstance(task_obj, dict) else None)
+            or f"urn:srcos:task:{run_hex}"
+        )
+        receipt = {
+            "id": _reasoning_receipt_id(),
+            "type": "ReasoningReceipt",
+            "specVersion": REASONING_SPEC_VERSION,
+            "runRef": run["id"],
+            "taskRef": derived_task_ref,
+            "status": status if status in ("completed", "failed", "blocked", "cancelled") else "completed",
+            "traceHash": "sha256:" + digest,
+            "replayClass": replay_class,
+            "capturedAt": utc_now(),
+        }
+        receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return receipt
+
+
 def git_info(cwd: str | None = None) -> dict[str, str | None]:
     """Return {repo_root, git_branch} for cwd, or nulls if not a git repo."""
     kwargs: dict[str, Any] = {
@@ -1033,6 +1192,41 @@ def _copilot_watcher(config: dict) -> None:
                 if suggestion:
                     import datetime as _dt_cp
                     entry = {**suggestion, "ts": _dt_cp.datetime.utcnow().isoformat(), "trigger": trigger}
+                    # Emit spec-conformant reasoning evidence (safe trace only).
+                    # Fully wrapped: a schema/IO hiccup must never crash the watcher.
+                    try:
+                        stype = suggestion.get("type")
+                        scmd = redact_secrets(suggestion.get("command", ""))[:60]
+                        run = _open_reasoning_run(
+                            task_summary=f"copilot {trigger} for: {redact_secrets(cmd)[:80]}")
+                        if stype == "error_explain":
+                            ev_type = "copilot.error-explain"
+                            ev_summary = f"Explained exit-{rc} failure of `{scmd}`"
+                            ev_trust = "semi-trusted-project-source"  # AI-derived
+                            replay_class = "best-effort"  # fresh model: nondeterministic
+                            extra = {"cwd": evt.get("cwd"), "signature": suggestion.get("signature"),
+                                     "exit_code": rc, "backend": config.get("backend")}
+                        elif stype == "perf_tip":
+                            ev_type = "copilot.perf-tip"
+                            ev_summary = f"Perf tip for slow ({wall_ms}ms) `{scmd}`"
+                            ev_trust = "semi-trusted-project-source"
+                            replay_class = "best-effort"
+                            extra = {"cwd": evt.get("cwd"), "wall_ms": wall_ms,
+                                     "backend": config.get("backend")}
+                        else:  # recall — stored workspace fact, no model
+                            ev_type = "copilot.recall"
+                            ev_summary = (f"Recalled prior fix for `{scmd}` "
+                                          f"(signature {suggestion.get('signature', '')})")
+                            ev_trust = "trusted-workspace-source"
+                            replay_class = "exact"  # deterministic lookup
+                            extra = {"cwd": evt.get("cwd"), "signature": suggestion.get("signature")}
+                        _emit_reasoning_event(run, ev_type, ev_summary, ev_trust, extra=extra)
+                        receipt = _close_reasoning_run(run, status="completed", replay_class=replay_class)
+                        entry["reasoning_run"] = run["id"]
+                        if receipt.get("id"):
+                            entry["reasoning_receipt"] = receipt["id"]
+                    except Exception:
+                        pass
                     with open(suggestions_path, "a") as f:
                         f.write(json.dumps(entry) + "\n")
 
@@ -4551,7 +4745,26 @@ done
         if len(thread) > 50:
             thread = thread[-50:]
         thread_path.write_text(json.dumps(thread))
-        return response("copilot_chat", {"reply": reply, "thread_id": thread_id, "turns": len(thread)})
+        # Emit spec-conformant reasoning evidence — safe summary only, never the reply.
+        reasoning_run_id = None
+        reasoning_receipt_id = None
+        try:
+            run = _open_reasoning_run(
+                task_summary=f"copilot chat: {redact_secrets(message)[:80]}")
+            _emit_reasoning_event(
+                run, "copilot.chat",
+                summary=f"Chat turn on thread {thread_id}: `{redact_secrets(message)[:80]}`",
+                trust_level="semi-trusted-project-source",
+                extra={"thread_id": thread_id, "backend": _copilot_config().get("backend")},
+            )
+            receipt = _close_reasoning_run(run, status="completed", replay_class="best-effort")
+            reasoning_run_id = run["id"]
+            reasoning_receipt_id = receipt.get("id")
+        except Exception:
+            pass
+        return response("copilot_chat", {"reply": reply, "thread_id": thread_id, "turns": len(thread),
+                                          "reasoning_run": reasoning_run_id,
+                                          "reasoning_receipt": reasoning_receipt_id})
 
     if action in ("copilot_configure", "copilot-configure"):
         cfg = _copilot_config()
@@ -4618,7 +4831,31 @@ done
         signature = request.get("signature", "") or ""
         limit     = int(request.get("limit", 3))
         matches = _copilot_recall(query=query, signature=signature, limit=limit)
-        return response("copilot_recall", {"matches": matches, "count": len(matches)})
+        reasoning_run_id = None
+        reasoning_receipt_id = None
+        # Recall is genuinely evidence-emitting: it surfaces a stored workspace fact.
+        # Deterministic (no model), so replayClass is exact. Fully exception-safe.
+        if matches:
+            try:
+                top = matches[0]
+                sig = top.get("signature", "") or signature
+                cmd0 = redact_secrets(top.get("command", "") or query)[:60]
+                run = _open_reasoning_run(
+                    task_summary=f"copilot recall for: {redact_secrets(query or sig)[:80]}")
+                _emit_reasoning_event(
+                    run, "copilot.recall",
+                    summary=f"Recalled prior fix for `{cmd0}` (signature {sig})",
+                    trust_level="trusted-workspace-source",
+                    extra={"signature": sig, "match_count": len(matches)},
+                )
+                receipt = _close_reasoning_run(run, status="completed", replay_class="exact")
+                reasoning_run_id = run["id"]
+                reasoning_receipt_id = receipt.get("id")
+            except Exception:
+                pass
+        return response("copilot_recall", {"matches": matches, "count": len(matches),
+                                            "reasoning_run": reasoning_run_id,
+                                            "reasoning_receipt": reasoning_receipt_id})
 
     if action in ("copilot_remember", "copilot-remember"):
         cmd       = request.get("command", "") or ""
@@ -4647,6 +4884,27 @@ done
             except Exception:
                 pass
         return response("copilot_memory_list", {"entries": entries, "count": len(entries), "path": str(path)})
+
+    if action in ("copilot_evidence", "copilot-evidence"):
+        try:
+            limit = int(request.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+        stream_path = reasoning_event_stream_path()
+        events = read_ndjson(stream_path, limit=limit)
+        run_count = 0
+        try:
+            root = reasoning_evidence_root()
+            if root.exists():
+                run_count = sum(1 for p in root.iterdir() if p.is_dir())
+        except Exception:
+            run_count = 0
+        return response("copilot_evidence", {
+            "events": events,
+            "count": len(events),
+            "stream": str(stream_path),
+            "runs": run_count,
+        })
 
     # ------------------------------------------------------------------
     # gh-parity forge actions
