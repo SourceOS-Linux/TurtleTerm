@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+  remove|upgrade|deconfigure)
+    # Remove the turtle-mcp-server symlink
+    rm -f /usr/local/bin/turtle-mcp-server
+    ;;
+esac
+
+exit 0

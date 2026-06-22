@@ -1,14 +1,19 @@
-Package: turtle-term
-Version: 0.1.0
+Package: turtleterm
+Version: 1.4.0
 Section: devel
 Priority: optional
-Architecture: amd64 arm64
-Maintainer: SourceOS Linux <maintainers@sourceos.local>
-Depends: libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkbcommon0, zlib1g
+Architecture: amd64
+Maintainer: SourceOS Linux <maintainers@sourceos.ai>
+Depends: libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkbcommon0, zlib1g, python3 (>= 3.10)
+Recommends: git
 Homepage: https://github.com/SourceOS-Linux/TurtleTerm
-Description: TurtleTerm trusted terminal and agent workbench
- TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench
- for trusted command execution, terminal receipts, agent delegation, and
- reproducible operator workflows. The package installs TurtleTerm product
- launchers, Linux desktop metadata, AppStream metadata, TurtleTerm profile,
- skill manifests, and private runtime files under libexec/turtle-term.
+Description: TurtleTerm — AI agent terminal fabric for SourceOS
+ TurtleTerm is a WezTerm-based terminal emulator with a full AI agent fabric.
+ .
+ Includes 37+ commands: turtle-agentd (190+ actions), turtle-copilot (self-hosted
+ AI with Claude/Ollama/Noetica backends), turtle-gh (gh CLI parity with Gitea),
+ turtle-env (project env management), turtle-diagnose (health checks),
+ turtle-chain (agent pipelines), and more.
+ .
+ Shell integration for zsh, bash, fish, and PowerShell. MCP server for
+ Claude Code integration. SynapseIQ LSP support.

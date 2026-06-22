@@ -1,0 +1,46 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+  configure)
+    # Create config directory for turtleterm
+    CONFIG_DIR="$HOME/.config/turtleterm"
+    if [ -n "$SUDO_USER" ]; then
+      USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+      CONFIG_DIR="$USER_HOME/.config/turtleterm"
+    fi
+    mkdir -p "$CONFIG_DIR"/{personas,runbooks,bg_plans,copilot_threads}
+
+    # Register MIME types and desktop file
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      update-desktop-database -q /usr/share/applications/ || true
+    fi
+
+    # Update AppStream metadata cache
+    if command -v appstreamcli >/dev/null 2>&1; then
+      appstreamcli refresh-cache --force >/dev/null 2>&1 || true
+    fi
+
+    # Update icon cache
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+      gtk-update-icon-cache -q -t /usr/share/icons/hicolor/ >/dev/null 2>&1 || true
+    fi
+
+    # Symlink turtle-mcp-server into PATH if not already there
+    if [ -f /usr/share/turtleterm/mcp/turtle-mcp-server ]; then
+      ln -sf /usr/share/turtleterm/mcp/turtle-mcp-server /usr/local/bin/turtle-mcp-server 2>/dev/null || true
+    fi
+
+    echo "TurtleTerm installed."
+    echo ""
+    echo "  Shell integration — add to your shell rc:"
+    echo "    source /usr/share/turtleterm/shell/turtle-shell-init.zsh   # zsh"
+    echo "    source /usr/share/turtleterm/shell/turtle-shell-init.bash  # bash"
+    echo ""
+    echo "  Start co-pilot:   turtle-copilot start"
+    echo "  Self-test:        turtle-selftest"
+    echo "  Health check:     turtle-diagnose"
+    ;;
+esac
+
+exit 0

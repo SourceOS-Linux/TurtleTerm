@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+  purge)
+    # Only purge system-wide config (not user configs in ~/.config/turtleterm)
+    rm -rf /etc/turtleterm
+    ;;
+esac
+
+exit 0
