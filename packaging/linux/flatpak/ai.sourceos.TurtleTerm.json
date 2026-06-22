@@ -1,0 +1,61 @@
+{
+  "app-id": "ai.sourceos.TurtleTerm",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "23.08",
+  "sdk": "org.freedesktop.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "turtleterm",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=x11",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--filesystem=home",
+    "--filesystem=xdg-run/pipewire-0:ro",
+    "--env=RUST_BACKTRACE=1",
+    "--env=TURTLE_TERM_RUNTIME_DIR=/app/lib/turtleterm",
+    "--env=TURTLETERM_CONFIG=/etc/turtleterm/turtleterm.lua"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/TurtleTerm/cargo",
+      "RUSTFLAGS": ""
+    }
+  },
+  "modules": [
+    {
+      "name": "turtleterm",
+      "buildsystem": "simple",
+      "build-commands": [
+        "cargo build --release --locked -p wezterm -p wezterm-gui -p wezterm-mux-server",
+        "install -Dm755 target/release/wezterm /app/lib/turtleterm/wezterm",
+        "install -Dm755 target/release/wezterm-gui /app/lib/turtleterm/wezterm-gui",
+        "install -Dm755 target/release/wezterm-mux-server /app/lib/turtleterm/wezterm-mux-server",
+        "install -Dm755 assets/sourceos/bin/turtleterm /app/lib/turtleterm-bin/turtleterm",
+        "install -Dm755 assets/sourceos/bin/turtleterm-mux-server /app/lib/turtleterm-bin/turtleterm-mux-server",
+        "for script in sourceos-term turtle-term turtle-agentd turtle-agentctl turtle-agent-status turtle-tmux turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session turtle-synapseiq synapseiq-lsp turtle-plan-view turtle-selftest turtle-runbook turtle-voice turtle-sync turtle-perf turtle-persona turtle-files turtle-bg turtle-dash turtle-pr turtle-issue turtle-hooks turtle-gitea turtle-ci turtle-review turtle-watch turtle-cost turtle-copilot turtle-gh turtle-env turtle-diagnose turtle-apply turtle-chain turtle-ai-chat; do [ -f assets/sourceos/bin/$script ] && install -Dm755 assets/sourceos/bin/$script /app/bin/$script || true; done",
+        "[ -f assets/sourceos/mcp/turtle-mcp-server ] && install -Dm755 assets/sourceos/mcp/turtle-mcp-server /app/bin/turtle-mcp-server || true",
+        "install -d /app/share/turtleterm/shell",
+        "for f in assets/sourceos/shell/*; do [ -f $f ] && install -Dm644 $f /app/share/turtleterm/shell/ || true; done",
+        "install -d /app/etc/turtleterm",
+        "[ -f assets/sourceos/turtleterm.lua ] && install -Dm644 assets/sourceos/turtleterm.lua /app/etc/turtleterm/turtleterm.lua || true",
+        "[ -f assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop ] && install -Dm644 assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop /app/share/applications/ai.sourceos.TurtleTerm.desktop || true",
+        "[ -f assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml ] && install -Dm644 assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml /app/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml || true",
+        "[ -f assets/sourceos/brand/ai.sourceos.TurtleTerm.svg ] && install -Dm644 assets/sourceos/brand/ai.sourceos.TurtleTerm.svg /app/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg || true",
+        "printf '#!/bin/sh\\nexport TURTLE_TERM_RUNTIME_DIR=/app/lib/turtleterm\\nexport TURTLETERM_CONFIG=/app/etc/turtleterm/turtleterm.lua\\nexec /app/lib/turtleterm-bin/turtleterm \"$@\"' > /app/bin/turtleterm && chmod 755 /app/bin/turtleterm",
+        "printf '#!/bin/sh\\nexport TURTLE_TERM_RUNTIME_DIR=/app/lib/turtleterm\\nexec /app/lib/turtleterm-bin/turtleterm-mux-server \"$@\"' > /app/bin/turtleterm-mux-server && chmod 755 /app/bin/turtleterm-mux-server"
+      ],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/SourceOS-Linux/TurtleTerm.git",
+          "branch": "main"
+        }
+      ]
+    }
+  ]
+}
