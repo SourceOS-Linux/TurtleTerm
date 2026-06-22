@@ -1,0 +1,52 @@
+PackageIdentifier: SourceOS.TurtleTerm
+PackageVersion: 1.4.0
+InstallerType: zip
+InstallerLocale: en-US
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.17763.0
+Architecture: x64
+Scope: machine
+InstallModes:
+  - interactive
+  - silent
+InstallerSwitches:
+  Silent: /S
+  SilentWithProgress: /S
+  Log: /LOG=$TEMP\TurtleTerm-install.log
+Commands:
+  - turtleterm
+  - turtle-agentd
+  - turtle-agentctl
+  - turtle-copilot
+  - turtle-gh
+  - turtle-env
+  - turtle-diagnose
+  - turtle-apply
+  - turtle-chain
+  - turtle-gitea
+  - turtle-ci
+  - turtle-review
+  - turtle-selftest
+  - turtle-mcp-server
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/SourceOS-Linux/TurtleTerm/releases/download/v1.4.0/TurtleTerm-1.4.0-windows-x64.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerType: zip
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: bin\turtleterm.cmd
+        PortableCommandAlias: turtleterm
+      - RelativeFilePath: bin\turtle-agentd.cmd
+        PortableCommandAlias: turtle-agentd
+      - RelativeFilePath: bin\turtle-agentctl.cmd
+        PortableCommandAlias: turtle-agentctl
+      - RelativeFilePath: bin\turtle-copilot.cmd
+        PortableCommandAlias: turtle-copilot
+      - RelativeFilePath: bin\turtle-gh.cmd
+        PortableCommandAlias: turtle-gh
+    UpgradeBehavior: install
+ProductCode: TurtleTerm
+ManifestType: installer
+ManifestVersion: 1.6.0

@@ -1,0 +1,36 @@
+PackageIdentifier: SourceOS.TurtleTerm
+PackageVersion: 1.4.0
+PackageLocale: en-US
+Publisher: SourceOS Linux
+PublisherUrl: https://github.com/SourceOS-Linux
+PublisherSupportUrl: https://github.com/SourceOS-Linux/TurtleTerm/issues
+PackageName: TurtleTerm
+PackageUrl: https://github.com/SourceOS-Linux/TurtleTerm
+License: MIT
+LicenseUrl: https://github.com/SourceOS-Linux/TurtleTerm/blob/main/LICENSE
+Copyright: Copyright (c) 2024 SourceOS Linux
+ShortDescription: AI agent terminal fabric for SourceOS — WezTerm + 37 agent commands
+Description: |
+  TurtleTerm is a WezTerm-based terminal emulator with a full AI agent fabric built in.
+
+  Features:
+  - Self-hosted AI co-pilot (Claude API, Ollama, Noetica backends)
+  - Full gh CLI parity via turtle-gh with Gitea-sovereign forge
+  - 37+ agent commands via turtle-agentd (190+ actions)
+  - MCP server for Claude Code integration
+  - PowerShell integration: ALT+/ AI completion, ALT+G NL-to-shell, F2 risk check
+  - Project env management with .turtle/env.yaml
+  - AI patch application, agent pipelines, workspace intelligence
+Moniker: turtleterm
+Tags:
+  - terminal
+  - ai
+  - agent
+  - wezterm
+  - shell
+  - sourceos
+  - copilot
+  - gitea
+ReleaseNotesUrl: https://github.com/SourceOS-Linux/TurtleTerm/releases/tag/v1.4.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
