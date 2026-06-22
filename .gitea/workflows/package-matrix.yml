@@ -1,0 +1,42 @@
+name: Cross-Product Package Matrix
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6am UTC
+  workflow_dispatch:
+
+jobs:
+  matrix-check:
+    name: Package availability check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Homebrew tap
+        run: |
+          echo "=== Homebrew Tap Status ==="
+          curl -sf "https://api.github.com/repos/SourceOS-Linux/homebrew-tap/contents/Casks" | python3 -c "
+          import json,sys
+          data = json.load(sys.stdin)
+          casks = [f['name'] for f in data if f['name'].endswith('.rb')]
+          print('Casks:', ', '.join(casks))
+          " || echo "tap check failed"
+
+      - name: Check Chocolatey community
+        run: |
+          echo "=== Chocolatey Package Status ==="
+          for pkg in turtleterm bearbrowser noetica; do
+            status=$(curl -sf "https://community.chocolatey.org/api/v2/Packages()?$filter=Id+eq+'$pkg'" | python3 -c "
+          import sys,json; d=json.load(sys.stdin)
+          v=[e.get('content',{}).get('properties',{}).get('Version',{}).get('#text','') for e in d.get('feed',{}).get('entry',[])]
+          print(v[0] if v else 'not published')
+          " 2>/dev/null || echo "not published")
+            echo "  $pkg: $status"
+          done
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "Package matrix — install commands:"
+          echo "  macOS:   brew install sourceos-linux/tap/turtleterm"
+          echo "  Windows: choco install turtleterm"
+          echo "  Linux:   sudo dpkg -i turtleterm_*.deb"
+          echo "  winget:  winget install SourceOS.TurtleTerm"
