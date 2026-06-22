@@ -377,6 +377,20 @@ def main(argv: list[str]) -> int:
     cop_chat_p.add_argument("message", nargs=argparse.REMAINDER)
     sub.add_parser("copilot-suggest")
     sub.add_parser("copilot-backends")
+    cop_ctx_p = sub.add_parser("copilot-context", help="gather co-pilot context (project, git, recent commands/errors)")
+    cop_ctx_p.add_argument("--cwd", default="")
+    cop_recall_p = sub.add_parser("copilot-recall", help="recall past fixes (fast local lookup, no model call)")
+    cop_recall_p.add_argument("query", nargs="?", default="")
+    cop_recall_p.add_argument("--query", dest="query_flag", default="")
+    cop_recall_p.add_argument("--signature", default="")
+    cop_recall_p.add_argument("--limit", type=int, default=3)
+    cop_rem_p = sub.add_parser("copilot-remember", help="store a manual fix for a command")
+    cop_rem_p.add_argument("--command", "-c", dest="cop_command", default="")
+    cop_rem_p.add_argument("--fix", "-f", dest="cop_fix", default="")
+    cop_rem_p.add_argument("--signature", default="")
+    cop_rem_p.add_argument("--source", default="manual")
+    cop_mem_p = sub.add_parser("copilot-memory-list", help="list stored co-pilot fix memories")
+    cop_mem_p.add_argument("--limit", type=int, default=0)
     # gh parity
     repo_create_p = sub.add_parser("gh-repo-create")
     repo_create_p.add_argument("name", nargs="?", default="")
@@ -720,6 +734,15 @@ def main(argv: list[str]) -> int:
         request = {"action": "copilot_suggest"}
     elif args.command == "copilot-backends":
         request = {"action": "copilot_backends"}
+    elif args.command == "copilot-context":
+        request = {"action": "copilot_context", "cwd": getattr(args, "cwd", "") or os.getcwd()}
+    elif args.command == "copilot-recall":
+        query = getattr(args, "query_flag", "") or getattr(args, "query", "")
+        request = {"action": "copilot_recall", "query": query, "signature": getattr(args, "signature", ""), "limit": getattr(args, "limit", 3)}
+    elif args.command == "copilot-remember":
+        request = {"action": "copilot_remember", "command": getattr(args, "cop_command", ""), "fix": getattr(args, "cop_fix", ""), "signature": getattr(args, "signature", ""), "source": getattr(args, "source", "manual")}
+    elif args.command == "copilot-memory-list":
+        request = {"action": "copilot_memory_list", "limit": getattr(args, "limit", 0)}
     elif args.command == "gh-repo-create":
         request = {"action": "gh_repo_create", "name": getattr(args, "name", ""), "private": getattr(args, "private", False), "org": getattr(args, "org", "")}
     elif args.command == "gh-repo-fork":

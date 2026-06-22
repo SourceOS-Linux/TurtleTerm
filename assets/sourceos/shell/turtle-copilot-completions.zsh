@@ -9,6 +9,10 @@ _turtle_copilot() {
     'status:Show status and recent suggestions'
     'chat:Multi-turn conversation'
     'suggest:View latest proactive suggestions'
+    'recall:Recall past fixes (fast local lookup)'
+    'context:Show gathered co-pilot context'
+    'remember:Store a manual fix'
+    'memory:List stored fix memories'
     'backends:List available AI backends'
     'use:Switch backend (claude|ollama|noetica)'
     'config:View or update configuration'
@@ -30,6 +34,10 @@ _turtle_copilot() {
           local -a keys
           keys=('backend=' 'model=' 'endpoint=' 'auto_explain_errors=' 'auto_suggest_slow=' 'slow_threshold_ms=')
           _describe 'config key' keys ;;
+        memory)
+          _values 'option' '--limit' '--json' ;;
+        context)
+          _values 'option' '--json' ;;
       esac ;;
   esac
 }

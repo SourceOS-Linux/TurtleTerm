@@ -2142,6 +2142,24 @@ config.keys = {
         )
       end),
     },
+    -- Copilot recall — past fixes for the last error (CMD+SHIFT+R)
+    {
+      key = 'r',
+      mods = 'CMD|SHIFT',
+      action = wezterm.action_callback(function(window, pane)
+        -- Split pane below (30% height) and run turtle-copilot recall
+        window:perform_action(
+          wezterm.action.SplitPane({
+            direction = 'Down',
+            size = { Percent = 30 },
+            command = {
+              args = { '/usr/bin/env', 'python3', os.getenv('HOME') .. '/dev/TurtleTerm/assets/sourceos/bin/turtle-copilot', 'recall' },
+            },
+          }),
+          pane
+        )
+      end),
+    },
     -- Copilot status (CMD+SHIFT+J)
     {
       key = 'j',
@@ -2749,9 +2767,20 @@ wezterm.on('copilot-poll', function(window, pane)
     local latest = suggestions[#suggestions]
     local t = latest.type or 'tip'
     local cmd = (latest.command or ''):sub(1, 40)
-    local msg = (latest.suggestion or ''):sub(1, 120)
-    local title = t == 'error_explain' and 'Co-pilot: error explained' or 'Co-pilot: performance tip'
-    window:toast_notification('TurtleTerm Copilot', title .. '\n$ ' .. cmd .. '\n' .. msg, nil, 8000)
+    local msg = (latest.suggestion or latest.fix or ''):sub(1, 120)
+    local title, prefix
+    if t == 'recall' then
+      -- An instantly-recalled past fix (no model call) — distinct style.
+      title = '\xf0\x9f\x94\x81 Seen before'
+      prefix = '\xf0\x9f\x94\x81 Seen before:'
+    elseif t == 'error_explain' then
+      title = 'Co-pilot: error explained'
+      prefix = '\xf0\x9f\x92\xa1'
+    else
+      title = 'Co-pilot: performance tip'
+      prefix = '\xf0\x9f\x92\xa1'
+    end
+    window:toast_notification('TurtleTerm Copilot', prefix .. ' ' .. title .. '\n$ ' .. cmd .. '\n' .. msg, nil, 8000)
     _copilot_last_seen = #suggestions
   end
 end)

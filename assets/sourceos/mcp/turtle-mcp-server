@@ -661,6 +661,10 @@ TOOLS = [
     {"name": "copilot_configure", "description": "Configure co-pilot backend, model, and behavior", "inputSchema": {"type": "object", "properties": {"backend": {"type": "string"}, "model": {"type": "string"}, "endpoint": {"type": "string"}, "auto_explain_errors": {"type": "boolean"}, "auto_suggest_slow": {"type": "boolean"}}}},
     {"name": "copilot_suggest", "description": "Get latest proactive suggestions from the co-pilot", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
     {"name": "copilot_backends", "description": "List available AI backends (Claude, Ollama, Noetica) and their status", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "copilot_context", "description": "Gather current co-pilot context: cwd, project type, tools, git branch/dirty/ahead-behind, recent commands, recent errors, and recurring-error flag", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string", "description": "Directory to gather context from (default: cwd)."}}}},
+    {"name": "copilot_recall", "description": "Recall past fixes for a recurring error — fast local lookup, no model call. Matches by exact signature first, then keyword overlap on the query.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "signature": {"type": "string"}, "limit": {"type": "integer"}}}},
+    {"name": "copilot_remember", "description": "Store a fix for a command so it can be instantly recalled next time the same error recurs", "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "fix": {"type": "string"}, "signature": {"type": "string"}}, "required": ["command", "fix"]}},
+    {"name": "copilot_memory_list", "description": "List stored co-pilot fix memories", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
     # gh parity
     {"name": "gh_repo_create", "description": "Create a repository on Gitea (primary) or GitHub", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "private": {"type": "boolean"}, "org": {"type": "string"}}, "required": ["name"]}},
     {"name": "gh_repo_fork", "description": "Fork the current repository", "inputSchema": {"type": "object", "properties": {"cwd": {"type": "string"}}}},
@@ -958,6 +962,10 @@ def call_tool(name: str, arguments: dict[str, Any]) -> Any:
     if name == 'copilot_configure': return _agentd({'action': 'copilot-configure', **{k: v for k,v in arguments.items() if k in ('backend','model','endpoint','api_key_env','auto_explain_errors','auto_suggest_slow','slow_threshold_ms')}})
     if name == 'copilot_suggest': return _agentd({'action': 'copilot-suggest', 'limit': arguments.get('limit',5)})
     if name == 'copilot_backends': return _agentd({'action': 'copilot-backends'})
+    if name == 'copilot_context': return _agentd({'action': 'copilot_context', 'cwd': arguments.get('cwd') or _os.environ.get('PWD', '.')})
+    if name == 'copilot_recall': return _agentd({'action': 'copilot_recall', 'query': arguments.get('query', ''), 'signature': arguments.get('signature', ''), 'limit': arguments.get('limit', 3)})
+    if name == 'copilot_remember': return _agentd({'action': 'copilot_remember', 'command': arguments.get('command', ''), 'fix': arguments.get('fix', ''), 'signature': arguments.get('signature', ''), 'source': 'mcp'})
+    if name == 'copilot_memory_list': return _agentd({'action': 'copilot_memory_list', 'limit': arguments.get('limit', 0)})
     if name == 'gh_repo_create': return _agentd({'action': 'gh-repo-create', 'name': arguments.get('name'), 'description': arguments.get('description',''), 'private': arguments.get('private',False), 'org': arguments.get('org','')})
     if name == 'gh_repo_fork': return _agentd({'action': 'gh-repo-fork', 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
     if name == 'gh_repo_view': return _agentd({'action': 'gh-repo-view', 'repo': arguments.get('repo',''), 'cwd': arguments.get('cwd', _os.environ.get('PWD','.'))})
@@ -1000,7 +1008,7 @@ def handle(msg: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "turtleterm", "version": "1.0.0"},
+                "serverInfo": {"name": "turtleterm", "version": "1.1.0"},
             },
         }
 

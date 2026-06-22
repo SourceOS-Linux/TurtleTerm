@@ -4,10 +4,12 @@ _turtle_copilot_completions() {
   local sub="${COMP_WORDS[1]}"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "start stop status chat suggest backends use config" -- "$cur"))
+    COMPREPLY=($(compgen -W "start stop status chat suggest recall context remember memory backends use config" -- "$cur"))
   elif [[ $COMP_CWORD -eq 2 ]]; then
     case $sub in
       use) COMPREPLY=($(compgen -W "claude ollama noetica" -- "$cur")) ;;
+      memory) COMPREPLY=($(compgen -W "--limit --json" -- "$cur")) ;;
+      context) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
     esac
   fi
 }

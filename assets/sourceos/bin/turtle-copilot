@@ -12,6 +12,10 @@ Usage:
   turtle-copilot status                 Show status + recent suggestions
   turtle-copilot chat [message]         Multi-turn conversation
   turtle-copilot suggest                Show latest proactive suggestions
+  turtle-copilot recall [QUERY]         Recall past fixes (fast local lookup, no model call)
+  turtle-copilot context                Show gathered context (git, project, recent cmds/errors)
+  turtle-copilot remember "CMD" "FIX"   Store a manual fix
+  turtle-copilot memory [--limit N]     List stored fix memories (most recent first)
   turtle-copilot backends               List available AI backends
   turtle-copilot config [key=value...]  Configure backend, model, etc.
   turtle-copilot use claude             Switch to Claude API backend
@@ -21,6 +25,8 @@ Usage:
 Examples:
   turtle-copilot start
   turtle-copilot chat "how do I find large files on disk?"
+  turtle-copilot recall merge
+  turtle-copilot remember "git merge feature" "git merge --abort then rebase onto main"
   turtle-copilot use ollama llama3.2
   turtle-copilot config auto_explain_errors=true slow_threshold_ms=5000
 """
@@ -39,7 +45,34 @@ def agentd(payload: dict, timeout: int = 30) -> dict | None:
         return json.loads(r.stdout)
     except Exception: return None
 
+def agentctl(*cli_args: str, timeout: int = 30) -> dict | None:
+    """Invoke a turtle-agentctl subcommand by argv and parse its JSON response."""
+    try:
+        r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio", *cli_args],
+            text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception: return None
+
 def d(r) -> dict: return (r or {}).get("data", {})
+
+def rel_age(ts) -> str:
+    """Return a human-friendly relative age from an epoch seconds or ISO timestamp."""
+    import time, datetime
+    if ts in (None, "", 0):
+        return ""
+    try:
+        if isinstance(ts, (int, float)):
+            secs = float(ts)
+        else:
+            s = str(ts).replace("Z", "+00:00")
+            secs = datetime.datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return str(ts)
+    delta = max(0, int(time.time() - secs))
+    if delta < 60: return f"{delta}s ago"
+    if delta < 3600: return f"{delta // 60}m ago"
+    if delta < 86400: return f"{delta // 3600}h ago"
+    return f"{delta // 86400}d ago"
 
 def header(text: str) -> None:
     print(f"\n{BOLD}{CYAN}{text}{RESET}")
@@ -160,6 +193,125 @@ def main() -> int:
             cmd = s.get("command","")[:50]
             print(f"\n  {icon}  {GRAY}{ts}{RESET}  {cmd}")
             print(f"  {s.get('suggestion','')}")
+        return 0
+
+    # ── recall ────────────────────────────────────────────────────────────────
+    if sub == "recall":
+        query = " ".join(a for a in rest if not a.startswith("-")).strip()
+        signature = ""
+        if not query:
+            # No query: recall against the most recent failed command's signature.
+            ctx = d(agentctl("copilot-context"))
+            errs = ctx.get("recent_errors", []) or []
+            if errs:
+                e0 = errs[0]
+                signature = e0.get("signature", "") if isinstance(e0, dict) else ""
+                if not signature and isinstance(e0, dict):
+                    query = e0.get("command", "") or e0.get("error", "")
+                elif isinstance(e0, str):
+                    query = e0
+        recall_args = ["copilot-recall", "--limit", "5"]
+        if signature:
+            recall_args += ["--signature", signature]
+        if query:
+            recall_args += ["--query", query]
+        r = agentctl(*recall_args)
+        matches = d(r).get("matches", [])
+        header("Recalled Fixes")
+        if not matches:
+            hint = f" for {BOLD}{query or signature}{RESET}" if (query or signature) else ""
+            print(f"  {GRAY}No past fixes found{hint}.{RESET}")
+            return 0
+        for m in matches:
+            sig = m.get("signature", "?")
+            cmd = m.get("command", "")
+            fix = m.get("fix", "")
+            age = rel_age(m.get("ts") or m.get("stored_at") or m.get("created_at"))
+            print(f"\n  {YELLOW}🔁{RESET} {GRAY}{sig}{RESET}{('  ' + GRAY + age + RESET) if age else ''}")
+            if cmd:
+                print(f"     $ {cmd}")
+            print(f"     {GREEN}{fix}{RESET}")
+        return 0
+
+    # ── context ───────────────────────────────────────────────────────────────
+    if sub == "context":
+        r = agentctl("copilot-context")
+        data = d(r)
+        if "--json" in rest:
+            print(json.dumps(data, indent=2)); return 0
+        header("Co-pilot Context")
+        print(f"  cwd          : {data.get('cwd','?')}")
+        print(f"  project type : {data.get('project_type','?')}")
+        tools = data.get("tools", []) or []
+        if tools:
+            print(f"  tools        : {', '.join(tools)}")
+        branch = data.get("git_branch", "")
+        dirty = data.get("git_dirty")
+        ahead = data.get("git_ahead_behind", "")
+        if branch:
+            state = f"{RED}dirty{RESET}" if dirty else f"{GREEN}clean{RESET}"
+            extra = f"  ({ahead})" if ahead else ""
+            print(f"  git          : {branch}  {state}{extra}")
+        recurring = data.get("recurring_error")
+        if recurring:
+            print(f"  recurring err: {RED}{recurring}{RESET}")
+        cmds = data.get("recent_commands", []) or []
+        if cmds:
+            print(f"\n{BOLD}Recent commands:{RESET}")
+            for c in cmds[-5:]:
+                txt = c.get("command", c) if isinstance(c, dict) else c
+                print(f"  {GRAY}$ {str(txt)[:70]}{RESET}")
+        errs = data.get("recent_errors", []) or []
+        if errs:
+            print(f"\n{BOLD}Recent errors:{RESET}")
+            for e in errs[-3:]:
+                txt = e.get("command", e) if isinstance(e, dict) else e
+                print(f"  {RED}✗ {str(txt)[:70]}{RESET}")
+        return 0
+
+    # ── remember ──────────────────────────────────────────────────────────────
+    if sub == "remember":
+        pos = [a for a in rest if not a.startswith("-")]
+        command = pos[0] if len(pos) > 0 else ""
+        fix = pos[1] if len(pos) > 1 else ""
+        if not command or not fix:
+            print('Usage: turtle-copilot remember "COMMAND" "FIX"', file=sys.stderr); return 1
+        r = agentctl("copilot-remember", "--command", command, "--fix", fix, "--source", "manual")
+        data = d(r)
+        if data.get("stored"):
+            print(f"  {GREEN}✓ Remembered.{RESET}  signature: {BOLD}{data.get('signature','?')}{RESET}")
+            return 0
+        print(f"  {RED}Failed to store fix.{RESET}", file=sys.stderr); return 1
+
+    # ── memory ────────────────────────────────────────────────────────────────
+    if sub == "memory":
+        limit = 0
+        if "--limit" in rest:
+            idx = rest.index("--limit")
+            try: limit = int(rest[idx+1])
+            except (IndexError, ValueError): limit = 0
+        mem_args = ["copilot-memory-list"]
+        if limit:
+            mem_args += ["--limit", str(limit)]
+        r = agentctl(*mem_args)
+        data = d(r)
+        if "--json" in rest:
+            print(json.dumps(data, indent=2)); return 0
+        entries = data.get("entries", [])
+        header("Co-pilot Fix Memory")
+        if not entries:
+            print(f"  {GRAY}No fixes stored yet. Use: turtle-copilot remember \"CMD\" \"FIX\"{RESET}")
+            return 0
+        print(f"  {GRAY}{data.get('count', len(entries))} entries · {data.get('path','')}{RESET}")
+        for e in reversed(entries):
+            sig = e.get("signature", "?")
+            cmd = e.get("command", "")
+            fix = e.get("fix", "")
+            age = rel_age(e.get("ts") or e.get("stored_at") or e.get("created_at"))
+            print(f"\n  {YELLOW}🔁{RESET} {GRAY}{sig}{RESET}{('  ' + GRAY + age + RESET) if age else ''}")
+            if cmd:
+                print(f"     $ {cmd}")
+            print(f"     {GREEN}{fix}{RESET}")
         return 0
 
     # ── backends ──────────────────────────────────────────────────────────────
