@@ -13,6 +13,9 @@ Usage:
   turtle-gitea ci                       Show recent CI runs
   turtle-gitea ci watch RUN_ID          Watch CI run to completion
   turtle-gitea snippet FILE             Create a snippet from file
+  turtle-gitea start                    Start gitea-sovereign dev instance (docker compose up)
+  turtle-gitea stop                     Stop gitea-sovereign dev instance
+  turtle-gitea setup                    Create admin user + generate GITEA_TOKEN
 
 Environment:
   GITEA_URL    http://org-gitea:3000   (required for Gitea, fallback: GitHub)
@@ -147,6 +150,42 @@ def main() -> int:
         else:
             print(f"Failed: {data.get('reason','?')}", file=sys.stderr); return 1
         return 0
+
+    if sub == "start":
+        # Start gitea-sovereign dev single-node
+        import subprocess, os, pathlib
+        deploy_dir = pathlib.Path.home() / "dev" / "gitea-sovereign" / "deploy" / "dev"
+        if not deploy_dir.exists():
+            print("gitea-sovereign not found at ~/dev/gitea-sovereign/deploy/dev/", file=sys.stderr)
+            print("Clone: git clone https://github.com/SocioProphet/gitea-sovereign ~/dev/gitea-sovereign", file=sys.stderr)
+            sys.exit(1)
+        result = subprocess.run(
+            ["docker", "compose", "up", "-d"],
+            cwd=str(deploy_dir),
+            capture_output=False
+        )
+        if result.returncode == 0:
+            print("Gitea sovereign forge starting at http://localhost:3000")
+            print("Run `turtle-gitea setup` to create admin user + GITEA_TOKEN.")
+        sys.exit(result.returncode)
+
+    elif sub == "stop":
+        import subprocess, pathlib
+        deploy_dir = pathlib.Path.home() / "dev" / "gitea-sovereign" / "deploy" / "dev"
+        if not deploy_dir.exists():
+            print("gitea-sovereign not found.", file=sys.stderr)
+            sys.exit(1)
+        result = subprocess.run(["docker", "compose", "down"], cwd=str(deploy_dir))
+        sys.exit(result.returncode)
+
+    elif sub == "setup":
+        import subprocess, pathlib
+        setup_sh = pathlib.Path.home() / "dev" / "gitea-sovereign" / "deploy" / "dev" / "setup.sh"
+        if not setup_sh.exists():
+            print("setup.sh not found. Is gitea-sovereign cloned?", file=sys.stderr)
+            sys.exit(1)
+        result = subprocess.run(["bash", str(setup_sh)] + args[2:])
+        sys.exit(result.returncode)
 
     print(f"Unknown: {sub}", file=sys.stderr); return 1
 
