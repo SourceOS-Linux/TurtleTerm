@@ -279,6 +279,87 @@ def _close_reasoning_run(run: dict[str, Any], status: str, replay_class: str,
     return receipt
 
 
+# ---------------------------------------------------------------------------
+# Governed autonomous agent loop: destructive denylist + replay plan emitter
+# ---------------------------------------------------------------------------
+
+# Denylist of irreversible / destructive shell patterns. Match is case-insensitive
+# and intentionally broad: the autonomous loop default-denies anything that matches.
+_DESTRUCTIVE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\brm\s+(-[a-z]*\s+)*-?[a-z]*\s*(-rf|-fr|-r\s+-f|-f\s+-r)\b", re.IGNORECASE),
+    re.compile(r"\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r", re.IGNORECASE),
+    re.compile(r"\bgit\s+push\s+.*(--force|-f)\b", re.IGNORECASE),
+    re.compile(r"\bgit\s+reset\s+--hard\b", re.IGNORECASE),
+    re.compile(r"\bgit\s+clean\s+-[a-z]*f", re.IGNORECASE),
+    re.compile(r"\bdd\s+.*\bof=", re.IGNORECASE),
+    re.compile(r"\bmkfs(\.\w+)?\b", re.IGNORECASE),
+    re.compile(r">\s*/dev/(sd|nvme|disk|hd)", re.IGNORECASE),
+    re.compile(r":\s*>\s*/dev/", re.IGNORECASE),
+    re.compile(r"\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b", re.IGNORECASE),
+    re.compile(r"\bkill\s+-9\s+-1\b|\bkillall\s+-9\b", re.IGNORECASE),
+    re.compile(r"\b(drop|truncate)\s+(table|database|schema)\b", re.IGNORECASE),
+    re.compile(r"\bchmod\s+-R\s+777\s+/", re.IGNORECASE),
+    re.compile(r"\bchown\s+-R\b.*\s+/\s*$", re.IGNORECASE),
+    re.compile(r"\bfind\s+/\S*\s+.*-delete\b", re.IGNORECASE),
+    re.compile(r"\b(curl|wget)\b.*\|\s*(sudo\s+)?(sh|bash|zsh)\b", re.IGNORECASE),
+    re.compile(r"\bmv\s+\S+\s+/dev/null\b", re.IGNORECASE),
+    re.compile(r">\s*/dev/null\s+2>&1\s*;\s*rm", re.IGNORECASE),
+    re.compile(r"\bsudo\s+rm\b", re.IGNORECASE),
+    re.compile(r"\beval\b.*\$\(.*curl", re.IGNORECASE),
+]
+
+
+def is_destructive_command(command: str) -> bool:
+    """Return True if `command` matches any irreversible/destructive denylist pattern.
+
+    Named helper so selftest can unit-test the detector directly. Pure + side-effect free.
+    """
+    if not command or not isinstance(command, str):
+        return False
+    for pat in _DESTRUCTIVE_PATTERNS:
+        if pat.search(command):
+            return True
+    return False
+
+
+def _replay_plan_id() -> str:
+    return f"urn:srcos:reasoning-replay-plan:{uuid.uuid4().hex}"
+
+
+def _emit_replay_plan(run: dict[str, Any], replay_class: str,
+                      inputs: dict[str, Any], constraints: dict[str, Any],
+                      step_refs: list[str] | None = None) -> str:
+    """Build + persist a conformant ReasoningReplayPlan (sourceos-spec v2).
+
+    Writes to reasoning_evidence_root()/<run_hex>/replay-plan.json and appends the
+    plan URN to run["artifactRefs"]. Returns the plan URN (empty string on failure).
+    Exception-safe: evidence emission must never break the agent loop.
+    """
+    plan_id = _replay_plan_id()
+    try:
+        run_hex = _reasoning_run_hex(run["id"])
+        run_dir = reasoning_evidence_root() / run_hex
+        run_dir.mkdir(parents=True, exist_ok=True)
+        plan = {
+            "id": plan_id,
+            "type": "ReasoningReplayPlan",
+            "specVersion": REASONING_SPEC_VERSION,
+            "runRef": run["id"],
+            "replayClass": replay_class,
+            "inputs": inputs if isinstance(inputs, dict) else {},
+            "constraints": constraints if isinstance(constraints, dict) else {},
+            "capturedAt": utc_now(),
+        }
+        if step_refs:
+            plan["stepRefs"] = list(step_refs)
+        (run_dir / "replay-plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+        if plan_id not in run.get("artifactRefs", []):
+            run.setdefault("artifactRefs", []).append(plan_id)
+    except Exception:
+        return ""
+    return plan_id
+
+
 def git_info(cwd: str | None = None) -> dict[str, str | None]:
     """Return {repo_root, git_branch} for cwd, or nulls if not a git repo."""
     kwargs: dict[str, Any] = {
@@ -2154,6 +2235,289 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
             "status": "first_step_ready",
             "note": "Step 1 written to terminal prompt. Run it, then call plan_next to advance.",
         })
+
+    if action in ("agent_run", "agent-run"):
+        import re as _re_ar
+        goal = (request.get("goal") or "").strip()
+        if not goal:
+            return response("error", {"message": "goal is required"}, status="error")
+        execute = bool(request.get("execute", False))
+        confirm_destructive = bool(request.get("confirm_destructive", False))
+        try:
+            max_steps = int(request.get("max_steps", 6))
+        except (TypeError, ValueError):
+            max_steps = 6
+        max_steps = max(1, min(max_steps, 20))
+        cwd = request.get("cwd") or None
+        cfg = _copilot_config()
+        backend = cfg.get("backend", "claude")
+        model = cfg.get("model", "claude-sonnet-4-6")
+
+        # 1. Open a governed reasoning run.
+        run = _open_reasoning_run(
+            task_summary=f"autonomous: {goal[:120]}", agent="turtle-agent")
+
+        # 2. Plan via the configured backend.
+        plan_system = (
+            "You are an autonomous task planner for a governed terminal agent. "
+            "Given a goal, output a STRICT JSON array of steps and NOTHING else "
+            "(no markdown fences, no prose). Each step object MUST have exactly these keys:\n"
+            '{"intent": "<short label>", "command": "<one shell command>", '
+            '"verify": "<a shell command/expression that checks the step worked>", '
+            '"destructive": <true|false>}\n'
+            f"Use at most {max_steps} steps. Prefer safe, reversible, read-only commands. "
+            "Mark destructive=true for anything that deletes, overwrites, force-pushes, "
+            "reformats, or is otherwise irreversible."
+        )
+        raw_plan = ""
+        try:
+            raw_plan = _copilot_backend_chat(
+                f"Goal: {goal}", system=plan_system, config=cfg) or ""
+        except Exception as exc:  # backend unreachable / error
+            raw_plan = f"[backend error: {exc}]"
+
+        steps: list[dict[str, Any]] = []
+        arr = _re_ar.search(r"\[.*\]", raw_plan, _re_ar.DOTALL)
+        if arr:
+            try:
+                parsed = json.loads(arr.group(0))
+                if isinstance(parsed, list):
+                    for s in parsed:
+                        if isinstance(s, dict) and s.get("command"):
+                            steps.append({
+                                "intent": str(s.get("intent") or s.get("command"))[:120],
+                                "command": str(s.get("command")),
+                                "verify": str(s.get("verify") or "") or None,
+                                "destructive": bool(s.get("destructive", False)),
+                            })
+            except json.JSONDecodeError:
+                pass
+        steps = steps[:max_steps]
+
+        # 3. Emit the replay plan FIRST — governance evidence is emitted regardless of
+        #    whether planning reached a model.
+        replay_class = "best-effort" if execute else "evidence-only"
+        replay_plan_urn = _emit_replay_plan(
+            run, replay_class=replay_class,
+            inputs={
+                "goal": goal,
+                "steps": [{"intent": s["intent"], "command": s["command"],
+                           "verify": s["verify"], "destructive": s["destructive"]}
+                          for s in steps],
+                "cwd": cwd or os.getcwd(),
+                "backend": backend,
+                "model": model,
+            },
+            constraints={
+                "dry_run": (not execute),
+                "max_steps": max_steps,
+                "destructive_policy": "blocked-unless-confirmed",
+                "destructive_blocked": [s["intent"] for s in steps if s["destructive"]],
+            },
+        )
+
+        if not steps:
+            _emit_reasoning_event(
+                run, "plan.failed",
+                summary=f"Planning failed for: {goal[:120]} (no valid step array from {backend})",
+                trust_level="semi-trusted-project-source",
+                extra={"backend": backend, "raw_preview": redact_secrets(raw_plan[:200])},
+            )
+            receipt = _close_reasoning_run(run, status="failed", replay_class=replay_class)
+            return response("agent_run", {
+                "goal": goal,
+                "dry_run": (not execute),
+                "planned": False,
+                "reason": "no valid plan produced (AI backend unavailable or non-conformant output)",
+                "steps": [],
+                "outcomes": [],
+                "reasoning_run": run["id"],
+                "reasoning_receipt": receipt.get("id"),
+                "replay_plan": replay_plan_urn,
+            }, status="error")
+
+        # Emit the plan event (intents only — never full commands in the summary).
+        _emit_reasoning_event(
+            run, "agent.plan",
+            summary=f"Planned {len(steps)} steps for: {goal[:120]}",
+            trust_level="semi-trusted-project-source",
+            extra={"steps": [s["intent"] for s in steps], "backend": backend,
+                   "execute": execute},
+        )
+
+        # 4. Execute / dry-run loop.
+        outcomes: list[dict[str, Any]] = []
+        all_ok = True
+        for k, step in enumerate(steps, start=1):
+            intent = step["intent"]
+            command = step["command"]
+            verify = step.get("verify")
+            destructive = bool(step["destructive"]) or is_destructive_command(command)
+            _emit_reasoning_event(
+                run, "agent.step.start",
+                summary=f"Step {k}/{len(steps)}: {intent}",
+                trust_level="semi-trusted-project-source",
+                extra={"step": k, "destructive": destructive},
+            )
+            redacted_cmd = redact_secrets(command)
+
+            # --- Dry-run: never run anything. ---
+            if not execute:
+                decision = decision_stub(
+                    "agent.step.plan",
+                    "Dry-run: command planned only, not executed.",
+                    "allow")
+                _emit_reasoning_event(
+                    run, "agent.step.planned",
+                    summary=f"Planned (dry-run) step {k}/{len(steps)}: {intent}",
+                    trust_level="semi-trusted-project-source",
+                    extra={"step": k, "command": redacted_cmd, "destructive": destructive,
+                           "decision": decision},
+                )
+                outcomes.append({
+                    "step": k, "intent": intent, "command": redacted_cmd,
+                    "destructive": destructive, "ran": False, "exit": None,
+                    "verify": None, "decision": decision["decision"],
+                })
+                continue
+
+            # --- Execute mode: destructive steps are blocked by default. ---
+            if destructive and not confirm_destructive:
+                decision = decision_stub(
+                    "agent.step.execute",
+                    "Destructive command blocked by policy; requires confirm_destructive.",
+                    "deny")
+                _emit_reasoning_event(
+                    run, "agent.step.blocked",
+                    summary=f"BLOCKED destructive step {k}/{len(steps)}: {intent}",
+                    trust_level="semi-trusted-project-source",
+                    extra={"step": k, "command": redacted_cmd, "decision": decision},
+                )
+                outcomes.append({
+                    "step": k, "intent": intent, "command": redacted_cmd,
+                    "destructive": True, "ran": False, "exit": None,
+                    "verify": None, "decision": "deny", "blocked": True,
+                })
+                all_ok = False
+                _emit_reasoning_event(
+                    run, "agent.halt",
+                    summary=f"Halted at step {k}/{len(steps)} (destructive, default-deny)",
+                    trust_level="semi-trusted-project-source",
+                    extra={"step": k},
+                )
+                break
+            if destructive and confirm_destructive:
+                # Even with explicit confirm, default-deny in this safe wave.
+                decision = decision_stub(
+                    "agent.step.execute",
+                    "Destructive command confirmed but still default-denied this wave.",
+                    "deny")
+                _emit_reasoning_event(
+                    run, "agent.step.blocked",
+                    summary=f"BLOCKED (confirmed-but-denied) step {k}/{len(steps)}: {intent}",
+                    trust_level="semi-trusted-project-source",
+                    extra={"step": k, "command": redacted_cmd, "decision": decision},
+                )
+                outcomes.append({
+                    "step": k, "intent": intent, "command": redacted_cmd,
+                    "destructive": True, "ran": False, "exit": None,
+                    "verify": None, "decision": "deny", "blocked": True,
+                })
+                all_ok = False
+                _emit_reasoning_event(
+                    run, "agent.halt",
+                    summary=f"Halted at step {k}/{len(steps)} (destructive default-deny)",
+                    trust_level="semi-trusted-project-source", extra={"step": k})
+                break
+
+            # --- Safe + execute: run it. ---
+            decision = decision_stub(
+                "agent.step.execute", "Non-destructive step approved for execution.", "allow")
+            exit_code: int | None = None
+            out_summary = ""
+            try:
+                proc = subprocess.run(
+                    command, shell=True, cwd=cwd, capture_output=True,
+                    text=True, timeout=120)
+                exit_code = proc.returncode
+                combined = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+                lines = combined.splitlines()
+                if len(lines) > 8:
+                    snippet = "\n".join(lines[:4] + ["..."] + lines[-3:])
+                else:
+                    snippet = combined
+                out_summary = redact_secrets(snippet)[:400]
+            except subprocess.TimeoutExpired:
+                exit_code = 124
+                out_summary = "[timeout after 120s]"
+            except Exception as exc:  # noqa: BLE001
+                exit_code = 1
+                out_summary = redact_secrets(f"[exec error: {exc}]")[:400]
+
+            ok = (exit_code == 0)
+            _emit_reasoning_event(
+                run, "agent.step.complete" if ok else "agent.step.fail",
+                summary=f"Step {k}/{len(steps)} {'ok' if ok else 'failed'} (exit {exit_code}): {intent}",
+                trust_level="semi-trusted-project-source",
+                extra={"step": k, "exit": exit_code, "decision": decision},
+            )
+
+            # --- Verify check. ---
+            verify_pass: bool | None = None
+            if verify:
+                try:
+                    vproc = subprocess.run(
+                        verify, shell=True, cwd=cwd, capture_output=True,
+                        text=True, timeout=60)
+                    verify_pass = (vproc.returncode == 0)
+                except Exception:
+                    verify_pass = False
+                _emit_reasoning_event(
+                    run, "agent.step.verify",
+                    summary=f"Verify step {k}/{len(steps)}: {'pass' if verify_pass else 'fail'}",
+                    trust_level="semi-trusted-project-source",
+                    extra={"step": k, "verify_pass": verify_pass},
+                )
+
+            outcomes.append({
+                "step": k, "intent": intent, "command": redacted_cmd,
+                "destructive": False, "ran": True, "exit": exit_code,
+                "output_summary": out_summary,
+                "verify": verify_pass, "decision": "allow",
+            })
+
+            if not ok or verify_pass is False:
+                all_ok = False
+                _emit_reasoning_event(
+                    run, "agent.halt",
+                    summary=f"Halted at step {k}/{len(steps)} (step or verify failed)",
+                    trust_level="semi-trusted-project-source", extra={"step": k})
+                break
+
+        # 5. Close the run.
+        final_status = "completed" if all_ok else "failed"
+        receipt = _close_reasoning_run(run, status=final_status, replay_class=replay_class)
+
+        # 6. Respond.
+        return response("agent_run", {
+            "goal": goal,
+            "dry_run": (not execute),
+            "planned": True,
+            "step_count": len(steps),
+            "steps": [{"intent": s["intent"], "command": redact_secrets(s["command"]),
+                       "verify": s["verify"], "destructive": bool(s["destructive"]) or is_destructive_command(s["command"])}
+                      for s in steps],
+            "outcomes": outcomes,
+            "status": final_status,
+            "backend": backend,
+            "model": model,
+            "reasoning_run": run["id"],
+            "reasoning_receipt": receipt.get("id"),
+            "replay_plan": replay_plan_urn,
+            "note": ("Dry-run: these commands WOULD run; nothing was executed."
+                     if not execute else
+                     "Executed non-destructive steps; destructive steps default-denied."),
+        }, status="ok" if all_ok else "error")
 
     if action == "plan_next":
         pending_dir = Path.home() / ".local" / "state" / "sourceos" / "terminal"

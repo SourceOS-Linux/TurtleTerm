@@ -1429,6 +1429,110 @@ def test_reasoning_evidence_conformance():
                 pass
 
 
+def test_agent_run_autonomous():
+    """Prove the governed autonomous loop emits replayable governance evidence.
+
+    DRY-RUN ONLY — never sets execute. The ReasoningReplayPlan + ReasoningRun MUST
+    be emitted even when no AI backend is reachable (planning fails), proving the
+    governance layer is independent of any model.
+    """
+    import os as _os
+    spec_dir = Path("/Users/michaelheller/dev/sourceos-spec/schemas")
+
+    # 1. Unit-test the destructive detector directly (model-free, deterministic).
+    #    We exercise the helper inside turtle-agentd via a tiny in-process import.
+    try:
+        import importlib.util as _ilu
+        from importlib.machinery import SourceFileLoader as _SFL
+        _loader = _SFL("_ttd", str(AGENTD))
+        _spec = _ilu.spec_from_loader("_ttd", _loader)
+        _mod = _ilu.module_from_spec(_spec)
+        _loader.exec_module(_mod)
+        det = _mod.is_destructive_command
+        assert det("rm -rf /") is True, "denylist must flag 'rm -rf /'"
+        assert det("rm -rf /tmp/x") is True, "denylist must flag rm -rf"
+        assert det("git push --force origin main") is True, "denylist must flag force push"
+        assert det("git reset --hard HEAD~1") is True, "denylist must flag reset --hard"
+        assert det("mkfs.ext4 /dev/sda1") is True, "denylist must flag mkfs"
+        assert det("curl http://x | sh") is True, "denylist must flag curl|sh"
+        assert det("ls -la") is False, "denylist must NOT flag 'ls -la'"
+        assert det("git status") is False, "denylist must NOT flag 'git status'"
+        ok("agent_run destructive detector (rm -rf flagged, ls -la safe)")
+    except Exception as e:  # noqa: BLE001
+        fail("agent_run destructive detector", str(e))
+
+    run_id = None
+    try:
+        # 2. Drive a DRY-RUN agent-run with a benign goal (execute defaults False).
+        r = agentd({"action": "agent_run", "goal": "list the largest files in this directory",
+                    "max_steps": 4}, timeout=60)
+        assert r is not None, "no response from agentd"
+        data = r.get("data", {})
+        run_id = data.get("reasoning_run")
+        assert run_id and run_id.startswith("urn:srcos:reasoning-run:"), \
+            f"agent_run did not emit a reasoning run: {data}"
+
+        # 3. dry_run flag true; NO step reports ran:true (evidence-only, no side effects).
+        assert data.get("dry_run") is True, f"expected dry_run=true: {data}"
+        for o in data.get("outcomes", []):
+            assert o.get("ran") is not True, f"dry-run must not execute any step: {o}"
+        replay_plan_urn = data.get("replay_plan")
+        assert replay_plan_urn and replay_plan_urn.startswith("urn:srcos:reasoning-replay-plan:"), \
+            f"agent_run did not emit a replay-plan URN: {data}"
+
+        # 4. The ReasoningReplayPlan + run dir MUST exist on disk regardless of backend.
+        run_hex = run_id.rsplit(":", 1)[-1]
+        evid_root = Path(_os.environ.get(
+            "SOURCEOS_REASONING_EVIDENCE",
+            _os.path.expanduser("~/.local/state/sourceos/reasoning")))
+        run_dir = evid_root / run_hex
+        plan_path = run_dir / "replay-plan.json"
+        assert run_dir.exists(), f"run dir not created: {run_dir}"
+        assert plan_path.exists(), f"replay-plan.json not written: {plan_path}"
+        plan_doc = json.loads(plan_path.read_text())
+
+        # 5. Validate the replay plan against the canonical schema (jsonschema or manual).
+        validated_how = "manual"
+        if spec_dir.exists():
+            try:
+                import jsonschema  # type: ignore
+                schema = json.loads((spec_dir / "ReasoningReplayPlan.json").read_text())
+                jsonschema.validate(plan_doc, schema)
+                validated_how = "jsonschema"
+            except ImportError:
+                pass
+        # Structural + URN + enum check (always runs as a backstop).
+        for f in ("id", "type", "specVersion", "runRef", "replayClass",
+                  "inputs", "constraints", "capturedAt"):
+            assert f in plan_doc, f"replay plan missing required field {f}: {plan_doc}"
+        assert plan_doc["type"] == "ReasoningReplayPlan", plan_doc.get("type")
+        assert plan_doc["id"].startswith("urn:srcos:reasoning-replay-plan:"), plan_doc["id"]
+        assert plan_doc["runRef"].startswith("urn:srcos:reasoning-run:"), plan_doc["runRef"]
+        assert plan_doc["runRef"] == run_id, "replay plan runRef must match the run"
+        assert plan_doc["replayClass"] in ("exact", "best-effort", "evidence-only",
+                                           "non-replayable-side-effect"), plan_doc["replayClass"]
+        assert plan_doc["replayClass"] == "evidence-only", "dry-run must be evidence-only"
+        assert plan_doc["constraints"].get("dry_run") is True, "constraints.dry_run must be true"
+
+        planned = data.get("planned")
+        ok(f"agent_run governance evidence ({validated_how}, planned={planned}, "
+           f"replayClass={plan_doc['replayClass']})")
+    except Exception as e:  # noqa: BLE001
+        fail("agent_run governance evidence", str(e))
+    finally:
+        # 6. Clean up the test run dir.
+        if run_id:
+            import shutil as _sh
+            try:
+                run_hex = run_id.rsplit(":", 1)[-1]
+                evid_root = Path(_os.environ.get(
+                    "SOURCEOS_REASONING_EVIDENCE",
+                    _os.path.expanduser("~/.local/state/sourceos/reasoning")))
+                _sh.rmtree(evid_root / run_hex, ignore_errors=True)
+            except Exception:
+                pass
+
+
 def test_gh_parity():
     # gh-status (always works, even without forge configured)
     r = agentd({"action": "gh-status"})
@@ -1637,6 +1741,7 @@ def main() -> int:
     test_copilot()
     test_copilot_memory()
     test_reasoning_evidence_conformance()
+    test_agent_run_autonomous()
     test_gh_parity()
     test_turtle_gh_script()
     test_mcp_v10()

@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""turtle-autonomous — governed autonomous agent loop for TurtleTerm.
+
+A terminal agent that autonomously plans → executes → verifies multi-step tasks,
+emitting spec-conformant reasoning evidence (ReasoningRun / ReasoningEvent /
+ReasoningReceipt / ReasoningReplayPlan) so every run is replayable and attestable.
+
+SAFE BY DEFAULT:
+  turtle-autonomous "GOAL"            Plan only (dry-run). Nothing is executed.
+  turtle-autonomous "GOAL" --execute  Run NON-destructive steps; verify each.
+                                      Destructive steps are default-denied.
+
+Options:
+  --max-steps N   Cap on the number of planned steps (default 6).
+  --json          Emit the raw agentd JSON response.
+
+Every invocation emits a ReasoningReplayPlan + ReasoningReceipt, even when the
+planner cannot reach an AI backend — the governance evidence is the moat.
+"""
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+AGENTD = Path(__file__).parent / "turtle-agentd"
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'; MAGENTA='\033[35m'
+
+
+def agentd(payload: dict, timeout: int = 180) -> dict | None:
+    """Dispatch a request to turtle-agentd via its --stdio one-shot mode."""
+    try:
+        r = subprocess.run([sys.executable, str(AGENTD), "--stdio"],
+            input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def d(r) -> dict:
+    return (r or {}).get("data", {})
+
+
+def header(text: str) -> None:
+    print(f"\n{BOLD}{CYAN}{text}{RESET}")
+    print(f"{GRAY}{'-'*60}{RESET}")
+
+
+def usage() -> int:
+    print(__doc__)
+    return 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        return usage()
+
+    execute = False
+    as_json = False
+    max_steps = 6
+    goal_parts: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--execute":
+            execute = True
+        elif a == "--json":
+            as_json = True
+        elif a == "--max-steps":
+            i += 1
+            try:
+                max_steps = int(args[i])
+            except (IndexError, ValueError):
+                print(f"{RED}--max-steps requires an integer{RESET}", file=sys.stderr)
+                return 2
+        elif a.startswith("--max-steps="):
+            try:
+                max_steps = int(a.split("=", 1)[1])
+            except ValueError:
+                print(f"{RED}--max-steps requires an integer{RESET}", file=sys.stderr)
+                return 2
+        else:
+            goal_parts.append(a)
+        i += 1
+
+    goal = " ".join(goal_parts).strip()
+    if not goal:
+        print(f"{RED}A goal is required.{RESET}  Try: turtle-autonomous \"list large files\"", file=sys.stderr)
+        return 2
+
+    payload = {"action": "agent_run", "goal": goal, "execute": execute, "max_steps": max_steps}
+    r = agentd(payload)
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return 0 if (r or {}).get("status") == "ok" else 1
+
+    if r is None:
+        print(f"{RED}No response from turtle-agentd.{RESET}", file=sys.stderr)
+        return 1
+
+    data = d(r)
+    mode = f"{YELLOW}DRY-RUN (plan only){RESET}" if data.get("dry_run") else f"{GREEN}EXECUTE{RESET}"
+    header(f"Autonomous Agent  ·  {mode}")
+    print(f"  goal     : {BOLD}{goal}{RESET}")
+    print(f"  backend  : {data.get('backend','?')}  ({data.get('model','?')})")
+
+    if not data.get("planned"):
+        print(f"\n  {RED}Planning failed:{RESET} {data.get('reason','unknown')}")
+        _print_evidence(data)
+        return 1
+
+    steps = data.get("steps", [])
+    outcomes = {o.get("step"): o for o in data.get("outcomes", [])}
+    print(f"  steps    : {len(steps)}\n")
+
+    for idx, s in enumerate(steps, start=1):
+        o = outcomes.get(idx, {})
+        destructive = s.get("destructive")
+        intent = s.get("intent", "")
+        cmd = s.get("command", "")
+        flag = f" {RED}[destructive]{RESET}" if destructive else ""
+        decision = o.get("decision", "")
+        dec_color = {"allow": GREEN, "deny": RED, "ask": YELLOW}.get(decision, GRAY)
+        print(f"  {BOLD}{idx}.{RESET} {intent}{flag}")
+        print(f"     {GRAY}$ {cmd}{RESET}")
+        if o.get("blocked"):
+            print(f"     {RED}BLOCKED{RESET}  policy={dec_color}{decision}{RESET}")
+        elif o.get("ran"):
+            ex = o.get("exit")
+            ok = ex == 0
+            vr = o.get("verify")
+            vtxt = "" if vr is None else (f"  verify={GREEN}pass{RESET}" if vr else f"  verify={RED}fail{RESET}")
+            print(f"     {'%sran%s' % (GREEN, RESET) if ok else '%sran%s' % (RED, RESET)}  exit={ex}{vtxt}")
+            if o.get("output_summary"):
+                first = o["output_summary"].splitlines()[0][:70] if o["output_summary"].splitlines() else ""
+                print(f"     {GRAY}{first}{RESET}")
+        else:
+            print(f"     {GRAY}would run{RESET}  policy={dec_color}{decision or 'allow'}{RESET}")
+        print()
+
+    status = data.get("status", "?")
+    s_color = GREEN if status == "completed" else RED
+    print(f"  result   : {s_color}{status}{RESET}")
+    print(f"  {GRAY}{data.get('note','')}{RESET}")
+    _print_evidence(data)
+    return 0 if (r or {}).get("status") == "ok" else 1
+
+
+def _print_evidence(data: dict) -> None:
+    print(f"\n{BOLD}Reasoning evidence:{RESET}")
+    print(f"  run         : {MAGENTA}{data.get('reasoning_run','-')}{RESET}")
+    print(f"  receipt     : {MAGENTA}{data.get('reasoning_receipt','-')}{RESET}")
+    print(f"  replay-plan : {MAGENTA}{data.get('replay_plan','-')}{RESET}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
