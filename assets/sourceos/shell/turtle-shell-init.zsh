@@ -227,6 +227,124 @@ _turtle_learn_hook() {
 }
 zle -N accept-line _turtle_learn_hook 2>/dev/null || true
 
+# ============================================================
+# Always-on inline autosuggest (Warp "Next Command", fully local)
+#   zsh-autosuggestions-style dimmed ghost text after the cursor, backed by
+#   the FAST local `predict-command` history path (no model, no network, no
+#   $/mo, no telemetry). Default-on; disable with TURTLE_AUTOSUGGEST=0.
+#   Accept with → (forward-char at EOL), END, or Ctrl-E.
+# ============================================================
+
+if [[ "${TURTLE_AUTOSUGGEST:-1}" != "0" ]]; then
+
+typeset -g _TURTLE_AS_SUGGESTION=""   # current ghost suffix (after cursor)
+typeset -g _TURTLE_AS_LASTBUF=$'\0'   # buffer we last fetched for (de-dupe)
+
+# Resolve a callable agentctl once.
+_turtle_agentctl() {
+    local ctl="${0:A:h}/../bin/turtle-agentctl"
+    [[ -x "$ctl" ]] || ctl="turtle-agentctl"
+    echo "$ctl"
+}
+
+# Clear any displayed ghost text.
+_turtle_as_clear() {
+    _TURTLE_AS_SUGGESTION=""
+    POSTDISPLAY=""
+    region_highlight=("${(@)region_highlight:#*TURTLE_AS*}")
+}
+
+# Fetch + render the ghost suffix for the current BUFFER. Fast history path,
+# hard-timeboxed so a slow predict can never jank typing.
+_turtle_as_fetch() {
+    # Only suggest when typing at end of a non-empty line.
+    if [[ -z "$BUFFER" || $CURSOR -ne ${#BUFFER} ]]; then
+        _turtle_as_clear
+        return
+    fi
+    local ctl; ctl="$(_turtle_agentctl)"
+    local suffix=""
+    # `timeout` if available keeps the hot path bounded; predict itself is <1ms.
+    local _to=""
+    if command -v timeout >/dev/null 2>&1; then _to="timeout 0.2"; fi
+    suffix=$(
+        $_to "$ctl" --stdio predict-command partial="$BUFFER" cwd="$PWD" 2>/dev/null \
+        | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin); print(d.get("data",{}).get("completion",""), end="")
+except Exception:
+    pass' 2>/dev/null
+    )
+    if [[ -n "$suffix" ]]; then
+        _TURTLE_AS_SUGGESTION="$suffix"
+        POSTDISPLAY="$suffix"
+        # Dim the ghost region (fg=8 / 'bright black').
+        region_highlight+=("${#BUFFER} $(( ${#BUFFER} + ${#suffix} )) fg=8 TURTLE_AS")
+    else
+        _turtle_as_clear
+    fi
+}
+
+# Fires on every redraw (each keystroke) — non-blocking & fast.
+# De-dupe: only re-fetch when the buffer actually changed since last redraw,
+# so cursor moves / pure redraws cost nothing.
+_turtle_as_redraw() {
+    if [[ "$BUFFER" == "$_TURTLE_AS_LASTBUF" ]]; then
+        # Re-render existing ghost (zsh clears POSTDISPLAY between redraws).
+        if [[ -n "$_TURTLE_AS_SUGGESTION" && $CURSOR -eq ${#BUFFER} && -n "$BUFFER" ]]; then
+            POSTDISPLAY="$_TURTLE_AS_SUGGESTION"
+            region_highlight+=("${#BUFFER} $(( ${#BUFFER} + ${#_TURTLE_AS_SUGGESTION} )) fg=8 TURTLE_AS")
+        fi
+        return
+    fi
+    _TURTLE_AS_LASTBUF="$BUFFER"
+    _turtle_as_fetch
+}
+zle -N zle-line-pre-redraw _turtle_as_redraw 2>/dev/null || true
+
+# Accept the whole suggestion (used by → / END / Ctrl-E at EOL).
+_turtle_as_accept() {
+    if [[ -n "$_TURTLE_AS_SUGGESTION" && $CURSOR -eq ${#BUFFER} ]]; then
+        BUFFER="$BUFFER$_TURTLE_AS_SUGGESTION"
+        CURSOR=${#BUFFER}
+        _turtle_as_clear
+        return 0
+    fi
+    return 1
+}
+
+# Right-arrow / Ctrl-E / End: accept ghost if at EOL, else fall through.
+_turtle_as_forward_or_accept() {
+    if [[ $CURSOR -eq ${#BUFFER} && -n "$_TURTLE_AS_SUGGESTION" ]]; then
+        _turtle_as_accept
+    else
+        zle .forward-char
+    fi
+}
+_turtle_as_eol_or_accept() {
+    if [[ $CURSOR -eq ${#BUFFER} && -n "$_TURTLE_AS_SUGGESTION" ]]; then
+        _turtle_as_accept
+    else
+        zle .end-of-line
+    fi
+}
+zle -N _turtle_as_forward_or_accept
+zle -N _turtle_as_eol_or_accept
+bindkey '^[[C' _turtle_as_forward_or_accept   # right arrow
+bindkey '^F'   _turtle_as_forward_or_accept   # ctrl-f
+bindkey '^E'   _turtle_as_eol_or_accept       # ctrl-e
+bindkey '^[[F' _turtle_as_eol_or_accept       # End
+bindkey '^[OF' _turtle_as_eol_or_accept       # End (alt encoding)
+
+# Optional: accept-and-execute the ghost on a dedicated chord (ALT+Enter).
+_turtle_as_accept_execute() {
+    _turtle_as_accept && zle .accept-line
+}
+zle -N _turtle_as_accept_execute
+bindkey '^[^M' _turtle_as_accept_execute      # ALT+Enter
+
+fi  # end TURTLE_AUTOSUGGEST
+
 # ---- Debounced auto-ghost (only when ANTHROPIC_API_KEY is set) ----
 
 if [[ -n "${ANTHROPIC_API_KEY:-}" || "${TURTLE_GHOST_TEXT:-}" == "1" ]]; then

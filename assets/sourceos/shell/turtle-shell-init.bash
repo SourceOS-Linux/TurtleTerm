@@ -242,6 +242,44 @@ trap 'rm -f "$_TURTLE_GHOST_FILE"; [[ $_TURTLE_GHOST_PID -gt 0 ]] && kill "$_TUR
 fi  # end ANTHROPIC_API_KEY / TURTLE_GHOST_TEXT guard
 
 # ============================================================
+# Local on-demand autosuggest (Warp "Next Command", fully local)
+#   NOTE: bash readline has no native inline ghost-text rendering (unlike zsh's
+#   POSTDISPLAY / fish's autosuggest), so true always-on dimmed ghost text is
+#   not feasible here without a full readline reimplementation. Instead we give
+#   the best feasible bash UX: an on-demand accept binding (ALT+L) that pulls
+#   the FAST local `predict-command` history completion (no model, no telemetry)
+#   and appends it to the current line. Default-on; disable TURTLE_AUTOSUGGEST=0.
+# ============================================================
+
+if [[ "${TURTLE_AUTOSUGGEST:-1}" != "0" ]]; then
+
+_turtle_predict_accept() {
+    local buf="${READLINE_LINE}"
+    [[ -z "$buf" ]] && return
+    local ctl; ctl="$(dirname "${BASH_SOURCE[0]}")/../bin/turtle-agentctl"
+    [[ -x "$ctl" ]] || ctl="turtle-agentctl"
+    local to=""
+    command -v timeout >/dev/null 2>&1 && to="timeout 0.2"
+    local suffix
+    suffix=$($to "$ctl" --stdio predict-command partial="$buf" cwd="$(pwd)" 2>/dev/null \
+        | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin); print(d.get("data",{}).get("completion",""), end="")
+except Exception:
+    pass' 2>/dev/null)
+    if [[ -n "$suffix" ]]; then
+        READLINE_LINE="${buf}${suffix}"
+        READLINE_POINT="${#READLINE_LINE}"
+    fi
+}
+
+if [[ $- == *i* ]]; then
+    bind -x '"\el":_turtle_predict_accept'   # ALT+L — accept local prediction
+fi
+
+fi  # end TURTLE_AUTOSUGGEST
+
+# ============================================================
 # Auto-perf timing for bash
 # ============================================================
 _turtle_bash_preexec() {

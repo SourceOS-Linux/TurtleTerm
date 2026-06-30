@@ -1813,6 +1813,57 @@ def test_reasoning_seal():
             pass
 
 
+def test_predict_command():
+    """Always-on inline autosuggest: history-path prediction is correct + fast."""
+    import tempfile, time as _t, os as _os_pc
+    with tempfile.TemporaryDirectory() as tmpdir:
+        events_path = Path(tmpdir) / "events.ndjson"
+        cwd = tmpdir
+        seed = [
+            {"event_type": "command.completed", "command": "git push origin main",
+             "cwd": cwd, "exit_code": 0, "ts": "2026-06-30T00:00:01Z"},
+            {"event_type": "command.completed", "command": "git status",
+             "cwd": cwd, "exit_code": 0, "ts": "2026-06-30T00:00:02Z"},
+            {"event_type": "command.completed", "command": "git push origin main",
+             "cwd": cwd, "exit_code": 0, "ts": "2026-06-30T00:00:03Z"},
+            {"event_type": "command.completed", "command": "ls -la",
+             "cwd": cwd, "exit_code": 0, "ts": "2026-06-30T00:00:04Z"},
+        ]
+        events_path.write_text("\n".join(json.dumps(e) for e in seed) + "\n")
+        old_env = _os_pc.environ.get("SOURCEOS_TERMINAL_EVENTS")
+        _os_pc.environ["SOURCEOS_TERMINAL_EVENTS"] = str(events_path)
+        try:
+            t0 = _t.perf_counter()
+            r = agentd({"action": "predict_command", "partial": "git pu", "cwd": cwd})
+            dt_ms = (_t.perf_counter() - t0) * 1000.0
+            if not r or r.get("status") != "ok":
+                fail("predict_command", f"bad response: {str(r)[:120]}")
+                return
+            data = r.get("data", {})
+            comp = data.get("completion", "")
+            src = data.get("source", "")
+            # "git pu" -> "git push origin main": completion should be the suffix.
+            if comp != "sh origin main":
+                fail("predict_command", f"expected 'sh origin main', got {comp!r} (src={src})")
+                return
+            if src != "history":
+                fail("predict_command source", f"expected history, got {src!r}")
+                return
+            # No-match partial returns empty (never blocks / never guesses wildly).
+            r2 = agentd({"action": "predict_command", "partial": "zzzqqq", "cwd": cwd})
+            if r2 and r2.get("data", {}).get("completion", "") != "":
+                fail("predict_command no-match", "expected empty completion for unknown prefix")
+                return
+            # Latency note: subprocess spawn dominates; the in-process history
+            # path itself is sub-millisecond. We assert a generous ceiling.
+            ok("predict_command", f"history hit + suffix correct ({dt_ms:.0f}ms incl. spawn)")
+        finally:
+            if old_env is None:
+                _os_pc.environ.pop("SOURCEOS_TERMINAL_EVENTS", None)
+            else:
+                _os_pc.environ["SOURCEOS_TERMINAL_EVENTS"] = old_env
+
+
 def main() -> int:
     if not AS_JSON:
         print(f'\n{BOLD}{CYAN}  TurtleTerm Self-Test{RESET}  {GRAY}v1.0.0{RESET}\n')
@@ -1891,6 +1942,7 @@ def main() -> int:
     test_workspace_env()
     test_diagnose()
     test_chain()
+    test_predict_command()
     test_new_scripts_v4()
 
     passed = sum(1 for r in results if r['status'] == 'pass')

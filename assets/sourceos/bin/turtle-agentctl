@@ -157,6 +157,12 @@ def main(argv: list[str]) -> int:
     nl_p = sub.add_parser("nl-to-shell", help="convert natural language to a shell command via Noetica")
     nl_p.add_argument("text", nargs=argparse.REMAINDER, help="natural language request")
 
+    # Always-on inline autosuggest (Warp "Next Command", fully local).
+    pred_p = sub.add_parser("predict-command", help="fast local command prediction for inline ghost text (history-first)")
+    pred_p.add_argument("kv", nargs="*", default=[], help="partial=<text> [cwd=<dir>] (or a bare partial)")
+    pred_p.add_argument("--partial", dest="partial_flag", default="")
+    pred_p.add_argument("--cwd", dest="cwd_flag", default="")
+
     atlas_ctx_p = sub.add_parser("atlas-context", help="read .atlas/ knowledge base from cwd or parent dirs")
     atlas_ctx_p.add_argument("cwd", nargs="?", help="directory to start search from (default: cwd)")
 
@@ -534,6 +540,26 @@ def main(argv: list[str]) -> int:
             print(json.dumps({"status": "error", "message": "provide a natural-language request"}))
             return 2
         request = {"action": "nl_to_shell", "text": text, "context": {"cwd": os.getcwd()}}
+    elif args.command == "predict-command":
+        # Accept `partial=...`/`cwd=...` tokens, bare positional partial, or flags.
+        partial = getattr(args, "partial_flag", "") or ""
+        cwd = getattr(args, "cwd_flag", "") or ""
+        bare: list[str] = []
+        for tok in getattr(args, "kv", []) or []:
+            if "=" in tok:
+                k, _eq, v = tok.partition("=")
+                k = k.strip().lower()
+                if k == "partial":
+                    partial = v
+                elif k == "cwd":
+                    cwd = v
+                else:
+                    bare.append(tok)
+            else:
+                bare.append(tok)
+        if not partial and bare:
+            partial = " ".join(bare)
+        request = {"action": "predict_command", "partial": partial, "cwd": cwd or os.getcwd()}
     elif args.command == "plan":
         goal = join_remainder(args.goal)
         if not goal:
@@ -837,11 +863,24 @@ def main(argv: list[str]) -> int:
         # Passthrough: unknown subcommand treated as action name
         # Converts CLI → JSON payload for agentd
         raw_action = _remainder[0]
-        pos_args   = [a for a in _remainder[1:] if not a.startswith('-')]
-        flag_args  = [a for a in _remainder[1:] if a.startswith('-')]
+        rest       = _remainder[1:]
+        # Split off `key=value` positional tokens (fast generic form used by the
+        # shell ghost-text hook, e.g. `predict-command partial="git pu"`).
+        kv_args: dict[str, str] = {}
+        leftover: list[str] = []
+        for a in rest:
+            if (not a.startswith('-')) and '=' in a:
+                k, _eq, v = a.partition('=')
+                if k and k.replace('_', '').replace('-', '').isalnum():
+                    kv_args[k.replace('-', '_')] = v
+                    continue
+            leftover.append(a)
+        pos_args   = [a for a in leftover if not a.startswith('-')]
+        flag_args  = [a for a in leftover if a.startswith('-')]
 
         # Build payload from flags: --key value pairs
         payload: dict[str, Any] = {"action": raw_action}
+        payload.update(kv_args)
         i = 0
         while i < len(flag_args):
             if flag_args[i].startswith('--') and i + 1 < len(flag_args) and not flag_args[i+1].startswith('--'):
@@ -969,6 +1008,8 @@ def main(argv: list[str]) -> int:
             "history-search":        ["query"],
             "scratchpad-write":      ["content", "key"],
             "scratchpad-read":       ["key"],
+            "predict_command":       ["partial", "cwd"],
+            "predict-command":       ["partial", "cwd"],
         }
         field_names = _pos_map.get(raw_action, ["text"])
         for idx, val in enumerate(pos_args):

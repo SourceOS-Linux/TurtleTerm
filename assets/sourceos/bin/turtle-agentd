@@ -1166,6 +1166,117 @@ def _copilot_gather_context(cwd: str | None = None, evt: dict | None = None) -> 
     return ctx
 
 
+def _predict_from_history(partial: str, cwd: str | None = None,
+                          limit: int = 400) -> dict:
+    """Instant, model-free command prediction (zsh-autosuggestions-style).
+
+    Scans the event stream for past `command.completed` commands whose text
+    starts with `partial` (prefix match) and returns the best completion
+    *suffix* to append. Scoring = frequency x recency x same-cwd bonus, so the
+    most recently / frequently used matching command in this directory wins.
+
+    Hot path: pure in-memory, no model, no network, exception-safe. Designed to
+    return in well under 30ms on a normal history. Returns the longest common
+    prefix of the top candidates so the ghost text never over-commits.
+    """
+    out = {"completion": "", "source": "", "candidate": ""}
+    try:
+        partial = partial or ""
+        if not partial.strip():
+            return out
+        cwd = cwd or os.getcwd()
+        events = read_ndjson(event_stream_path(), limit=limit)
+        if not events:
+            return out
+        # Aggregate matching commands. `events` is oldest->newest (tail order),
+        # so a later index == more recent.
+        n = len(events)
+        scores: dict[str, float] = {}
+        last_idx: dict[str, int] = {}
+        for idx, row in enumerate(events):
+            if row.get("event_type") != "command.completed":
+                continue
+            cmd = (row.get("command") or "").strip()
+            # Only suggest commands that strictly extend the partial.
+            if not cmd or cmd == partial or not cmd.startswith(partial):
+                continue
+            # Don't suggest commands that previously failed hard.
+            rc = row.get("exit_code", 0)
+            if rc not in (0, None, ""):
+                # mildly penalize rather than exclude (a typo'd flag shouldn't
+                # erase an otherwise-useful command shape)
+                penalty = 0.4
+            else:
+                penalty = 1.0
+            recency = (idx + 1) / n  # 0..1, newer is higher
+            same_cwd = 1.6 if (row.get("cwd") or cwd) == cwd else 1.0
+            scores[cmd] = scores.get(cmd, 0.0) + recency * same_cwd * penalty
+            last_idx[cmd] = idx
+        if not scores:
+            return out
+        # Rank: score desc, then most-recent.
+        ranked = sorted(scores.items(),
+                        key=lambda kv: (kv[1], last_idx.get(kv[0], 0)),
+                        reverse=True)
+        best = ranked[0][0]
+        completion = best[len(partial):]
+        return {"completion": completion, "source": "history", "candidate": best}
+    except Exception:
+        return {"completion": "", "source": "", "candidate": ""}
+
+
+def _predict_from_model(partial: str, cwd: str | None, cfg: dict,
+                        timeout_ms: int = 150) -> dict:
+    """Opt-in, strictly time-boxed local-model fallback (NEVER on the hot path).
+
+    Only fires when explicitly enabled via config `autosuggest_model: true` AND a
+    fast local backend (ollama) is configured. Hard-bounded by `timeout_ms`; on
+    any slowness or error it returns nothing rather than blocking the shell.
+    """
+    out = {"completion": "", "source": ""}
+    try:
+        if not cfg.get("autosuggest_model"):
+            return out
+        backend = cfg.get("backend")
+        endpoint = cfg.get("endpoint") or "http://localhost:11434"
+        model = cfg.get("autosuggest_model_name") or cfg.get("ollama_model") or cfg.get("model")
+        # Only a local ollama-style backend is fast/cheap enough to consider.
+        if backend != "ollama" and not cfg.get("ollama_model"):
+            return out
+        partial = (partial or "").strip()
+        if not partial:
+            return out
+        try:
+            tmo = max(0.02, min(float(timeout_ms) / 1000.0, 1.0))
+        except Exception:
+            tmo = 0.15
+        cwd = cwd or os.getcwd()
+        proj = _detect_project_type(cwd) or "generic"
+        prompt = (
+            f"Complete this shell command. Output ONLY the full single-line "
+            f"command, no prose, no backticks. Project type: {proj}. "
+            f"Partial: {partial}"
+        )
+        import urllib.request as _ur_p
+        body = json.dumps({
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"num_predict": 24, "temperature": 0.0},
+        }).encode()
+        req = _ur_p.Request(endpoint.rstrip("/") + "/api/generate", data=body,
+                            headers={"Content-Type": "application/json"})
+        with _ur_p.urlopen(req, timeout=tmo) as r:
+            data = json.loads(r.read())
+        text = (data.get("response") or "").strip().strip("`").splitlines()
+        full = (text[0].strip() if text else "")
+        if full.startswith(partial) and len(full) > len(partial):
+            return {"completion": full[len(partial):], "source": "model"}
+        return out
+    except Exception:
+        return out
+
+
 def _copilot_remember(signature: str, command: str, fix: str,
                       source: str = "auto", error_keywords: list | None = None) -> bool:
     """Append a fix entry to the memory store, de-duping and capping size."""
@@ -2237,6 +2348,34 @@ def _handle_request_inner(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C
             "fix_command": fix_command,
             "source": source,
             "ai_response": ai_resp,
+        })
+
+    if action in ("predict_command", "predict-command"):
+        # FAST always-on inline autosuggest (Warp "Next Command", fully local).
+        # Hot path = pure history/frecency match, no model, no network.
+        # Must return in <30ms; exception-safe; never blocks the shell.
+        partial = request.get("partial", "")
+        if not isinstance(partial, str):
+            partial = str(partial or "")
+        cwd = request.get("cwd") or None
+        result = _predict_from_history(partial, cwd=cwd)
+        # Optional, strictly opt-in + time-boxed local-model enrichment ONLY when
+        # history found nothing. Default OFF (config flag autosuggest_model).
+        if not result.get("completion"):
+            try:
+                cfg = _copilot_config()
+                if cfg.get("autosuggest_model"):
+                    m = _predict_from_model(partial, cwd, cfg, timeout_ms=150)
+                    if m.get("completion"):
+                        result = {"completion": m["completion"], "source": "model",
+                                  "candidate": partial + m["completion"]}
+            except Exception:
+                pass
+        return response("predict_command", {
+            "completion": result.get("completion", ""),
+            "source": result.get("source", ""),
+            "candidate": result.get("candidate", ""),
+            "partial": partial,
         })
 
     if action == "nl_to_shell":

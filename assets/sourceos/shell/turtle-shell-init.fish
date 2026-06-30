@@ -176,6 +176,51 @@ trap 'rm -f $_TURTLE_GHOST_FILE' EXIT
 
 end  # end ANTHROPIC_API_KEY guard
 
+# ============================================================
+# Local context-aware autosuggest (Warp "Next Command", fully local)
+#   fish already ships native history autosuggestions, so we ENHANCE rather
+#   than fight it: a binding that pulls the TurtleTerm `predict-command`
+#   completion (cwd/context-weighted, no model, no telemetry) and inserts it.
+#   Default-on; disable with TURTLE_AUTOSUGGEST=0.
+#   Bound to ALT+L (accept local prediction). Fast history path only.
+# ============================================================
+
+if test "$TURTLE_AUTOSUGGEST" != "0"
+
+function _turtle_agentctl
+    set -l ctl (dirname (status filename))/../bin/turtle-agentctl
+    if not test -x $ctl
+        set ctl turtle-agentctl
+    end
+    echo $ctl
+end
+
+function _turtle_predict_accept
+    set -l buf (commandline)
+    test -z "$buf"; and return
+    set -l ctl (_turtle_agentctl)
+    set -l to
+    if command -v timeout >/dev/null 2>&1
+        set to timeout 0.2
+    end
+    set -l suffix ($to $ctl --stdio predict-command partial="$buf" cwd=(pwd) 2>/dev/null \
+        | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin); print(d.get("data",{}).get("completion",""), end="")
+except Exception:
+    pass' 2>/dev/null)
+    if test -n "$suffix"
+        commandline -i -- $suffix
+        commandline -f repaint
+    end
+end
+
+if status is-interactive
+    bind \el _turtle_predict_accept        # ALT+L: accept local prediction
+end
+
+end  # end TURTLE_AUTOSUGGEST
+
 function _turtle_fish_postexec --on-event fish_postexec
     set -l exit_status $status
     set -l completed_at (date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; or echo "")
