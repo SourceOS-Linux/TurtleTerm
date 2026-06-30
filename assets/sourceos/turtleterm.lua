@@ -1063,35 +1063,138 @@ local turtle_builtin_workflows = {
   { name = 'Show PATH entries',                  command = "echo $PATH | tr ':' '\\n'" },
 }
 
+-- Resolve a turtle-* helper script under assets/sourceos/bin
+local function turtle_bin(name)
+  return (os.getenv('HOME') or '') .. '/dev/TurtleTerm/assets/sourceos/bin/' .. name
+end
+
+-- Sovereign Warp Drive: unified workflows surface (chains/runbooks/bookmarks/drive)
+-- sourced live from `turtle-drive list --json`. Selecting one runs it in a new
+-- pane so param prompting works in a real TTY. Falls back to builtin workflows.
 local function turtle_workflows()
   return wezterm.action_callback(function(window, pane)
-    local workflows = turtle_builtin_workflows
-    local home = os.getenv('HOME') or ''
-    local wf_path = home .. '/.config/turtleterm/workflows.yaml'
-    local wf_file = io.open(wf_path, 'r')
-    if wf_file then
-      local content = wf_file:read('*a')
-      wf_file:close()
-      local parsed = parse_workflows(content)
-      if #parsed > 0 then workflows = parsed end
-    end
     local choices = {}
-    for i, wf in ipairs(workflows) do
-      table.insert(choices, { label = string.format('%d. %s', i, wf.name), id = tostring(i) })
+    local drive_entries = nil
+
+    -- Primary source: turtle-drive list --json
+    local ok, out, _ = pcall(function()
+      local _ok, _out = wezterm.run_child_process({
+        '/usr/bin/env', 'python3', turtle_bin('turtle-drive'), 'list', '--json',
+      })
+      return _ok and _out or nil
+    end)
+    if ok and out then
+      local parsed = nil
+      pcall(function() parsed = wezterm.json_parse(out) end)
+      if parsed and #parsed > 0 then
+        drive_entries = parsed
+        for _, wf in ipairs(parsed) do
+          local desc = wf.description or ''
+          local label = string.format('%s · %s%s',
+            wf.name or '?',
+            wf.type or 'workflow',
+            desc ~= '' and ('  ·  ' .. desc) or '')
+          table.insert(choices, { label = label, id = wf.name or '' })
+        end
+      end
     end
+
+    -- Fallback: builtin + ~/.config workflows.yaml (legacy send_text path)
+    local legacy = nil
+    if not drive_entries then
+      legacy = turtle_builtin_workflows
+      local home = os.getenv('HOME') or ''
+      local wf_file = io.open(home .. '/.config/turtleterm/workflows.yaml', 'r')
+      if wf_file then
+        local content = wf_file:read('*a')
+        wf_file:close()
+        local parsed = parse_workflows(content)
+        if #parsed > 0 then legacy = parsed end
+      end
+      for i, wf in ipairs(legacy) do
+        table.insert(choices, { label = string.format('%d. %s', i, wf.name), id = 'legacy:' .. tostring(i) })
+      end
+    end
+
     window:perform_action(
       act.InputSelector {
         action = wezterm.action_callback(function(w, p, id, label)
-          if not id then return end
-          local idx = tonumber(id)
-          if idx and workflows[idx] then
-            p:send_text(workflows[idx].command)
-            w:toast_notification('TurtleTerm Workflows', workflows[idx].name, nil, 3000)
+          if not id or id == '' then return end
+          -- Legacy entry: inject command into the prompt
+          local lidx = id:match('^legacy:(%d+)$')
+          if lidx and legacy then
+            local wf = legacy[tonumber(lidx)]
+            if wf then
+              p:send_text(wf.command)
+              w:toast_notification('TurtleTerm Workflows', wf.name, nil, 3000)
+            end
+            return
           end
+          -- Drive entry: run in a new pane so params can be prompted in a TTY
+          w:perform_action(
+            act.SpawnCommandInNewPane {
+              direction = 'Right',
+              size = { Percent = 45 },
+              command = {
+                args = {
+                  '/usr/bin/env', 'python3', turtle_bin('turtle-drive'), 'run', id,
+                },
+              },
+            },
+            p
+          )
+          w:toast_notification('TurtleTerm Drive', '▶ ' .. id, nil, 3000)
         end),
-        title = 'TurtleTerm Workflows',
+        title = 'TurtleTerm  ⌂ Drive / Workflows',
         choices = choices,
         fuzzy = true,
+        fuzzy_description = 'Run a chain, runbook, bookmark or drive workflow…',
+      },
+      pane
+    )
+  end)
+end
+
+-- Live session sharing (turtle-share): self-hosted WezTerm mux, no cloud/login.
+-- Small picker dispatches start/list/join/stop into a pane (TTY for prompts).
+local function turtle_share()
+  return wezterm.action_callback(function(window, pane)
+    local choices = {
+      { label = '👥  Start sharing this session', id = 'start' },
+      { label = '📋  List shared sessions',        id = 'list'  },
+      { label = '🔗  Join a shared session…',      id = 'join'  },
+      { label = '⏹  Stop sharing',                 id = 'stop'  },
+    }
+    window:perform_action(
+      act.InputSelector {
+        action = wezterm.action_callback(function(w, p, id, label)
+          if not id or id == '' then return end
+          local args = { '/usr/bin/env', 'python3', turtle_bin('turtle-share'), id }
+          if id == 'join' then
+            -- join needs a name/addr argument; prompt for it inside the new pane's TTY
+            args = {
+              'bash', '-lc',
+              'read -r -p "Share name or addr to join: " n; ' ..
+              'python3 "' .. turtle_bin('turtle-share') .. '" join "$n"; ' ..
+              'echo; read -r -p "[enter to close]"',
+            }
+          end
+          w:perform_action(
+            act.SpawnCommandInNewPane {
+              direction = 'Right',
+              size = { Percent = 45 },
+              command = { args = args },
+            },
+            p
+          )
+          local msg = (id == 'start') and 'Starting shared session — share the join command shown'
+            or ('turtle-share ' .. id)
+          w:toast_notification('TurtleTerm  👥 Share', msg, nil, 4000)
+        end),
+        title = 'TurtleTerm  👥 Live Session Sharing',
+        choices = choices,
+        fuzzy = true,
+        fuzzy_description = 'Self-hosted live terminal sharing — no cloud, no login…',
       },
       pane
     )
@@ -1130,6 +1233,8 @@ local PALETTE_COMMANDS = {
   { label = '🗺  Atlas context              CTRL+SHIFT+A',  id = 'atlas_context' },
   -- Workflows
   { label = '⚙   Browse workflows           CTRL+SHIFT+W', id = 'workflows' },
+  { label = '🗂  Workflows / Drive          CMD+SHIFT+D', id = 'drive_browse' },
+  { label = '👥  Share session (live)       CMD+SHIFT+Y', id = 'share_session' },
   -- Pane / tab
   { label = '⊞  Split pane right            CTRL+ALT+Enter', id = 'split_right' },
   { label = '⊟  Split pane down             CTRL+SHIFT+Enter', id = 'split_down' },
@@ -1213,6 +1318,8 @@ local function turtle_command_palette()
             preview            = turtle_preview_file(),
             atlas_context      = turtle_atlas_context(),
             workflows          = turtle_workflows(),
+            drive_browse       = turtle_workflows(),
+            share_session      = turtle_share(),
             split_right        = act.SplitHorizontal { domain = 'CurrentPaneDomain' },
             split_down         = act.SplitVertical { domain = 'CurrentPaneDomain' },
             new_tab            = act.SpawnTab 'CurrentPaneDomain',
@@ -1796,6 +1903,8 @@ config.keys = {
   { key = 'Enter', mods = 'CTRL|SHIFT', action = act.SplitVertical { domain = 'CurrentPaneDomain' } },
   { key = 'Enter', mods = 'CTRL|ALT', action = act.SplitHorizontal { domain = 'CurrentPaneDomain' } },
   { key = 'w', mods = 'CTRL|SHIFT', action = turtle_workflows() },
+  { key = 'd', mods = 'CMD|SHIFT',  action = turtle_workflows() },  -- Sovereign Warp Drive: Workflows / Drive picker
+  { key = 'y', mods = 'CMD|SHIFT',  action = turtle_share() },      -- Live session sharing (turtle-share)
   { key = 'q', mods = 'CTRL|SHIFT', action = act.CloseCurrentPane { confirm = true } },
   { key = 't', mods = 'CTRL|SHIFT', action = act.SpawnTab 'CurrentPaneDomain' },
   { key = 'LeftArrow', mods = 'CTRL|SHIFT', action = act.ActivateTabRelative(-1) },
