@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""turtle-onboard — TurtleTerm's friendly first-run setup wizard.
+
+A fast, guided out-of-box experience: configures your AI backend, lights up
+shell integration, runs a health check, and tours the killer features Warp
+can't match — fully local AI, governed & attestable agents, sovereign forge.
+
+This is a thin standalone wizard. It never reimplements existing tools; it
+detects what's available and shells out to the turtle-* commands to do the work.
+
+Usage:
+  turtle-onboard               Full guided wizard (welcome → done)
+  turtle-onboard --quick       Fast path: backend + shell + done
+  turtle-onboard --check       Just the health-check step
+  turtle-onboard --no-input    Print everything, change nothing (CI / non-TTY safe)
+
+Flags can combine, e.g.  turtle-onboard --quick --no-input
+"""
+from __future__ import annotations
+import json, os, subprocess, sys, urllib.request
+from pathlib import Path
+
+BIN      = Path(__file__).resolve().parent
+COPILOT  = BIN / "turtle-copilot"
+DIAGNOSE = BIN / "turtle-diagnose"
+SHELLDIR = (BIN.parent / "shell")
+
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'; MAGENTA='\033[35m'; BLUE='\033[34m'
+
+# ── flags ───────────────────────────────────────────────────────────────────
+ARGV     = sys.argv[1:]
+QUICK    = "--quick" in ARGV
+CHECK    = "--check" in ARGV
+# Non-interactive when explicitly requested OR when stdin/stdout isn't a TTY.
+def _isatty() -> bool:
+    try: return sys.stdin.isatty() and sys.stdout.isatty()
+    except Exception: return False
+NO_INPUT = "--no-input" in ARGV or not _isatty()
+
+# ── color/box helpers (same palette as sibling CLIs) ─────────────────────────
+def header(text: str) -> None:
+    print(f"\n{BOLD}{CYAN}{text}{RESET}")
+    print(f"{GRAY}{'─'*54}{RESET}")
+
+def banner() -> None:
+    print(f"""
+{CYAN}{BOLD}  ╭────────────────────────────────────────────────────╮{RESET}
+{CYAN}{BOLD}  │  🐢  Welcome to TurtleTerm                          │{RESET}
+{CYAN}{BOLD}  ╰────────────────────────────────────────────────────╯{RESET}
+  {GRAY}Faster than Warp · fully local AI · governed & attestable · sovereign.{RESET}
+""")
+
+def step(n: int, total: int, title: str) -> None:
+    print(f"\n{BOLD}{MAGENTA}[{n}/{total}]{RESET} {BOLD}{title}{RESET}")
+
+def ok(msg: str)   -> None: print(f"  {GREEN}✓{RESET} {msg}")
+def warn(msg: str) -> None: print(f"  {YELLOW}!{RESET} {msg}")
+def fail(msg: str) -> None: print(f"  {RED}✗{RESET} {msg}")
+def tip(msg: str)  -> None: print(f"  {CYAN}→{RESET} {msg}")
+
+def confirm(prompt: str, default: bool = False) -> bool:
+    """Yes/no prompt. In --no-input / non-TTY mode, returns the default and prints intent."""
+    if NO_INPUT:
+        print(f"  {GRAY}({prompt} — non-interactive, default: {'yes' if default else 'no'}){RESET}")
+        return default
+    sfx = " [Y/n] " if default else " [y/N] "
+    try:
+        ans = input(f"  {CYAN}?{RESET} {prompt}{sfx}").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
+    if not ans: return default
+    return ans in ("y", "yes")
+
+def shellout(*args: str, timeout: int = 30) -> tuple[int, str]:
+    """Run a turtle-* command, return (exit_code, combined_output). Never raises."""
+    try:
+        r = subprocess.run([sys.executable, *args], text=True,
+                           capture_output=True, timeout=timeout)
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+    except Exception as e:
+        return 1, str(e)
+
+# ── backend detection ────────────────────────────────────────────────────────
+def http_ok(url: str, timeout: float = 1.5) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return 200 <= resp.status < 500
+    except Exception:
+        return False
+
+def detect_backends() -> dict:
+    """Detect available AI backends without touching agentd internals."""
+    noetica_url = os.environ.get("SOURCEOS_NOETICA_URL", "http://127.0.0.1:8080").rstrip("/")
+    have_claude  = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    ollama_models: list[str] = []
+    have_ollama = http_ok("http://localhost:11434/api/tags")
+    if have_ollama:
+        try:
+            with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=1.5) as resp:
+                data = json.loads(resp.read().decode() or "{}")
+                ollama_models = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+        except Exception:
+            pass
+    have_noetica = http_ok(f"{noetica_url}/health") or http_ok(noetica_url)
+    return {
+        "claude":  {"available": have_claude,  "detail": "ANTHROPIC_API_KEY set" if have_claude else "no API key"},
+        "ollama":  {"available": have_ollama,  "detail": (", ".join(ollama_models[:4]) or "running, no models") if have_ollama else "not running"},
+        "noetica": {"available": have_noetica, "detail": noetica_url if have_noetica else "not reachable"},
+        "_ollama_models": ollama_models,
+        "_noetica_url": noetica_url,
+    }
+
+def recommend(b: dict) -> str | None:
+    """Prefer a working LOCAL backend (sovereignty story); else Claude; else None."""
+    if b["ollama"]["available"] and b["_ollama_models"]:
+        return "ollama"
+    if b["noetica"]["available"]:
+        return "noetica"
+    if b["claude"]["available"]:
+        return "claude"
+    if b["ollama"]["available"]:  # running but no model pulled
+        return "ollama"
+    return None
+
+# ── steps ─────────────────────────────────────────────────────────────────────
+def step_backend(n: int, total: int) -> None:
+    step(n, total, "AI backend setup")
+    b = detect_backends()
+    for name in ("claude", "ollama", "noetica"):
+        info = b[name]
+        (ok if info["available"] else fail)(f"{name:8} {GRAY}{info['detail']}{RESET}")
+    rec = recommend(b)
+    if rec is None:
+        warn("No AI backend detected yet.")
+        tip(f"Install Ollama for {BOLD}fully local, private AI{RESET} — the privacy win Warp can't offer:")
+        print(f"      {GRAY}curl -fsSL https://ollama.com/install.sh | sh{RESET}")
+        print(f"      {GRAY}ollama pull qwen2.5:7b{RESET}")
+        tip(f"…or export {BOLD}ANTHROPIC_API_KEY{RESET} to use Claude.")
+        return
+
+    local = rec in ("ollama", "noetica")
+    why = "fully local & private — Warp ships your terminal to the cloud" if local else "Claude API key present"
+    print(f"  {BOLD}Recommended:{RESET} {CYAN}{rec}{RESET}  {GRAY}({why}){RESET}")
+
+    use_args = [str(COPILOT), "use", rec]
+    if rec == "ollama":
+        model = next((m for m in b["_ollama_models"] if "qwen" in m), None) or \
+                (b["_ollama_models"][0] if b["_ollama_models"] else "qwen2.5:7b")
+        use_args.append(model)
+
+    if NO_INPUT:
+        print(f"  {GRAY}(would configure backend: {' '.join(use_args[1:])} — non-interactive, skipped){RESET}")
+        return
+    if confirm(f"Configure copilot to use {rec}?", default=True):
+        code, out = shellout(*use_args)
+        line = next((l for l in out.splitlines() if l.strip()), "")
+        (ok if code == 0 else fail)(line.strip() or (f"configured {rec}" if code == 0 else "configuration failed"))
+    else:
+        tip(f"Skipped. You can switch any time: {GRAY}turtle-copilot use {rec}{RESET}")
+
+def _shell_name() -> str:
+    return Path(os.environ.get("SHELL", "/bin/bash")).name
+
+def _rc_for(shell: str) -> Path:
+    home = Path.home()
+    return {"zsh": home / ".zshrc", "bash": home / ".bashrc",
+            "fish": home / ".config" / "fish" / "config.fish"}.get(shell, home / ".profile")
+
+def step_shell(n: int, total: int) -> None:
+    step(n, total, "Shell integration")
+    shell = _shell_name()
+    if shell not in ("zsh", "bash", "fish"):
+        warn(f"Shell '{shell}' has no init script; falling back to bash.")
+        shell = "bash"
+    init = SHELLDIR / f"turtle-shell-init.{shell}"
+    rc   = _rc_for(shell)
+    src_line = (f"source {init}" if shell != "fish" else f"source {init}")
+    print(f"  Detected shell: {CYAN}{shell}{RESET}   rc file: {GRAY}{rc}{RESET}")
+    print(f"  Add this line to light up {BOLD}autosuggest + blocks + NL→shell{RESET}:")
+    print(f"\n      {GREEN}{src_line}{RESET}\n")
+
+    already = False
+    try:
+        already = rc.exists() and str(init) in rc.read_text(errors="ignore")
+    except Exception:
+        already = False
+    if already:
+        ok(f"Already wired into {rc.name}.")
+        return
+
+    if NO_INPUT:
+        print(f"  {GRAY}(non-interactive: not modifying {rc.name}; add the line above manually){RESET}")
+        return
+    if confirm(f"Append this line to {rc.name} now?", default=False):
+        try:
+            with rc.open("a", encoding="utf-8") as fh:
+                fh.write(f"\n# TurtleTerm shell integration (added by turtle-onboard)\n{src_line}\n")
+            ok(f"Added to {rc.name}. Restart your shell or run: {GRAY}{src_line}{RESET}")
+        except Exception as e:
+            fail(f"Could not write {rc}: {e}")
+            tip("Add the line above by hand.")
+    else:
+        tip("Skipped — add the line above whenever you're ready.")
+
+def step_health(n: int, total: int) -> None:
+    step(n, total, "Health check")
+    if not DIAGNOSE.exists():
+        warn("turtle-diagnose not found; skipping health check.")
+        return
+    code, out = shellout(str(DIAGNOSE), timeout=30)
+    body = out.strip()
+    if body:
+        for line in body.splitlines():
+            print(f"  {line}")
+    else:
+        warn("Health check produced no output.")
+    print(f"  {GRAY}(full report: turtle-diagnose   ·   auto-fix: turtle-diagnose --fix){RESET}")
+
+def step_tour(n: int, total: int) -> None:
+    step(n, total, "Feature tour — what makes TurtleTerm different")
+    groups = [
+        ("AI", CYAN, [
+            ("turtle-copilot chat",    "multi-turn AI in your terminal, on YOUR backend"),
+            ("⌃-space autosuggest",     "inline AI suggestions as you type"),
+            ("turtle-copilot \"…\" → run", "natural language → shell command"),
+            ("auto error-explain",      "failed command? instant explanation"),
+        ], "Warp charges $20/mo for AI — and runs it in their cloud, not local."),
+        ("Agent", MAGENTA, [
+            ("turtle-autonomous",       "governed agent loop: plan → execute → verify"),
+            ("attestable receipts",     "every reasoning run is signed & replayable"),
+        ], "Warp has no governed, attestable agent. We emit cryptographic receipts."),
+        ("Workflows", BLUE, [
+            ("turtle-drive save/run",   "save & replay parameterized command workflows"),
+        ], "Like Warp Drive — but yours, local, no account required."),
+        ("Collaboration", GREEN, [
+            ("turtle-share",            "share sessions & blocks, self-hosted"),
+        ], "Warp's collaboration is SaaS-locked. Ours is self-hostable."),
+        ("Forge", YELLOW, [
+            ("turtle-gh / turtle-gitea", "PRs, issues, CI — GitHub OR sovereign Gitea"),
+        ], "Warp has no equivalent — point it at your own Gitea."),
+        ("Extras", GRAY, [
+            ("turtle-persona",          "swap AI personas (Feynman, Socratic, …)"),
+            ("voice + cost tracking",   "talk to your terminal; track AI spend"),
+        ], "Warp can't do any of this locally."),
+    ]
+    for title, color, items, vs in groups:
+        print(f"\n  {color}{BOLD}{title}{RESET}")
+        for cmd, val in items:
+            print(f"    {color}▸{RESET} {BOLD}{cmd:26}{RESET} {GRAY}{val}{RESET}")
+        print(f"    {GRAY}↳ vs Warp: {vs}{RESET}")
+
+def step_quickwins(n: int, total: int) -> None:
+    step(n, total, "Optional quick wins")
+    # 1. Start the copilot.
+    if confirm("Start the AI copilot watcher now?", default=False):
+        code, out = shellout(str(COPILOT), "start")
+        line = next((l for l in out.splitlines() if l.strip()), "")
+        (ok if code == 0 else warn)(line.strip() or "copilot start attempted")
+    else:
+        tip(f"Later: {GRAY}turtle-copilot start{RESET}")
+
+    # 2. Sample drive workflow (print intent; don't fabricate a command non-interactively).
+    if confirm("Create a sample turtle-drive workflow?", default=False):
+        tip(f"Run: {GRAY}turtle-drive save hello --cmd 'echo hello from TurtleTerm'{RESET}")
+        tip(f"Then: {GRAY}turtle-drive run hello{RESET}")
+    else:
+        tip(f"Later: {GRAY}turtle-drive save <name> --cmd '<command>'{RESET}")
+
+    # 3. Sovereign forge.
+    if os.environ.get("GITEA_URL"):
+        ok(f"GITEA_URL already set: {GRAY}{os.environ['GITEA_URL']}{RESET}")
+    else:
+        if confirm("Point at a sovereign Gitea forge (set GITEA_URL)?", default=False):
+            tip(f"Add to your rc: {GRAY}export GITEA_URL=https://your-gitea.example{RESET}")
+            tip(f"Then use: {GRAY}turtle-gitea …{RESET}")
+        else:
+            tip(f"Later: {GRAY}export GITEA_URL=…{RESET} for the sovereign forge.")
+
+def step_done() -> None:
+    header("You're set up 🐢")
+    b = detect_backends()
+    rec = recommend(b)
+    backend_line = f"{CYAN}{rec}{RESET}" if rec else f"{YELLOW}none yet{RESET}"
+    shell = _shell_name()
+    print(f"  Backend  : {backend_line}")
+    print(f"  Shell    : {CYAN}{shell}{RESET}  {GRAY}(source turtle-shell-init.{shell} to activate){RESET}")
+    print(f"\n  {BOLD}Top 3 things to try first:{RESET}")
+    print(f"    {GREEN}1.{RESET} {BOLD}turtle-copilot chat{RESET} {GRAY}— ask anything, on your own AI{RESET}")
+    print(f"    {GREEN}2.{RESET} {BOLD}turtle-autonomous \"<goal>\"{RESET} {GRAY}— governed, attestable agent{RESET}")
+    print(f"    {GREEN}3.{RESET} {BOLD}turtle-drive save{RESET} {GRAY}— bottle up a workflow{RESET}")
+    comp = BIN.parent.parent.parent / "docs" / "COMPETITIVE.md"
+    # Best-effort: look for COMPETITIVE.md a few levels up from bin/.
+    found = None
+    probe = BIN
+    for _ in range(6):
+        cand = probe / "docs" / "COMPETITIVE.md"
+        if cand.exists():
+            found = cand; break
+        cand2 = probe / "COMPETITIVE.md"
+        if cand2.exists():
+            found = cand2; break
+        probe = probe.parent
+    if found:
+        print(f"\n  {GRAY}Why we beat Warp: {found}{RESET}")
+    print(f"  {GRAY}Re-run this any time: turtle-onboard{RESET}\n")
+
+# ── main ──────────────────────────────────────────────────────────────────────
+def main() -> int:
+    if "-h" in ARGV or "--help" in ARGV:
+        print(__doc__); return 0
+
+    try:
+        if CHECK:
+            step_health(1, 1)
+            return 0
+
+        if QUICK:
+            banner()
+            total = 3
+            step_backend(1, total)
+            step_shell(2, total)
+            step_done()
+            return 0
+
+        # Full wizard.
+        banner()
+        total = 6
+        step_backend(1, total)
+        step_shell(2, total)
+        step_health(3, total)
+        step_tour(4, total)
+        step_quickwins(5, total)
+        step_done()
+        return 0
+    except KeyboardInterrupt:
+        print(f"\n  {GRAY}Setup paused. Re-run: turtle-onboard{RESET}")
+        return 130
+    except Exception as e:
+        fail(f"Unexpected error: {e}")
+        return 1
+
+if __name__ == "__main__":
+    raise SystemExit(main())
