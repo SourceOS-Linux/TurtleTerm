@@ -56,11 +56,24 @@ BUILTIN_CHAINS = {
 }
 
 def agentd(payload: dict, timeout: int = 30) -> dict | None:
+    action = payload.get("action", "step")
     try:
         r = subprocess.run([sys.executable, str(AGENTCTL), "--stdio"],
             input=json.dumps(payload), text=True, capture_output=True, timeout=timeout)
-        return json.loads(r.stdout)
-    except Exception as e: return {"status": "error", "data": {"error": str(e)}}
+    except Exception as e:
+        return {"status": "error", "data": {"error": str(e)}}
+    out = (r.stdout or "").strip()
+    if not out:
+        # Empty step output — almost always means the backend/copilot the step
+        # needs isn't running. Surface a clean, actionable message instead of a
+        # raw json.loads "Expecting value: ..." exception.
+        return {"status": "error", "data": {"error":
+            f"step '{action}' returned no parseable output (is a backend/copilot running?)"}}
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return {"status": "error", "data": {"error":
+            f"step '{action}' returned no parseable output (is a backend/copilot running?)"}}
 
 def interpolate(val, ctx: dict) -> str:
     """Replace {key} and {key[0].field} templates with values from ctx."""

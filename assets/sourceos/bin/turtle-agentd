@@ -6369,8 +6369,38 @@ def serve_socket(path: Path) -> int:
             path.unlink()
 
 
-def serve_http(port: int) -> int:
+def _daemonize() -> bool:
+    """Detach from the controlling terminal/process so the daemon survives the
+    parent shell exiting (used for lazy autosuggest warm-up). POSIX double-fork.
+    Returns True in the surviving daemon child, False in the original parent
+    (which should exit). No-op-returns True on platforms without fork."""
+    if not hasattr(os, "fork"):
+        return True
+    try:
+        if os.fork() > 0:
+            return False  # original parent: caller should return/exit
+    except OSError:
+        return True
+    os.setsid()
+    try:
+        if os.fork() > 0:
+            os._exit(0)  # first child exits, orphaning the grandchild to init
+    except OSError:
+        pass
+    # Grandchild: redirect std fds to /dev/null so no tty keeps us tethered.
+    try:
+        devnull = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            os.dup2(devnull, fd)
+    except OSError:
+        pass
+    return True
+
+
+def serve_http(port: int, daemonize: bool = False) -> int:
     """Persistent HTTP daemon — POST /stdio accepts same JSON as --stdio, GET /health for status."""
+    if daemonize and not _daemonize():
+        return 0  # parent process returns immediately; daemon runs detached
     import http.server
 
     class _Handler(http.server.BaseHTTPRequestHandler):
@@ -6478,6 +6508,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--socket", default=str(default_socket_path()), help="Unix socket path for daemon mode")
     parser.add_argument("--http", type=int, nargs="?", const=7722, metavar="PORT",
                         help="Start persistent HTTP daemon on PORT (default: 7722)")
+    parser.add_argument("--daemonize", action="store_true",
+                        help="With --http: detach (double-fork) so the daemon survives the parent shell")
     parser.add_argument("--install-launchd", action="store_true",
                         help="Install launchd plist for auto-start on login (macOS only)")
     parser.add_argument("--uninstall-launchd", action="store_true",
@@ -6485,7 +6517,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     if args.http is not None:
-        return serve_http(args.http)
+        return serve_http(args.http, daemonize=args.daemonize)
     if args.install_launchd:
         return _install_launchd()
     if args.uninstall_launchd:

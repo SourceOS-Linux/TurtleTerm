@@ -240,11 +240,102 @@ if [[ "${TURTLE_AUTOSUGGEST:-1}" != "0" ]]; then
 typeset -g _TURTLE_AS_SUGGESTION=""   # current ghost suffix (after cursor)
 typeset -g _TURTLE_AS_LASTBUF=$'\0'   # buffer we last fetched for (de-dupe)
 
+# Warm-daemon config. The always-on autosuggest hot path routes predict requests
+# to a persistent agentd HTTP daemon (~5-15ms round-trip via curl) instead of
+# cold-spawning `python3 turtle-agentd --stdio` per keystroke (~120-170ms,
+# pure interpreter-startup overhead). Falls back to the cold path if the daemon
+# can't be reached/started or curl is missing — the warm path is an optimization,
+# not a hard dependency.
+typeset -g _TURTLE_AS_HTTP_PORT="${TURTLE_AGENTD_HTTP_PORT:-7722}"
+typeset -g _TURTLE_AS_HTTP_URL="http://127.0.0.1:${_TURTLE_AS_HTTP_PORT}"
+typeset -g _TURTLE_AS_DAEMON_TRIED=""   # guard so we only try to spawn once/shell
+typeset -g _TURTLE_AS_DAEMON_OK=""      # cached "daemon reachable" flag
+
 # Resolve a callable agentctl once.
 _turtle_agentctl() {
     local ctl="${0:A:h}/../bin/turtle-agentctl"
     [[ -x "$ctl" ]] || ctl="turtle-agentctl"
     echo "$ctl"
+}
+
+# Start the agentd HTTP daemon self-detached (--daemonize double-forks inside
+# agentd so it outlives this shell regardless of job-control; macOS lacks setsid
+# but agentd's own os.fork/os.setsid handles it). Returns immediately — never
+# blocks the prompt. Invokes the daemon correctly whether `_turtle_writer`
+# resolves to an absolute path (run via python3) or a bare PATH command (exec
+# directly via its shebang — `python3 turtle-agentd` would fail because python
+# doesn't PATH-resolve script names).
+_turtle_as_spawn_daemon() {
+    local writer; writer="$(_turtle_writer)"
+    if [[ "$writer" == */* && -f "$writer" ]]; then
+        python3 "$writer" --http "$_TURTLE_AS_HTTP_PORT" --daemonize >/dev/null 2>&1 &!
+    else
+        # Bare command on PATH: run it directly (shebang handles the interpreter).
+        command "$writer" --http "$_TURTLE_AS_HTTP_PORT" --daemonize >/dev/null 2>&1 &!
+    fi
+}
+
+# Lazy, idempotent: ensure a warm agentd HTTP daemon is reachable. Returns 0 if
+# the warm path is usable (curl present + daemon answering /health), else 1.
+# Never blocks shell startup: the spawn is detached and we only probe quickly.
+_turtle_as_ensure_daemon() {
+    # curl is required for the warm path.
+    command -v curl >/dev/null 2>&1 || return 1
+    # Fast positive cache: once we've confirmed reachability, trust it.
+    [[ -n "$_TURTLE_AS_DAEMON_OK" ]] && return 0
+    # Already reachable (e.g. launchd-managed or another shell started it)?
+    if curl -s --max-time 0.15 "${_TURTLE_AS_HTTP_URL}/health" >/dev/null 2>&1; then
+        _TURTLE_AS_DAEMON_OK=1
+        return 0
+    fi
+    # Only attempt to spawn once per shell so we never thrash on a broken setup.
+    if [[ -n "$_TURTLE_AS_DAEMON_TRIED" ]]; then
+        return 1
+    fi
+    _TURTLE_AS_DAEMON_TRIED=1
+    _turtle_as_spawn_daemon
+    # Bounded wait for it to come up. Cold python startup binds the port in
+    # ~300ms, so probe a bit past that — but the whole thing runs detached at
+    # init (and the first synchronous fetch falls back to cold once, then warm).
+    local i
+    for i in $(seq 1 16); do
+        sleep 0.05
+        if curl -s --max-time 0.15 "${_TURTLE_AS_HTTP_URL}/health" >/dev/null 2>&1; then
+            _TURTLE_AS_DAEMON_OK=1
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Warm predict over the daemon (no python spawn). Echoes the completion suffix.
+# Returns non-zero (and prints nothing) if the warm path is unavailable so the
+# caller can fall back to the cold --stdio path.
+_turtle_as_predict_warm() {
+    local buf="$1" cwd="$2"
+    _turtle_as_ensure_daemon || return 1
+    local body resp
+    # Build the JSON request safely (zsh quoting of buffer/cwd via python is
+    # avoided on the hot path; do minimal escaping of " and \ inline).
+    local eb="${buf//\\/\\\\}"; eb="${eb//\"/\\\"}"
+    local ec="${cwd//\\/\\\\}"; ec="${ec//\"/\\\"}"
+    body="{\"action\":\"predict_command\",\"partial\":\"${eb}\",\"cwd\":\"${ec}\"}"
+    resp=$(curl -s --max-time 0.15 -X POST "${_TURTLE_AS_HTTP_URL}/stdio" \
+                -H 'Content-Type: application/json' -d "$body" 2>/dev/null) || return 1
+    [[ -n "$resp" ]] || return 1
+    # Extract data.completion without spawning python: zsh-native JSON-ish pluck.
+    # The daemon returns a flat object; match the completion field.
+    local comp="${resp#*\"completion\": \"}"
+    if [[ "$comp" == "$resp" ]]; then
+        # try compact form ("completion":")
+        comp="${resp#*\"completion\":\"}"
+        [[ "$comp" == "$resp" ]] && return 0   # no completion key -> empty
+    fi
+    comp="${comp%%\"*}"
+    # Unescape the common JSON escapes we might see.
+    comp="${comp//\\\"/\"}"; comp="${comp//\\\\/\\}"
+    print -r -- "$comp"
+    return 0
 }
 
 # Clear any displayed ghost text.
@@ -262,19 +353,28 @@ _turtle_as_fetch() {
         _turtle_as_clear
         return
     fi
-    local ctl; ctl="$(_turtle_agentctl)"
     local suffix=""
-    # `timeout` if available keeps the hot path bounded; predict itself is <1ms.
-    local _to=""
-    if command -v timeout >/dev/null 2>&1; then _to="timeout 0.2"; fi
-    suffix=$(
-        $_to "$ctl" --stdio predict-command partial="$BUFFER" cwd="$PWD" 2>/dev/null \
-        | python3 -c 'import json,sys
+    # FAST PATH: route to the warm agentd daemon (HTTP via curl, ~5-15ms, no
+    # python spawn). Falls through to the cold --stdio path only if the daemon
+    # is unreachable / curl is missing.
+    if suffix="$(_turtle_as_predict_warm "$BUFFER" "$PWD" 2>/dev/null)"; then
+        :
+    else
+        # COLD FALLBACK: spawn `turtle-agentctl --stdio` (~120-170ms). Slower but
+        # keeps autosuggest working when no daemon/curl is available.
+        local ctl; ctl="$(_turtle_agentctl)"
+        # `timeout` if available keeps the hot path bounded.
+        local _to=""
+        if command -v timeout >/dev/null 2>&1; then _to="timeout 0.2"; fi
+        suffix=$(
+            $_to "$ctl" --stdio predict-command partial="$BUFFER" cwd="$PWD" 2>/dev/null \
+            | python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin); print(d.get("data",{}).get("completion",""), end="")
 except Exception:
     pass' 2>/dev/null
-    )
+        )
+    fi
     if [[ -n "$suffix" ]]; then
         _TURTLE_AS_SUGGESTION="$suffix"
         POSTDISPLAY="$suffix"
@@ -342,6 +442,20 @@ _turtle_as_accept_execute() {
 }
 zle -N _turtle_as_accept_execute
 bindkey '^[^M' _turtle_as_accept_execute      # ALT+Enter
+
+# Warm the daemon up front so the very first keystroke is already fast. We start
+# it self-detached (--daemonize) directly — not via _turtle_as_ensure_daemon in a
+# subshell, which couldn't share the reachable-flag back and would double-spawn.
+# This is fire-and-forget and never blocks shell startup; the first predict's
+# own ensure step re-probes /health and caches the result in this shell.
+if command -v curl >/dev/null 2>&1; then
+    if ! curl -s --max-time 0.1 "${_TURTLE_AS_HTTP_URL}/health" >/dev/null 2>&1; then
+        _TURTLE_AS_DAEMON_TRIED=1
+        _turtle_as_spawn_daemon
+    else
+        _TURTLE_AS_DAEMON_OK=1
+    fi
+fi
 
 fi  # end TURTLE_AUTOSUGGEST
 
