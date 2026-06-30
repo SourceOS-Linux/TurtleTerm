@@ -1,0 +1,592 @@
+#!/usr/bin/env python3
+"""turtle-drive — Sovereign Warp Drive: one browsable, parameterized, exportable
+workflow library that versions to YOUR OWN Gitea forge, not a US cloud.
+
+TurtleTerm already has the primitives — `turtle-chain` pipelines, `turtle-runbook`
+runbooks, and command bookmarks — but scattered across three stores. turtle-drive
+unifies them into one library at ~/.config/turtleterm/drive/ where each workflow is
+a portable file (name, description, type, steps/body, params, tags). Existing chains,
+runbooks and bookmarks are merged in read-through (the originals are never touched).
+
+Your workflows live in your repo, not their cloud.
+
+Usage:
+  turtle-drive list [--tag T] [--type chain|runbook|command] [--json]
+  turtle-drive browse                 Alias for list
+  turtle-drive show NAME [--json]     Print a workflow definition
+  turtle-drive run NAME [k=v ...]     Execute (prompts for missing {{params}})
+  turtle-drive save NAME [opts]       Save a workflow into the drive
+       --type chain|runbook|command   (default: command)
+       --cmd "CMD" | --body "..."     Command text / multi-line body
+       --from-chain NAME              Snapshot an existing turtle-chain pipeline
+       --desc "..."  --tags a,b,c     --param key[=default] (repeatable)
+  turtle-drive export NAME [--format md|json]   Emit a portable file
+  turtle-drive export-all [--dir DIR]           Dump the whole drive
+  turtle-drive import FILE                       Add a workflow from a portable file
+  turtle-drive sync push                         Commit the drive to your Gitea forge
+  turtle-drive sync pull                         Pull the drive from your Gitea forge
+
+Parameterization:
+  Put {{param}} placeholders anywhere in a command/body/step. On `run`, any param
+  not supplied as k=v on the CLI is prompted for (or its default is used).
+
+Sovereign sync (the whole point):
+  Needs GITEA_URL + GITEA_TOKEN. Pushes the drive dir to a repo (turtleterm-drive)
+  in your own Gitea-sovereign forge. Graceful when unset.
+
+Environment:
+  GITEA_URL        http://org-gitea:3000   (your sovereign forge)
+  GITEA_TOKEN      your-access-token
+  TURTLE_DRIVE_REPO  override repo name (default: turtleterm-drive)
+"""
+from __future__ import annotations
+import json, os, re, subprocess, sys
+from pathlib import Path
+
+BIN          = Path(__file__).parent
+CONFIG_DIR   = Path.home() / ".config" / "turtleterm"
+DRIVE_DIR    = CONFIG_DIR / "drive"
+CHAINS_PATH  = CONFIG_DIR / "chains.json"
+BOOKMARKS    = CONFIG_DIR / "bookmarks.json"
+TURTLE_CHAIN = BIN / "turtle-chain"
+TURTLE_RUNBK = BIN / "turtle-runbook"
+
+RESET='\033[0m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'
+GRAY='\033[90m'; BOLD='\033[1m'; CYAN='\033[36m'; MAGENTA='\033[35m'
+
+PARAM_RE = re.compile(r'\{\{\s*([\w.-]+)\s*\}\}')
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+def env(k: str, default: str = "") -> str:
+    return os.environ.get(k, default)
+
+def slug(name: str) -> str:
+    return re.sub(r'[^A-Za-z0-9_.-]', '-', name).strip('-') or "workflow"
+
+def drive_path(name: str) -> Path:
+    return DRIVE_DIR / f"{slug(name)}.json"
+
+def load_drive_files() -> dict[str, dict]:
+    """Native drive workflows (the canonical, versioned store)."""
+    out: dict[str, dict] = {}
+    if DRIVE_DIR.exists():
+        for f in sorted(DRIVE_DIR.glob("*.json")):
+            try:
+                wf = json.loads(f.read_text())
+                wf.setdefault("name", f.stem)
+                wf["_source"] = "drive"
+                wf["_path"] = str(f)
+                out[wf["name"]] = wf
+            except Exception:
+                continue
+    return out
+
+def params_in(text: str) -> list[str]:
+    seen: list[str] = []
+    for m in PARAM_RE.findall(text or ""):
+        if m not in seen:
+            seen.append(m)
+    return seen
+
+def workflow_params(wf: dict) -> list[str]:
+    """Declared params plus any {{placeholders}} discovered in the body/steps."""
+    declared = list((wf.get("params") or {}).keys())
+    blob = wf.get("body", "") or ""
+    blob += " " + (wf.get("cmd", "") or "")
+    for s in wf.get("steps", []) or []:
+        blob += " " + json.dumps(s)
+    for p in params_in(blob):
+        if p not in declared:
+            declared.append(p)
+    return declared
+
+
+# ── read-through merge of the three legacy stores ──────────────────────────────
+def imported_chains() -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    saved: dict = {}
+    if CHAINS_PATH.exists():
+        try: saved = json.loads(CHAINS_PATH.read_text())
+        except Exception: saved = {}
+    # Pull built-in chains too, by asking turtle-chain (best-effort, non-fatal).
+    builtins: dict = {}
+    try:
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        loader = SourceFileLoader("turtle_chain_mod", str(TURTLE_CHAIN))
+        spec = importlib.util.spec_from_loader("turtle_chain_mod", loader)
+        if spec:
+            mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(mod)  # type: ignore
+            builtins = dict(getattr(mod, "BUILTIN_CHAINS", {}) or {})
+    except Exception:
+        builtins = {}
+    for name, steps in {**builtins, **saved}.items():
+        if name in out:
+            continue
+        blob = json.dumps(steps)
+        out[name] = {
+            "name": name,
+            "type": "chain",
+            "description": f"{len(steps)} step pipeline",
+            "steps": steps,
+            "params": {p: "" for p in params_in(blob.replace('{', '{{').replace('}', '}}'))} ,
+            "tags": ["chain"] + (["builtin"] if name in builtins else []),
+            "_source": "chains.json",
+            "_chain_builtin": name in builtins,
+        }
+    return out
+
+def imported_runbooks() -> dict[str, dict]:
+    """Read-through runbooks via turtle-runbook list (best effort)."""
+    out: dict[str, dict] = {}
+    try:
+        r = subprocess.run([sys.executable, str(TURTLE_RUNBK), "list"],
+                           text=True, capture_output=True, timeout=15)
+        lines = r.stdout.splitlines()
+    except Exception:
+        lines = []
+    started = False
+    for line in lines:
+        if line.startswith("-" * 5):
+            started = True; continue
+        if not started or not line.strip():
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        name = parts[0]
+        desc = line[36:].strip() if len(line) > 36 else ""
+        out[name] = {
+            "name": name,
+            "type": "runbook",
+            "description": desc,
+            "tags": ["runbook"],
+            "_source": "runbook",
+        }
+    return out
+
+def imported_bookmarks() -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    if not BOOKMARKS.exists():
+        return out
+    try:
+        marks = json.loads(BOOKMARKS.read_text())
+    except Exception:
+        return out
+    for i, b in enumerate(marks or []):
+        cmd = b.get("cmd", "") if isinstance(b, dict) else str(b)
+        if not cmd:
+            continue
+        name = f"bookmark-{i+1}"
+        out[name] = {
+            "name": name,
+            "type": "command",
+            "description": (b.get("note", "") if isinstance(b, dict) else "") or cmd[:50],
+            "cmd": cmd,
+            "tags": ["bookmark"],
+            "_source": "bookmarks.json",
+        }
+    return out
+
+def unified() -> dict[str, dict]:
+    """Drive-native overrides legacy; legacy is read-through, never mutated."""
+    merged: dict[str, dict] = {}
+    for src in (imported_bookmarks(), imported_runbooks(), imported_chains(), load_drive_files()):
+        merged.update(src)
+    return merged
+
+
+# ── interpolation ──────────────────────────────────────────────────────────────
+def interpolate(text: str, values: dict) -> str:
+    return PARAM_RE.sub(lambda m: str(values.get(m.group(1), m.group(0))), text)
+
+def resolve_params(wf: dict, supplied: dict) -> dict:
+    declared = wf.get("params") or {}
+    values = dict(supplied)
+    for p in workflow_params(wf):
+        if p in values:
+            continue
+        default = declared.get(p, "")
+        if sys.stdin.isatty():
+            prompt = f"  {CYAN}{p}{RESET}" + (f" [{default}]" if default else "") + ": "
+            try:
+                entered = input(prompt).strip()
+            except (EOFError, KeyboardInterrupt):
+                entered = ""
+            values[p] = entered or default
+        else:
+            values[p] = default
+    return values
+
+
+# ── commands ───────────────────────────────────────────────────────────────────
+def type_icon(t: str) -> str:
+    return {"chain": "⛓", "runbook": "📓", "command": "▸"}.get(t, "·")
+
+def cmd_list(rest: list[str]) -> int:
+    wfs = unified()
+    want_type = arg_val(rest, "--type")
+    want_tag  = arg_val(rest, "--tag")
+    as_json = "--json" in rest
+    rows = []
+    for name, wf in sorted(wfs.items()):
+        t = wf.get("type", "command")
+        if want_type and t != want_type:
+            continue
+        tags = wf.get("tags", []) or []
+        if want_tag and want_tag not in tags:
+            continue
+        rows.append(wf)
+    if as_json:
+        print(json.dumps([{k: v for k, v in w.items() if not k.startswith("_")} for w in rows], indent=2))
+        return 0
+    if not rows:
+        print(f"  {GRAY}Drive is empty. Save one: turtle-drive save NAME --cmd \"...\"{RESET}")
+        return 0
+    print(f"\n{BOLD}Turtle Drive{RESET}  {GRAY}({len(rows)} workflows · sovereign, yours){RESET}")
+    print(f"  {GRAY}{'NAME':<22} {'TYPE':<9} {'PARAMS':<18} DESCRIPTION{RESET}")
+    print(f"  {GRAY}{'─'*72}{RESET}")
+    for wf in rows:
+        t = wf.get("type", "command")
+        ps = workflow_params(wf)
+        pstr = ",".join(ps)[:17] if ps else "-"
+        src = wf.get("_source", "")
+        srctag = f" {GRAY}({src}){RESET}" if src != "drive" else ""
+        print(f"  {CYAN}{wf['name']:<22}{RESET} {type_icon(t)} {t:<7} {YELLOW}{pstr:<18}{RESET} {wf.get('description','')[:34]}{srctag}")
+    print(f"\n  {GRAY}run: turtle-drive run NAME [k=v]   ·   sync: turtle-drive sync push{RESET}")
+    return 0
+
+def cmd_show(rest: list[str]) -> int:
+    name = first_positional(rest)
+    if not name:
+        print("Usage: turtle-drive show NAME", file=sys.stderr); return 1
+    wf = unified().get(name)
+    if not wf:
+        print(f"  {RED}No workflow '{name}'.{RESET}  turtle-drive list", file=sys.stderr); return 1
+    if "--json" in rest:
+        print(json.dumps({k: v for k, v in wf.items() if not k.startswith("_")}, indent=2)); return 0
+    t = wf.get("type", "command")
+    print(f"\n  {BOLD}{wf['name']}{RESET}  {type_icon(t)} {GRAY}{t}{RESET}")
+    if wf.get("description"):
+        print(f"  {wf['description']}")
+    if wf.get("tags"):
+        print(f"  {GRAY}tags: {', '.join(wf['tags'])}{RESET}")
+    ps = workflow_params(wf)
+    if ps:
+        print(f"  {YELLOW}params: {', '.join(ps)}{RESET}")
+    print(f"  {GRAY}source: {wf.get('_source','drive')}{RESET}")
+    if wf.get("cmd"):
+        print(f"\n  $ {wf['cmd']}")
+    if wf.get("body"):
+        print()
+        for line in wf["body"].splitlines():
+            print(f"  {line}")
+    for i, s in enumerate(wf.get("steps", []) or [], 1):
+        if isinstance(s, dict):
+            label = s.get("action") or s.get("cmd") or json.dumps(s)
+        else:
+            label = str(s)
+        print(f"  {i:2}. {label}")
+    print()
+    return 0
+
+def cmd_run(rest: list[str]) -> int:
+    name = first_positional(rest)
+    if not name:
+        print("Usage: turtle-drive run NAME [k=v ...]", file=sys.stderr); return 1
+    wf = unified().get(name)
+    if not wf:
+        print(f"  {RED}No workflow '{name}'.{RESET}  turtle-drive list", file=sys.stderr); return 1
+    supplied = {k: v for k, v in (a.split("=", 1) for a in rest if "=" in a and not a.startswith("-"))}
+    t = wf.get("type", "command")
+    print(f"\n{BOLD}Running:{RESET} {name}  {GRAY}({t}){RESET}")
+
+    if t == "chain":
+        # Delegate to turtle-chain --run; pass resolved params as initial context.
+        values = resolve_params(wf, supplied)
+        chain_args = [sys.executable, str(TURTLE_CHAIN), "--run", name]
+        chain_args += [f"{k}={v}" for k, v in values.items()]
+        return subprocess.run(chain_args).returncode
+
+    if t == "runbook":
+        values = resolve_params(wf, supplied)
+        if values:
+            print(f"  {GRAY}params (runbook is git-native; values noted): {values}{RESET}")
+        return subprocess.run([sys.executable, str(TURTLE_RUNBK), "run", name]).returncode
+
+    # command (or anything with a body): interpolate {{params}} then exec via shell.
+    raw = wf.get("cmd") or wf.get("body") or ""
+    if not raw:
+        print(f"  {RED}Nothing to run (no cmd/body).{RESET}", file=sys.stderr); return 1
+    values = resolve_params(wf, supplied)
+    cmd = interpolate(raw, values)
+    print(f"  {GRAY}$ {cmd}{RESET}\n")
+    return subprocess.run(cmd, shell=True).returncode
+
+def cmd_save(rest: list[str]) -> int:
+    name = first_positional(rest)
+    if not name:
+        print("Usage: turtle-drive save NAME [--type T] [--cmd C | --body B | --from-chain N] [--desc D] [--tags a,b] [--param k[=def]]", file=sys.stderr); return 1
+    wtype = arg_val(rest, "--type") or ("chain" if "--from-chain" in rest else "command")
+    desc  = arg_val(rest, "--desc") or ""
+    tags  = [t.strip() for t in (arg_val(rest, "--tags") or "").split(",") if t.strip()]
+    params: dict[str, str] = {}
+    # collect repeatable --param key[=default]
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--param" and i + 1 < len(rest):
+            spec = rest[i+1]
+            if "=" in spec:
+                k, v = spec.split("=", 1); params[k] = v
+            else:
+                params[spec] = ""
+            i += 2; continue
+        i += 1
+
+    wf: dict = {"name": name, "type": wtype, "description": desc, "tags": tags}
+    if params:
+        wf["params"] = params
+
+    from_chain = arg_val(rest, "--from-chain")
+    if from_chain:
+        chains: dict = {}
+        if CHAINS_PATH.exists():
+            try: chains = json.loads(CHAINS_PATH.read_text())
+            except Exception: chains = {}
+        steps = chains.get(from_chain)
+        if steps is None:
+            print(f"  {RED}Chain '{from_chain}' not found in chains.json.{RESET}", file=sys.stderr); return 1
+        wf["type"] = "chain"; wf["steps"] = steps
+        if not desc:
+            wf["description"] = f"snapshot of chain '{from_chain}' ({len(steps)} steps)"
+    else:
+        cmd  = arg_val(rest, "--cmd")
+        body = arg_val(rest, "--body")
+        if cmd:  wf["cmd"] = cmd
+        if body: wf["body"] = body
+
+    DRIVE_DIR.mkdir(parents=True, exist_ok=True)
+    drive_path(name).write_text(json.dumps(wf, indent=2) + "\n")
+    print(f"  {GREEN}✓{RESET}  Saved '{name}' to drive  {GRAY}{drive_path(name)}{RESET}")
+    if workflow_params(wf):
+        print(f"  {YELLOW}params: {', '.join(workflow_params(wf))}{RESET}")
+    return 0
+
+def to_markdown(wf: dict) -> str:
+    lines = [f"# {wf.get('name','workflow')}", ""]
+    if wf.get("description"):
+        lines += [wf["description"], ""]
+    meta = [f"- **type**: {wf.get('type','command')}"]
+    if wf.get("tags"):   meta.append(f"- **tags**: {', '.join(wf['tags'])}")
+    ps = workflow_params(wf)
+    if ps:               meta.append(f"- **params**: {', '.join(ps)}")
+    lines += meta + [""]
+    if wf.get("cmd"):
+        lines += ["```sh", wf["cmd"], "```", ""]
+    if wf.get("body"):
+        lines += ["```", wf["body"], "```", ""]
+    if wf.get("steps"):
+        lines.append("## Steps")
+        for i, s in enumerate(wf["steps"], 1):
+            label = s.get("action") or s.get("cmd") or json.dumps(s) if isinstance(s, dict) else str(s)
+            lines.append(f"{i}. `{label}`")
+        lines.append("")
+    return "\n".join(lines)
+
+def cmd_export(rest: list[str]) -> int:
+    name = first_positional(rest)
+    if not name:
+        print("Usage: turtle-drive export NAME [--format md|json]", file=sys.stderr); return 1
+    wf = unified().get(name)
+    if not wf:
+        print(f"  {RED}No workflow '{name}'.{RESET}", file=sys.stderr); return 1
+    fmt = arg_val(rest, "--format") or "json"
+    clean = {k: v for k, v in wf.items() if not k.startswith("_")}
+    if fmt == "md":
+        print(to_markdown(clean))
+    else:
+        print(json.dumps(clean, indent=2))
+    return 0
+
+def cmd_export_all(rest: list[str]) -> int:
+    out_dir = Path(arg_val(rest, "--dir") or ".")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    wfs = unified()
+    n = 0
+    for name, wf in wfs.items():
+        clean = {k: v for k, v in wf.items() if not k.startswith("_")}
+        (out_dir / f"{slug(name)}.json").write_text(json.dumps(clean, indent=2) + "\n")
+        n += 1
+    print(f"  {GREEN}✓{RESET}  Exported {n} workflows to {out_dir}/")
+    return 0
+
+def cmd_import(rest: list[str]) -> int:
+    path = first_positional(rest)
+    if not path:
+        print("Usage: turtle-drive import FILE", file=sys.stderr); return 1
+    p = Path(path)
+    if not p.exists():
+        print(f"  {RED}File not found: {path}{RESET}", file=sys.stderr); return 1
+    try:
+        wf = json.loads(p.read_text())
+    except Exception as e:
+        print(f"  {RED}Not valid workflow JSON: {e}{RESET}", file=sys.stderr); return 1
+    name = wf.get("name") or p.stem
+    wf["name"] = name
+    for k in list(wf.keys()):
+        if k.startswith("_"):
+            del wf[k]
+    DRIVE_DIR.mkdir(parents=True, exist_ok=True)
+    drive_path(name).write_text(json.dumps(wf, indent=2) + "\n")
+    print(f"  {GREEN}✓{RESET}  Imported '{name}' into drive")
+    return 0
+
+
+# ── sovereign sync ─────────────────────────────────────────────────────────────
+def gitea_api(endpoint: str, method: str = "GET", payload: dict | None = None, timeout: int = 10) -> dict:
+    import urllib.request as ur, urllib.error as ue
+    base  = env("GITEA_URL", "").rstrip("/")
+    token = env("GITEA_TOKEN", "") or env("GITHUB_TOKEN", "")
+    if not base:
+        return {"ok": False, "error": "GITEA_URL not set"}
+    url  = f"{base}/api/v1/{endpoint.lstrip('/')}"
+    data = json.dumps(payload).encode() if payload else None
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"token {token}"
+    req = ur.Request(url, data=data, method=method, headers=headers)
+    try:
+        with ur.urlopen(req, timeout=timeout) as r:
+            return {"ok": True, "status": r.status, "data": json.loads(r.read() or b"{}")}
+    except ue.HTTPError as e:
+        try: body = json.loads(e.read())
+        except Exception: body = {}
+        return {"ok": False, "status": e.code, "data": body, "error": body.get("message", str(e))}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def repo_name() -> str:
+    return env("TURTLE_DRIVE_REPO", "turtleterm-drive")
+
+def authed_remote(owner: str) -> str:
+    base  = env("GITEA_URL", "").rstrip("/")
+    token = env("GITEA_TOKEN", "") or env("GITHUB_TOKEN", "")
+    m = re.match(r'(https?)://(.+)', base)
+    if m and token:
+        return f"{m.group(1)}://{owner}:{token}@{m.group(2)}/{owner}/{repo_name()}.git"
+    return f"{base}/{owner}/{repo_name()}.git"
+
+def git(*args: str, cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(cwd), text=True, capture_output=True)
+
+def ensure_repo() -> tuple[bool, str]:
+    """Return (ok, owner). Create turtleterm-drive in the user's forge if missing."""
+    who = gitea_api("user")
+    if not who.get("ok"):
+        return False, ""
+    owner = who.get("data", {}).get("login", "")
+    exists = gitea_api(f"repos/{owner}/{repo_name()}")
+    if not exists.get("ok"):
+        created = gitea_api("user/repos", "POST", {
+            "name": repo_name(),
+            "description": "TurtleTerm sovereign workflow drive — your workflows, your forge.",
+            "private": True,
+            "auto_init": True,
+        })
+        if not created.get("ok") and created.get("status") not in (201, 409):
+            print(f"  {RED}Could not create repo: {created.get('error','?')}{RESET}", file=sys.stderr)
+            return False, owner
+    return True, owner
+
+def cmd_sync(rest: list[str]) -> int:
+    direction = first_positional(rest)
+    if direction not in ("push", "pull"):
+        print("Usage: turtle-drive sync push|pull", file=sys.stderr); return 1
+    if not env("GITEA_URL"):
+        print(f"  {YELLOW}drive sync needs GITEA_URL/GITEA_TOKEN — your sovereign forge.{RESET}")
+        print(f"  {GRAY}Set them, then: turtle-drive sync {direction}   (start a forge: turtle-gitea start){RESET}")
+        return 1
+
+    DRIVE_DIR.mkdir(parents=True, exist_ok=True)
+    ok, owner = ensure_repo()
+    if not ok:
+        print(f"  {RED}Gitea not reachable — check GITEA_URL/GITEA_TOKEN.{RESET}", file=sys.stderr)
+        return 1
+    remote = authed_remote(owner)
+
+    if not (DRIVE_DIR / ".git").exists():
+        git("init", cwd=DRIVE_DIR)
+        git("remote", "add", "origin", remote, cwd=DRIVE_DIR)
+    else:
+        git("remote", "set-url", "origin", remote, cwd=DRIVE_DIR)
+
+    if direction == "pull":
+        r = git("pull", "--rebase", "origin", "main", cwd=DRIVE_DIR)
+        out = (r.stdout + r.stderr).strip()
+        if r.returncode == 0:
+            print(f"  {GREEN}✓{RESET}  Pulled drive from your forge  {GRAY}{env('GITEA_URL')}/{owner}/{repo_name()}{RESET}")
+        else:
+            print(f"  {RED}Pull failed:{RESET} {out[:200]}", file=sys.stderr)
+        return r.returncode
+
+    # push
+    git("add", "-A", cwd=DRIVE_DIR)
+    git("-c", "user.email=turtle-drive@sovereign", "-c", "user.name=turtle-drive",
+        "commit", "-m", "drive: sync workflows", cwd=DRIVE_DIR)
+    git("branch", "-M", "main", cwd=DRIVE_DIR)
+    r = git("push", "-u", "origin", "main", cwd=DRIVE_DIR)
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode == 0:
+        print(f"  {GREEN}✓{RESET}  Pushed drive to {BOLD}{env('GITEA_URL')}/{owner}/{repo_name()}{RESET}")
+        print(f"  {GRAY}Your workflows live in your repo, not their cloud.{RESET}")
+    else:
+        print(f"  {RED}Push failed:{RESET} {out[:200]}", file=sys.stderr)
+    return r.returncode
+
+
+# ── arg utilities ──────────────────────────────────────────────────────────────
+def arg_val(rest: list[str], flag: str) -> str | None:
+    if flag in rest:
+        i = rest.index(flag)
+        if i + 1 < len(rest):
+            return rest[i+1]
+    return None
+
+def first_positional(rest: list[str]) -> str:
+    skip = False
+    flags_with_val = {"--type", "--desc", "--tags", "--cmd", "--body", "--from-chain",
+                      "--param", "--format", "--dir"}
+    for a in rest:
+        if skip:
+            skip = False; continue
+        if a in flags_with_val:
+            skip = True; continue
+        if a.startswith("-"):
+            continue
+        if "=" in a:  # k=v param, not a positional
+            continue
+        return a
+    return ""
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__); return 0
+    sub, rest = args[0], args[1:]
+    dispatch = {
+        "list": cmd_list, "browse": cmd_list,
+        "show": cmd_show, "run": cmd_run, "save": cmd_save,
+        "export": cmd_export, "export-all": cmd_export_all,
+        "import": cmd_import, "sync": cmd_sync,
+    }
+    fn = dispatch.get(sub)
+    if not fn:
+        print(f"Unknown: {sub}.  See: turtle-drive --help", file=sys.stderr); return 1
+    return fn(rest)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
