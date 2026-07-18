@@ -51,6 +51,7 @@ PY
 
 rpm -qp --queryformat '%{NAME}\n' "$rpm" | grep -qx 'turtle-term'
 rpm -qp --queryformat '%{VERSION}\n' "$rpm" | grep -qx '0.1.0'
+contents="$tmp/contents.txt"
 rpm -qpl "$rpm" > "$contents"
 
 for command in turtleterm turtle-agentctl turtle-agent-status turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language; do
@@ -69,6 +70,7 @@ if grep -q '^/usr/bin/wezterm-gui$' "$contents"; then
 fi
 
 mkdir -p "$extract"
+payload="$tmp/payload.cpio"
 rpm2cpio "$rpm" > "$payload"
 (cd "$extract" && cpio -idmu < "$payload" >/dev/null 2>&1)
 grep -q 'TURTLE_TERM_RUNTIME_DIR="/usr/libexec/turtle-term"' "$extract/usr/bin/turtleterm"
