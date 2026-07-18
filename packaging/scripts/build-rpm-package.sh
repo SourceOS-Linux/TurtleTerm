@@ -68,8 +68,7 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 /usr/share/turtle-term/
 EOF
 
-echo "building RPM with generated spec: $spec" >&2
-rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec"
+rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec" >&2
 rpm="$(find "$rpmbuild_root/RPMS" -name 'turtle-term-*.rpm' -print -quit)"
 if [ -z "$rpm" ]; then
   echo "no turtle-term RPM built under $rpmbuild_root/RPMS" >&2
