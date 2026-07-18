@@ -25,6 +25,7 @@ class TurtleTerm < Formula
     depends_on "wayland"
     depends_on "xcb-util"
     depends_on "xcb-util-image"
+    depends_on "xcb-util-keysyms"
     depends_on "zlib"
   end
 
