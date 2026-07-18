@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eu
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tmp="$(mktemp -d)"
@@ -15,8 +15,7 @@ EOF
 done
 
 pkg="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_ARCH_ARCH="$(uname -m)" \
-  "$repo_root/packaging/scripts/build-arch-package.sh" | tail -n 1)"
-contents="$tmp/arch-contents.txt"
+  bash "$repo_root/packaging/scripts/build-arch-package.sh")"
 extract="$tmp/extract"
 
 test -f "$pkg"

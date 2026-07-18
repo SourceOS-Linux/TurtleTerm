@@ -31,7 +31,7 @@ Claude Code integration. SynapseIQ LSP support.
 cargo build --release --locked -p wezterm -p wezterm-gui -p wezterm-mux-server
 
 %install
-rm -rf %{buildroot}
+TURTLE_TERM_STAGE_PREFIX=%{buildroot}%{_prefix} bash packaging/scripts/stage-linux-package.sh
 
 # WezTerm binaries
 install -d %{buildroot}%{_libexecdir}/turtleterm
