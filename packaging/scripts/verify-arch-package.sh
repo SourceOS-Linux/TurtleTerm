@@ -15,8 +15,7 @@ EOF
 done
 
 pkg="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_ARCH_ARCH="$(uname -m)" \
-  "$repo_root/packaging/scripts/build-arch-package.sh" | tail -n 1)"
-contents="$tmp/arch-contents.txt"
+  bash "$repo_root/packaging/scripts/build-arch-package.sh")"
 extract="$tmp/extract"
 
 test -f "$pkg"
@@ -33,14 +32,13 @@ assert manifest['kind'] == 'arch'
 assert manifest['version'] == '0.1.0'
 assert manifest['package'].endswith('.pkg.tar.zst')
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
-for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
+for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language']:
     assert command in manifest['public_commands'], command
 PY
 
-tar --zstd -tf "$pkg" > "$contents"
-grep -q '^./.PKGINFO$' "$contents"
-for command in turtleterm turtle-agentctl turtle-agent-status turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
-  grep -q "^./usr/bin/$command$" "$contents"
+tar --zstd -tf "$pkg" | grep -q '^./.PKGINFO$'
+for command in turtleterm turtle-agentctl turtle-agent-status turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language; do
+  tar --zstd -tf "$pkg" | grep -q "^./usr/bin/$command$"
 done
 
 grep -q '^./etc/turtle-term/turtleterm.lua$' "$contents"

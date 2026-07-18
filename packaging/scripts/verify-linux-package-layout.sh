@@ -23,6 +23,7 @@ required_paths=(
   "$prefix/bin/turtle-term"
   "$prefix/bin/turtle-agentd"
   "$prefix/bin/turtle-agentctl"
+  "$prefix/bin/turtle-agent-status"
   "$prefix/bin/turtle-tmux"
   "$prefix/bin/turtle-cloudfog"
   "$prefix/bin/turtle-superconscious"
@@ -68,6 +69,7 @@ probe="$tmp/probe.py"
 printf 'def hello():\n    return "world"\n' > "$probe"
 "$prefix/bin/turtle-agentctl" --stdio ping >/dev/null
 "$prefix/bin/turtle-agentctl" --stdio surfaces >/dev/null
+"$prefix/bin/turtle-agent-status" --json >/dev/null
 "$prefix/bin/turtle-cloudfog" surfaces >/dev/null
 "$prefix/bin/turtle-superconscious" observe package-layout >/dev/null
 "$prefix/bin/turtle-agent-machine" surfaces >/dev/null

@@ -72,6 +72,7 @@ turtle-term paths
 turtle-term run -- echo turtle-term-ok
 turtle-term office plan --title "Demo Report" --artifact-type document --format md
 turtle-agentctl --stdio ping
+turtle-agent-status --json
 ```
 
 ## Activate TurtleTerm profile
