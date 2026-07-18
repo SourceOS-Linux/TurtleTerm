@@ -4,9 +4,6 @@ set -eu
 
 bin_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 agentctl="$bin_dir/turtle-agentctl"
-if [ ! -x "$agentctl" ]; then
-  agentctl="turtle-agentctl"
-fi
 
 cmd="${1:-surfaces}"
 case "$cmd" in

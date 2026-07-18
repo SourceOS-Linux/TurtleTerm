@@ -9,17 +9,17 @@ cmd="${1:-surfaces}"
 case "$cmd" in
   surfaces)
     shift || true
-    exec python3 "$agentctl" --stdio cloudfog-surfaces "$@"
+    exec "$agentctl" --stdio cloudfog-surfaces "$@"
     ;;
   inspect)
     shift || true
-    exec python3 "$agentctl" --stdio cloudfog-inspect "$@"
+    exec "$agentctl" --stdio cloudfog-inspect "$@"
     ;;
   request-execution)
     shift || true
     surface="${1:-cloudfog/local-devshell}"
     shift || true
-    exec python3 "$agentctl" --stdio request-surface-execution "$surface" "$@"
+    exec "$agentctl" --stdio request-surface-execution "$surface" "$@"
     ;;
   *)
     echo "usage: turtle-cloudfog [surfaces|inspect <surface>|request-execution <surface> -- <command>]" >&2
