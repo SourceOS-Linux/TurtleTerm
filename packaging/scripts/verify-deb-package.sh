@@ -35,7 +35,7 @@ assert manifest['version'] == '0.1.0'
 assert manifest['arch'] == 'amd64'
 assert manifest['package'] == 'turtle-term_0.1.0_amd64.deb'
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
-for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language']:
+for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
     assert command in manifest['public_commands'], command
 PY
 
@@ -44,7 +44,7 @@ dpkg-deb --field "$deb" Version | grep -qx '0.1.0'
 dpkg-deb --field "$deb" Architecture | grep -qx 'amd64'
 dpkg-deb --contents "$deb" > "$contents"
 
-for command in turtleterm turtle-agentctl turtle-agent-status turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language; do
+for command in turtleterm turtle-agentctl turtle-agent-status turtle-cloudfog turtle-superconscious turtle-agent-machine turtle-language turtle-session; do
   dpkg-deb --contents "$deb" | grep -q "/usr/bin/$command$"
 done
 

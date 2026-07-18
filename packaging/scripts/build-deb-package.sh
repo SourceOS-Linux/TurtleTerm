@@ -41,8 +41,8 @@ Depends: libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkb
 Homepage: https://github.com/SourceOS-Linux/TurtleTerm
 Description: TurtleTerm trusted terminal and agent workbench
  TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench
- for trusted command execution, terminal receipts, agent delegation, and
- reproducible operator workflows.
+ for trusted command execution, terminal receipts, agent delegation, language
+ intelligence, session ergonomics, and reproducible operator workflows.
 EOF
 
 cat > "$debian_dir/postinst" <<'EOF'

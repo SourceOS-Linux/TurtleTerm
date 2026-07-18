@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """TurtleTerm local SourceOS Agent Reliability status view.
 
-Reads local SourceOS evidence artifacts and summarizes:
-- blocking guardrail decisions;
-- stop-gate outcomes;
-- guarded invocation outcomes;
-- pending governance queue items.
+Reads local SourceOS evidence artifacts and summarizes blocking guardrail decisions,
+stop-gate outcomes, guarded invocation outcomes, and pending governance queue items.
 
-This tool is read-only. It does not modify policy, memory, git state, or queue
-artifacts.
+This tool is read-only. It does not modify policy, memory, git state, agent state,
+or governance queues.
 """
 
 from __future__ import annotations
@@ -64,8 +61,8 @@ def unique_paths(paths: list[Path]) -> list[Path]:
 
 def discover_json_artifacts(root: Path, filenames: set[str]) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
-    paths: list[Path] = []
     sourceos = root / ".sourceos"
+    paths: list[Path] = []
     if sourceos.exists():
         for name in filenames:
             paths.extend(sourceos.rglob(name))
