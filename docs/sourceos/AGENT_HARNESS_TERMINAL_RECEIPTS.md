@@ -1,53 +1,184 @@
 # Agent Harness Terminal Receipt Surface
 
 Status: v0.1 planning baseline  
-Owner plane: TurtleTerm governed operator surface  
+Owner plane: TurtleTerm governed terminal/operator surface  
 Consumers: SourceOS spec, AgentPlane, Policy Fabric, Memory Mesh, SCOPE-D, Delivery Excellence
 
 ## Purpose
 
-This document defines the TurtleTerm receipt boundary for agent-harness operator work. The surface is intended to make sessions visible, bounded, policy-referenced, and replayable without assigning independent authority to agents or cognition layers.
+TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench. The Aden/Hive production-agent pattern requires terminal work to be visible, bounded, receipt-producing, and measurable. TurtleTerm should make terminal/operator execution auditable without granting ambient shell authority to agents or cognition layers.
 
 ## Boundary
 
-TurtleTerm owns the local operator experience, wrapper receipts, approval receipts, pane references, local gateway evidence, and replayable workflow records.
+TurtleTerm owns:
 
-TurtleTerm does not own AgentPlane graph execution, Policy Fabric authority decisions, Agent Machine provider lifecycle, Delivery Excellence scoreboards, Memory Mesh artifact storage, or SCOPE-D exercise execution.
+- terminal/session UX
+- command wrapper behavior
+- local agent gateway surface
+- terminal receipts
+- operator approval surfaces
+- tmux/mux bridge receipts
+- skill manifests for terminal operations
+- replayable operator workflows
+
+TurtleTerm does not own:
+
+- AgentPlane graph execution
+- Policy Fabric gate authority
+- Agent Machine runtime provider lifecycle
+- Delivery Excellence scoreboards
+- Memory Mesh artifact storage
+- SCOPE-D security exercise execution
 
 ## Receipt classes
 
-TerminalSessionReceipt records a governed session with session id, actor ref, workspace ref, profile refs, policy admission ref, AgentPlane refs, timestamps, pane refs when applicable, and environment profile hash.
+### TerminalSessionReceipt
 
-CommandReceipt records an execution event with event id, session ref, event hash, working directory, environment hash, artifact pointer refs, exit code, duration, policy decision ref, side-effect class, and replay eligibility.
+Records an operator or agent-addressable terminal session.
 
-MutationReceipt records an observed change with change id, execution ref, change class, target scope, run mode, policy decision ref, human-control event ref when required, before and after artifact refs when available, rollback ref, and denied operation refs.
+Required semantics:
 
-OperatorApprovalReceipt records a typed human decision with approval id, actor ref, subject ref, decision, reason, timestamp, policy gate ref, AgentPlane ref, and Delivery Excellence human-control event ref.
+- terminal session id
+- actor/agent ref
+- workspace ref
+- shell profile
+- gateway profile
+- policy admission ref
+- AgentPlane run/session refs
+- start/end timestamps
+- mux/tmux pane refs when applicable
+- environment profile hash
 
-## Integration notes
+### CommandReceipt
 
-AgentPlane should cite TurtleTerm receipts in run, replay, session, evidence, diagnosis, and promotion surfaces.
+Records a command execution through TurtleTerm.
 
-Large outputs, transcripts, generated files, diffs, and local artifacts should be represented through Memory Mesh ArtifactPointer refs when large, sensitive, replay-critical, or customer-proof relevant.
+Required semantics:
 
-Delivery Excellence should consume derived readouts such as success or failure, policy-blocked counts, change posture, approval latency, replay eligibility, operator intervention count, workflow cycle time, and customer-safe proof of work. It should not consume raw local transcripts unless policy permits it.
+- command id
+- terminal session ref
+- command hash
+- command display text when policy permits
+- working directory
+- environment profile hash
+- stdin/stdout/stderr artifact pointer refs
+- exit code
+- duration
+- policy decision ref
+- side-effect class
+- replay eligibility
 
-SCOPE-D should validate the governed-workflow boundary and provide checks that the policy reference model is preserved.
+### MutationReceipt
+
+Records observed filesystem, process, deployment, or host mutation.
+
+Required semantics:
+
+- mutation id
+- command ref
+- mutation class
+- target scope
+- dry-run/live-run mode
+- policy decision ref
+- human-control event ref when required
+- before/after artifact refs when available
+- rollback ref
+- denied operation refs
+
+### OperatorApprovalReceipt
+
+Records human operator decisions in TurtleTerm.
+
+Required semantics:
+
+- approval id
+- actor ref
+- subject ref
+- decision
+- reason
+- timestamp
+- policy gate ref
+- AgentPlane run/session ref
+- Delivery Excellence human-control event ref
+
+## Controlled actions
+
+Require Policy Fabric decisions for:
+
+- package install
+- filesystem mutation outside workspace scope
+- deployment/apply operations
+- service start/stop/restart
+- network listener creation
+- secret/key material access
+- credential helper invocation
+- privilege escalation
+- destructive command patterns
+- host mutation
+- cluster mutation
+
+Fail closed when controlled actions lack a policy decision ref.
+
+## AgentPlane integration
+
+AgentPlane should cite TurtleTerm receipts in:
+
+- RunArtifact
+- ReplayArtifact
+- SessionEnvelope
+- EvidencePack
+- FailureDiagnosis
+- PromotionGate
+
+TurtleTerm receipts should preserve enough evidence for replay, diagnosis, and customer-safe proof without exposing raw secrets.
+
+## Memory Mesh integration
+
+Large stdout/stderr, shell transcripts, generated files, diffs, and terminal artifacts should be moved behind Memory Mesh `ArtifactPointer` refs when large, sensitive, replay-critical, or customer-proof relevant.
+
+## Delivery Excellence integration
+
+Delivery Excellence should consume derived metrics/readouts:
+
+- command success/failure
+- policy-blocked command count
+- host mutation denied/approved/performed
+- approval latency
+- replay-eligible command count
+- operator intervention count
+- terminal workflow cycle time
+- customer-safe proof of operator work
+
+Delivery Excellence should not consume raw terminal transcripts unless policy explicitly permits it.
+
+## SCOPE-D integration
+
+SCOPE-D should validate TurtleTerm workflows for:
+
+- command injection
+- shell escape
+- destructive command bypass
+- privilege escalation
+- secret exfiltration
+- unauthorized filesystem mutation
+- unauthorized service exposure
+- hostile generated scripts
+- host/cluster mutation bypass
 
 ## Non-negotiables
 
-- TurtleTerm must not grant ambient authority to agents.
-- Agent Machine owns machine-local provider lifecycle.
+- TurtleTerm must not grant ambient shell authority to agents.
+- Agent Machine owns machine-local runtime provider lifecycle.
 - Policy Fabric decides controlled action authority.
-- Outputs may require redaction and artifact pointers.
-- Host-level changes must be explicit, policy-referenced, and rollback-aware.
+- Command outputs may need redaction and artifact pointers.
+- Host mutation must be explicit, policy-referenced, and rollback-aware.
 - Human approvals are typed control events, not freeform notes.
-- Delivery Excellence receives metrics and readouts, not uncontrolled raw logs.
+- Delivery Excellence receives metrics and readouts, not uncontrolled shell logs.
 
 ## Near-term implementation path
 
-1. Align wrapper receipts with SourceOS execution receipt boundaries.
-2. Add examples for session, execution, change, and approval receipts.
+1. Align TurtleTerm command wrapper receipts with SourceOS `ShellReceiptEvent` and SourceOS execution receipt boundaries.
+2. Add examples for terminal session, command, mutation, and operator approval receipts.
 3. Add a verifier requiring policy refs for controlled action classes.
-4. Add Delivery Excellence projection examples.
-5. Add SCOPE-D boundary checks for the governed operator workflow.
+4. Add Delivery Excellence projection examples for command success, mutation posture, and approval latency.
+5. Add SCOPE-D terminal-risk checks for command injection, secret access, host mutation, and shell escape.
