@@ -1,0 +1,9 @@
+# Consent-plane surface envelope. Conforms to socioprophet-agent-standards
+# consent-plane/001 + sourceos-spec isolation-spaces-and-taints. Enforced by
+# consent-plane/verify_surface.py (consent-plane-surface CI).
+surface_id: terminal
+conforms_to: socioprophet-agent-standards/standards/consent-plane/surfaces_v1.yaml#terminal
+purposes: [discover, implement, verify]
+deny_purposes: [egress, operate]        # a terminal must not egress or operate live infra
+data_classes: [source-and-config, first-party-source]
+space_deny: [kernel-space, system-space]  # no OS-core / infra ring from a shell

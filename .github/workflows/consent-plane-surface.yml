@@ -1,0 +1,17 @@
+name: Consent Plane Surface
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.x' }
+      - run: python -m pip install pyyaml
+      - run: python consent-plane/self_test.py
+      - run: python consent-plane/verify_surface.py
