@@ -32,7 +32,7 @@ $scripts = @(
   'bin/turtle-copilot', 'bin/turtle-gh', 'bin/turtle-env',
   'bin/turtle-diagnose', 'bin/turtle-apply', 'bin/turtle-chain',
   'bin/turtle-gitea', 'bin/turtle-ci', 'bin/turtle-review',
-  'bin/turtle-watch', 'bin/turtle-cost', 'bin/turtle-bg',
+  'bin/turtle-watch', 'bin/turtle-netwatch', 'bin/turtle-cost', 'bin/turtle-bg',
   'bin/turtle-dash', 'bin/turtle-pr', 'bin/turtle-issue',
   'bin/turtle-hooks', 'bin/turtle-perf', 'bin/turtle-persona',
   'bin/turtle-files', 'bin/turtle-runbook', 'bin/turtle-session',
@@ -89,7 +89,7 @@ New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
 $agentScripts = @(
   'turtle-agentd', 'turtle-agentctl', 'turtle-copilot', 'turtle-gh',
   'turtle-env', 'turtle-diagnose', 'turtle-apply', 'turtle-chain',
-  'turtle-gitea', 'turtle-ci', 'turtle-review', 'turtle-watch',
+  'turtle-gitea', 'turtle-ci', 'turtle-review', 'turtle-watch', 'turtle-netwatch',
   'turtle-cost', 'turtle-bg', 'turtle-dash', 'turtle-pr',
   'turtle-issue', 'turtle-hooks', 'turtle-perf', 'turtle-persona',
   'turtle-files', 'turtle-runbook', 'turtle-session', 'turtle-sync',

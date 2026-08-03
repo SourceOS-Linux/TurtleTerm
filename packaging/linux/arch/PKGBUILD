@@ -74,7 +74,7 @@ EOF
     turtle-language turtle-session turtle-synapseiq synapseiq-lsp \
     turtle-plan-view turtle-selftest turtle-runbook turtle-voice turtle-sync \
     turtle-perf turtle-persona turtle-files turtle-bg turtle-dash turtle-pr \
-    turtle-issue turtle-hooks turtle-gitea turtle-ci turtle-review turtle-watch \
+    turtle-issue turtle-hooks turtle-gitea turtle-ci turtle-review turtle-watch turtle-netwatch \
     turtle-cost turtle-copilot turtle-gh turtle-env turtle-diagnose \
     turtle-apply turtle-chain turtle-ai-chat; do
     src="assets/sourceos/bin/${script}"

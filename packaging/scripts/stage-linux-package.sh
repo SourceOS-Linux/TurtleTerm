@@ -54,7 +54,7 @@ for script in \
   turtle-gitea \
   turtle-ci \
   turtle-review \
-  turtle-watch \
+  turtle-watch turtle-netwatch \
   turtle-cost \
   turtle-copilot \
   turtle-gh \

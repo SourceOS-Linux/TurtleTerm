@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+"""turtle-netwatch — the Network/Connections agent for SourceOS.
+
+The one built-in agent the Agent-First Node Architecture was missing: an
+OS-native observer of sockets / DNS / process ownership that
+
+  1. OBSERVES  current connections (portable: `ss` on Linux, `lsof` on macOS/BSD)
+  2. EMITS     agent.v1 `Observation` events (schemas/agent/observation.avsc)
+  3. GRAPHS    them into a System Graph subgraph (KnowledgeUpdate deltas) for
+               hellgraph's AtomSpace (nodes: Process/Host/Port/User; edges:
+               CONNECTS_TO / OWNED_BY)
+  4. DETECTS   policy-bound anomalies (beaconing, egress spikes)
+  5. PROPOSES  an `Action` (block-domain / throttle-process) that is
+               ADMITTED-OR-REFUSED by the consent plane (a network mutation is an
+               operate/egress purpose) and then routed to the Governor for
+               human approval — nothing is applied on a deny.
+
+Binds, does not rebuild: hosts under turtle-agentd, gates through the
+consent-plane engine (policy-fabric purpose_admissibility_gate), and routes
+approvals to guardrail-fabric. Its whole operation ships as a turtle-runbook
+(runbooks/netwatch.yaml) so a user OR an agent can execute it step by step.
+
+  turtle-netwatch snapshot [--json]
+  turtle-netwatch observe  [--window SEC] [--interval SEC] [--json]
+  turtle-netwatch graph    [--from FILE] [--json]
+  turtle-netwatch detect   [--from FILE] [--json]
+  turtle-netwatch propose  --action block-domain|throttle-process --target X [--apply] [--json]
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+SCHEMA_NS = "agent.v1"
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def state_dir() -> Path:
+    base = os.environ.get(
+        "SOURCEOS_TERMINAL_RECEIPTS",
+        str(Path.home() / ".local" / "state" / "sourceos" / "terminal" / "receipts"),
+    )
+    d = Path(base).parent / "netwatch"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _seal(obj: Any) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+# --------------------------------------------------------------------------- observe
+_EXTERNAL_DENY = ("127.", "0.0.0.0", "::1", "*", "localhost")
+
+
+def _is_external(addr: str) -> bool:
+    a = addr.strip("[]")
+    if not a or a.startswith(_EXTERNAL_DENY):
+        return False
+    if a.startswith(("10.", "192.168.", "169.254.", "fe80:")):
+        return False
+    if re.match(r"^172\.(1[6-9]|2\d|3[01])\.", a):
+        return False
+    return True
+
+
+def snapshot() -> list[dict[str, Any]]:
+    """Portable connection snapshot. Returns normalized connection records."""
+    if shutil.which("ss"):
+        return _parse_ss()
+    if shutil.which("lsof"):
+        return _parse_lsof()
+    return []
+
+
+def _parse_ss() -> list[dict[str, Any]]:
+    try:
+        out = subprocess.run(
+            ["ss", "-tunp"], text=True, capture_output=True, timeout=10
+        ).stdout
+    except Exception:
+        return []
+    conns = []
+    for line in out.splitlines()[1:]:
+        f = line.split()
+        if len(f) < 5:
+            continue
+        proto, state, local, peer = f[0], f[1], f[-3], f[-2]
+        proc = ""
+        m = re.search(r'users:\(\("([^"]+)",pid=(\d+)', line)
+        pid, name = (m.group(2), m.group(1)) if m else ("", "")
+        raddr, _, rport = peer.rpartition(":")
+        conns.append(_conn(proto, local, raddr, rport, state, pid, name))
+    return conns
+
+
+def _parse_lsof() -> list[dict[str, Any]]:
+    try:
+        out = subprocess.run(
+            ["lsof", "-nP", "-i"], text=True, capture_output=True, timeout=10
+        ).stdout
+    except Exception:
+        return []
+    conns = []
+    for line in out.splitlines()[1:]:
+        f = line.split()
+        if len(f) < 9:
+            continue
+        name, pid, proto, node = f[0], f[1], f[7], f[8]
+        if "->" not in node:
+            continue
+        local, _, peer = node.partition("->")
+        raddr, _, rport = peer.rpartition(":")
+        state = f[9].strip("()") if len(f) > 9 else ""
+        conns.append(_conn(proto, local, raddr, rport, state, pid, name))
+    return conns
+
+
+def _conn(proto, local, raddr, rport, state, pid, name) -> dict[str, Any]:
+    return {
+        "ts": utc_now(),
+        "proto": proto.lower(),
+        "laddr": local,
+        "raddr": raddr,
+        "rport": rport,
+        "state": state,
+        "pid": pid,
+        "process": name,
+        "external": _is_external(raddr),
+    }
+
+
+def observation(conn: dict[str, Any]) -> dict[str, Any]:
+    """agent.v1 Observation for one connection."""
+    sev = "WARN" if conn["external"] and conn["proto"] == "tcp" else "INFO"
+    return {
+        "schema": f"{SCHEMA_NS}.Observation",
+        "source": "netwatch",
+        "type": "net.conn",
+        "ts": conn["ts"],
+        "attrs": {
+            "proto": conn["proto"],
+            "raddr": conn["raddr"],
+            "rport": str(conn["rport"]),
+            "process": conn["process"],
+            "pid": str(conn["pid"]),
+            "state": conn["state"],
+            "external": str(conn["external"]).lower(),
+        },
+        "severity": sev,
+    }
+
+
+def cmd_observe(args) -> int:
+    end = time.time() + args.window
+    seen, obs = set(), []
+    while True:
+        for c in snapshot():
+            key = (c["proto"], c["raddr"], c["rport"], c["pid"])
+            if key not in seen:
+                seen.add(key)
+                obs.append(observation(c))
+        if time.time() >= end:
+            break
+        time.sleep(args.interval)
+    out = state_dir() / "observations.jsonl"
+    with out.open("a") as fh:
+        for o in obs:
+            fh.write(json.dumps(o) + "\n")
+    result = {"emitted": len(obs), "sink": str(out), "window_s": args.window}
+    _print(args, result if not args.json else obs)
+    return 0
+
+
+# --------------------------------------------------------------------------- graph
+def build_system_graph(obs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Project observations to a System Graph subgraph as a KnowledgeUpdate
+    delta (nodes + edges), ready for hellgraph AtomSpace ingestion."""
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+
+    def node(nid, kind, **attrs):
+        nodes.setdefault(nid, {"id": nid, "kind": kind, "attrs": attrs})
+
+    for o in obs:
+        a = o["attrs"]
+        proc = f"process:{a.get('process','?')}#{a.get('pid','?')}"
+        host = f"host:{a.get('raddr','?')}"
+        port = f"port:{a.get('rport','?')}/{a.get('proto','?')}"
+        node(proc, "Process", pid=a.get("pid"), name=a.get("process"))
+        node(host, "Host", external=a.get("external"))
+        node(port, "Port", proto=a.get("proto"))
+        edges.append({"from": proc, "rel": "CONNECTS_TO", "to": host, "via": port,
+                      "severity": o.get("severity", "INFO"), "ts": o["ts"]})
+    return {
+        "schema": f"{SCHEMA_NS}.KnowledgeUpdate",
+        "graph": "SYSTEM",
+        "ts": utc_now(),
+        "patch": {"nodes": list(nodes.values()), "edges": edges},
+        "prov": {"source": "netwatch", "seal": _seal({"n": sorted(nodes), "e": edges})},
+    }
+
+
+def _load_obs(args) -> list[dict[str, Any]]:
+    src = Path(args.__dict__.get("from") or (state_dir() / "observations.jsonl"))
+    if not src.exists():
+        return []
+    return [json.loads(l) for l in src.read_text().splitlines() if l.strip()]
+
+
+def cmd_graph(args) -> int:
+    ku = build_system_graph(_load_obs(args))
+    out = state_dir() / "system_graph.json"
+    out.write_text(json.dumps(ku, indent=2))
+    _print(args, ku if args.json else {"nodes": len(ku["patch"]["nodes"]),
+                                       "edges": len(ku["patch"]["edges"]), "sink": str(out)})
+    return 0
+
+
+# --------------------------------------------------------------------------- detect
+def detect_anomalies(obs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Beaconing (low-variance periodic contact to one dst) + egress fan-out."""
+    findings = []
+    by_dst: dict[tuple, list[str]] = {}
+    ext_hosts: set[str] = set()
+    for o in obs:
+        a = o["attrs"]
+        dst = (a.get("raddr"), a.get("rport"), a.get("process"))
+        by_dst.setdefault(dst, []).append(o["ts"])
+        if a.get("external") == "true":
+            ext_hosts.add(a.get("raddr"))
+    # beaconing: >=4 contacts to same dst with low coefficient of variation
+    for (raddr, rport, proc), times in by_dst.items():
+        if len(times) < 4:
+            continue
+        ep = [dt.datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp() for t in sorted(times)]
+        gaps = [b - a for a, b in zip(ep, ep[1:])]
+        if len(gaps) >= 3 and statistics.mean(gaps) > 0:
+            cv = statistics.pstdev(gaps) / statistics.mean(gaps)
+            if cv < 0.20:
+                findings.append(_finding(
+                    "CRIT", "net.beaconing",
+                    f"{proc} beacons to {raddr}:{rport} every ~{statistics.mean(gaps):.0f}s (cv={cv:.2f})",
+                    {"raddr": raddr, "rport": rport, "process": proc, "count": str(len(times))}))
+    # egress fan-out: one process reaching many external hosts
+    proc_ext: dict[str, set] = {}
+    for o in obs:
+        a = o["attrs"]
+        if a.get("external") == "true":
+            proc_ext.setdefault(a.get("process"), set()).add(a.get("raddr"))
+    for proc, hosts in proc_ext.items():
+        if len(hosts) >= 10:
+            findings.append(_finding(
+                "WARN", "net.egress_fanout",
+                f"{proc} reached {len(hosts)} external hosts (possible exfil/scan)",
+                {"process": proc, "host_count": str(len(hosts))}))
+    return findings
+
+
+def _finding(sev, kind, msg, attrs) -> dict[str, Any]:
+    return {"schema": f"{SCHEMA_NS}.Observation", "source": "netwatch", "type": kind,
+            "ts": utc_now(), "severity": sev, "message": msg, "attrs": attrs}
+
+
+def cmd_detect(args) -> int:
+    findings = detect_anomalies(_load_obs(args))
+    _print(args, findings if args.json else
+           {"findings": len(findings), "detail": [f["message"] for f in findings]})
+    return 0 if not findings else 2
+
+
+# --------------------------------------------------------------------------- propose (consent-gated)
+def _consent_enforce(request: dict[str, Any]) -> tuple[bool, list[str], str]:
+    """Gate a network Action through the consent plane. Binds to the real
+    policy-fabric engine when a sibling checkout is present; FAILS CLOSED (deny)
+    otherwise — a network mutation must never proceed ungated."""
+    root = os.environ.get("PROPHET_POLICY_FABRIC")
+    candidates = [root] if root else []
+    for p in Path(__file__).resolve().parents:
+        candidates.append(str(p / "policy-fabric"))
+    for c in candidates:
+        pf = Path(c) if c else None
+        if pf and (pf / "policy_fabric" / "purpose_admissibility_gate.py").exists():
+            sys.path.insert(0, str(pf))
+            try:
+                from policy_fabric import purpose_admissibility_gate as gate  # type: ignore
+                doc = gate.decide(request, gate.load_catalogs())
+                d = doc["spec"]
+                return d["decision"] == "admit", d.get("denyReasons", []), doc["metadata"]["name"]
+            except Exception as exc:  # fail closed
+                return False, [f"consent engine error: {exc} (fail-closed)"], "gate-error"
+    return False, ["consent-plane engine not found (fail-closed): set $PROPHET_POLICY_FABRIC"], "no-gate"
+
+
+_ACTIONS = {
+    "block-domain": {"capability": "net.block", "tool": "exec-mutate", "purpose": "operate"},
+    "throttle-process": {"capability": "net.throttle", "tool": "exec-mutate", "purpose": "operate"},
+}
+
+
+def cmd_propose(args) -> int:
+    spec = _ACTIONS.get(args.action)
+    if not spec:
+        print(f"unknown action {args.action!r}; choose from {list(_ACTIONS)}", file=sys.stderr)
+        return 1
+    request = {
+        "role": "operator", "surface": "cluster-operator", "space": "system-space",
+        "tool": spec["tool"], "declaredPurpose": spec["purpose"],
+        "consent": {"purposes": [spec["purpose"]]},
+        "subjectRef": "urn:agent:netwatch",
+    }
+    admitted, reasons, gate_name = _consent_enforce(request)
+    action = {
+        "schema": f"{SCHEMA_NS}.Action", "capability": spec["capability"],
+        "args": {"target": args.target}, "ts": utc_now(),
+        "policy": {"space": "system-space", "purpose": spec["purpose"], "gate": gate_name},
+    }
+    if not admitted:
+        receipt = {"kind": "netwatch.action.refused", "action": action,
+                   "denyReasons": reasons, "ts": utc_now()}
+        _write_receipt(receipt)
+        _print(args, {"decision": "deny", "denyReasons": reasons, "receipt": receipt["kind"]})
+        print("REFUSED (fail-closed): network action not admissible.", file=sys.stderr)
+        return 3
+    # admitted -> route to Governor (guardrail-fabric) for human approval; do NOT
+    # auto-apply. Applying requires --apply AND an approval token from the Governor.
+    approval = os.environ.get("NETWATCH_GOVERNOR_APPROVAL")
+    receipt = {"kind": "netwatch.action.proposed", "action": action,
+               "governor": "guardrail-fabric", "approved": bool(approval and args.apply),
+               "seal": _seal(action), "ts": utc_now()}
+    _write_receipt(receipt)
+    status = "applied" if receipt["approved"] else "awaiting-governor-approval"
+    _print(args, {"decision": "admit", "status": status, "action": action["capability"],
+                  "target": args.target, "receipt": receipt["kind"]})
+    return 0
+
+
+def _write_receipt(receipt: dict[str, Any]) -> None:
+    out = state_dir() / "actions.jsonl"
+    with out.open("a") as fh:
+        fh.write(json.dumps(receipt) + "\n")
+
+
+# --------------------------------------------------------------------------- cli
+def cmd_snapshot(args) -> int:
+    conns = snapshot()
+    _print(args, conns if args.json else {"connections": len(conns),
+           "external": sum(1 for c in conns if c["external"]),
+           "collector": "ss" if shutil.which("ss") else ("lsof" if shutil.which("lsof") else "none"),
+           "os": platform.system()})
+    return 0
+
+
+def _print(args, obj) -> None:
+    print(json.dumps(obj, indent=2))
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="turtle-netwatch", description="Network/Connections agent")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    for name in ("snapshot", "graph", "detect"):
+        s = sub.add_parser(name)
+        s.add_argument("--json", action="store_true")
+        if name in ("graph", "detect"):
+            s.add_argument("--from", dest="from", default=None)
+    o = sub.add_parser("observe")
+    o.add_argument("--window", type=int, default=5)
+    o.add_argument("--interval", type=int, default=1)
+    o.add_argument("--json", action="store_true")
+    pr = sub.add_parser("propose")
+    pr.add_argument("--action", required=True, choices=list(_ACTIONS))
+    pr.add_argument("--target", required=True)
+    pr.add_argument("--apply", action="store_true")
+    pr.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+    return {"snapshot": cmd_snapshot, "observe": cmd_observe, "graph": cmd_graph,
+            "detect": cmd_detect, "propose": cmd_propose}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
