@@ -156,3 +156,21 @@ def test_pending_excludes_decided(tmp_path, monkeypatch):
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_graph_ingest_fails_soft_without_hellgraph(tmp_path, monkeypatch):
+    # graph --ingest with no hellgraph -> ingested:false, exit 0 (memory, NOT fail-closed)
+    monkeypatch.setenv("SOURCEOS_TERMINAL_RECEIPTS", str(tmp_path / "r"))
+    monkeypatch.setenv("HELLGRAPH_HOME", str(tmp_path / "no-hellgraph"))
+    # seed one observation so the graph has content
+    obs = nw.state_dir() / "observations.jsonl"
+    obs.write_text(json.dumps(_obs("1.2.3.4", "443", "curl", "2026-08-02T00:00:00Z")) + "\n")
+    env = dict(os.environ)
+    env["SOURCEOS_TERMINAL_RECEIPTS"] = str(tmp_path / "r")
+    env["HELLGRAPH_HOME"] = str(tmp_path / "no-hellgraph")
+    r = subprocess.run([sys.executable, str(BIN), "graph", "--ingest"],
+                       env=env, text=True, capture_output=True)
+    assert r.returncode == 0, r.stderr  # fail-SOFT
+    out = json.loads(r.stdout)
+    assert out["ingest"]["ingested"] is False
+    assert "hellgraph not found" in out["ingest"]["reason"]

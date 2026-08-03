@@ -10,8 +10,8 @@ steps:
     desc: "Point-in-time connection snapshot (portable: ss on Linux, lsof on macOS). Verifies a collector is present."
   - cmd: turtle-netwatch observe --window 15 --interval 3
     desc: "Observe for 15s; emit agent.v1 Observation events to the netwatch sink (schemas/agent/observation.avsc)."
-  - cmd: turtle-netwatch graph
-    desc: "Project the observations into a System Graph subgraph (KnowledgeUpdate delta) for hellgraph AtomSpace ingestion."
+  - cmd: turtle-netwatch graph --ingest
+    desc: "Project the observations into a System Graph subgraph (KnowledgeUpdate delta) AND ingest it into hellgraph's AtomSpace as queryable memory (fail-soft: if hellgraph is absent the delta still lands on the sink). Omit --ingest to only write the delta."
   - cmd: turtle-netwatch detect
     desc: "Scan the window for anomalies — beaconing (low-variance periodic contact) and egress fan-out. Exit 2 if any found."
   - cmd: turtle-netwatch propose --action block-domain --target suspicious.example
