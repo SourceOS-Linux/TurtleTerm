@@ -15,6 +15,12 @@ steps:
   - cmd: turtle-netwatch detect
     desc: "Scan the window for anomalies — beaconing (low-variance periodic contact) and egress fan-out. Exit 2 if any found."
   - cmd: turtle-netwatch propose --action block-domain --target suspicious.example
-    desc: "Propose a network Action. It is ADMITTED-OR-REFUSED by the consent plane (operate purpose, system-space); on admit it is routed to the Governor for approval and NOT auto-applied. Deny => refused fail-closed."
+    desc: "Propose a network Action. It is ADMITTED-OR-REFUSED by the consent plane (operate purpose, system-space); on consent-admit it goes to the Governor, which defaults to ESCALATE (human required) — NOT auto-applied. Deny => refused fail-closed."
+  - cmd: turtle-netwatch pending
+    desc: "List proposed actions awaiting a Governor decision."
+  - cmd: turtle-netwatch decide --action block-domain --target suspicious.example --approve --reason 'confirmed after review'
+    desc: "The Governor decision (human-in-loop): records a real guardrail-fabric PolicyDecision (allow/deny). Fail-closed — without guardrail-fabric a network mutation cannot be authorized."
+  - cmd: turtle-netwatch propose --action block-domain --target suspicious.example --apply
+    desc: "Re-propose with --apply: now consent-admit + Governor-allow => APPLIED. A Governor deny would refuse it here instead."
   - cmd: cat "${SOURCEOS_TERMINAL_RECEIPTS:-$HOME/.local/state/sourceos/terminal/receipts}/../netwatch/actions.jsonl"
-    desc: "Review the action receipts (proposed / refused) — every decision is hash-sealed and auditable."
+    desc: "Review the action + Governor-decision receipts — every step is hash-sealed and auditable."

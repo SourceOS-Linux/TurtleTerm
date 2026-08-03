@@ -97,6 +97,62 @@ def test_snapshot_runs_and_is_shaped(tmp_path):
     json.loads(r.stdout)  # a list (possibly empty if no ss/lsof) — must be valid JSON
 
 
+# ------------------------------------------------------------------ Governor loop
+def _gov_env(tmp_path):
+    env = dict(os.environ)
+    env["SOURCEOS_TERMINAL_RECEIPTS"] = str(tmp_path / "r")
+    return env
+
+
+def test_governor_defaults_to_escalate(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOURCEOS_TERMINAL_RECEIPTS", str(tmp_path / "r"))
+    # no decision recorded -> never a silent admit
+    assert nw._governor_decision("net.block", "evil.example") == "escalate"
+
+
+def test_governor_reads_recorded_decision(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOURCEOS_TERMINAL_RECEIPTS", str(tmp_path / "r"))
+    d = nw._decisions_path()
+    d.parent.mkdir(parents=True, exist_ok=True)
+    d.write_text(json.dumps({"actionKey": "net.block|evil.example", "decision": "allow"}) + "\n")
+    assert nw._governor_decision("net.block", "evil.example") == "allow"
+    # a later deny supersedes
+    with d.open("a") as fh:
+        fh.write(json.dumps({"actionKey": "net.block|evil.example", "decision": "deny"}) + "\n")
+    assert nw._governor_decision("net.block", "evil.example") == "deny"
+
+
+def test_decide_fails_closed_without_guardrail(tmp_path):
+    env = _gov_env(tmp_path)
+    env["PROPHET_GUARDRAIL_FABRIC"] = str(tmp_path / "nope")
+    r = subprocess.run([sys.executable, str(BIN), "decide", "--action", "block-domain",
+                        "--target", "x", "--approve"], env=env, text=True, capture_output=True)
+    assert r.returncode == 3  # a network mutation can't be governed -> can't be authorized
+    assert "guardrail-fabric" in r.stderr
+
+
+def test_pending_excludes_decided(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOURCEOS_TERMINAL_RECEIPTS", str(tmp_path / "r"))
+    sink = nw.state_dir() / "actions.jsonl"
+    for tgt in ("a.example", "b.example"):
+        rec = {"kind": "netwatch.action.proposed",
+               "action": {"capability": "net.block", "args": {"target": tgt}},
+               "seal": "s", "ts": "t"}
+        with sink.open("a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    # decide b.example -> only a.example remains pending
+    nw._decisions_path().write_text(json.dumps({"actionKey": "net.block|b.example", "decision": "allow"}) + "\n")
+
+    class A:  # minimal args
+        json = True
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        nw.cmd_pending(A())
+    out = json.loads(buf.getvalue())
+    assert [x["target"] for x in out] == ["a.example"]
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-q"]))
