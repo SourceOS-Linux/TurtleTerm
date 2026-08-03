@@ -701,6 +701,70 @@ def _local_policy_check(command: str) -> tuple[str, str, str | None]:
 
 
 # ---------------------------------------------------------------------------
+# Consent-plane terminal-surface envelope (enforce-sweep)
+# ---------------------------------------------------------------------------
+# The consent-plane surface catalog gives the `terminal` surface
+# purposes=[discover, implement, verify] and deny_purposes=[egress, operate].
+# That envelope contains an AUTONOMOUS AGENT: a prompt-injected / runaway agent
+# acting on the terminal surface may read, edit, and test, but may NOT egress
+# (push/publish/network-send) or operate (deploy/infra). It does NOT restrict the
+# human operator, who holds full authority — so this check applies only to agent
+# actors. The classification is local so containment holds even when the consent
+# engine is unreachable (fail-closed for the agent); a reachable engine adds the
+# full role x space x consent check on top.
+
+_EGRESS_OPERATE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE) for p in (
+        r"\bgit\s+push\b", r"\bgit\s+(fetch|pull|clone)\b",
+        r"\bgh\s+(pr\s+merge|release\s+create|repo\s+create|api\b.*-X\s*(POST|PUT|PATCH|DELETE))",
+        r"\b(curl|wget)\b", r"\bscp\b", r"\brsync\b.*::|\brsync\b.*@", r"\bssh\b\s+\S+@",
+        r"\bkubectl\s+(apply|create|delete|edit|patch|scale|rollout|drain|cordon)",
+        r"\bdocker\s+(push|run|-)", r"\bhelm\s+(install|upgrade|uninstall)",
+        r"\bterraform\s+(apply|destroy)", r"\bsystemctl\s+(start|stop|restart|enable|disable)",
+        r"\b(aws|gcloud|az)\s+\S+\s+(create|delete|update|deploy|put|set)",
+        r"\bnpm\s+publish\b", r"\bpip\s+(upload|install)\b", r"\bcargo\s+publish\b",
+        r"\bnc\b\s+\S+\s+\d+", r"\b(dd|mkfs|fdisk)\b",
+    )
+]
+
+
+def _is_agent_actor(actor_id: str | None) -> bool:
+    """The consent-plane envelope governs autonomous agents, not the human.
+    Only an explicit 'human:' actor keeps full authority; every other non-empty
+    id (agent:*, urn:srcos:agent:*, bot:*, svc:*, or an unrecognized id) is
+    governed — fail-closed, so an unknown actor cannot slip past as human.
+    (turtle-agentd defaults actor_id to 'human:local-user' at its call sites, so
+    an empty id here means the daemon's own default human path.)"""
+    a = (actor_id or "").lower()
+    if not a or a.startswith("human:"):
+        return False
+    return True
+
+
+def _terminal_purpose(command: str) -> str | None:
+    """Return 'egress-or-operate' when the command leaves the surface (network /
+    publish / deploy / infra mutation); None for read/edit/test (discover/
+    implement/verify), which the terminal surface allows."""
+    for pat in _EGRESS_OPERATE_PATTERNS:
+        if pat.search(command):
+            return "egress-or-operate"
+    return None
+
+
+def consent_plane_check(command: str, actor_id: str | None) -> tuple[str, str]:
+    """Apply the terminal-surface envelope to an agent actor's command.
+    Returns (decision, reason). Deny wins over Policy Fabric (defence in depth)."""
+    if not _is_agent_actor(actor_id):
+        return "allow", "human actor — consent-plane envelope governs agents only"
+    if _terminal_purpose(command):
+        return ("deny",
+                "[consent-plane] terminal surface denies egress/operate for an agent actor "
+                "(role x surface x space containment); a network/publish/deploy action is not "
+                "admissible on the terminal surface. Escalate to a human operator.")
+    return "allow", "[consent-plane] discover/implement/verify admissible on terminal surface"
+
+
+# ---------------------------------------------------------------------------
 # Policy Fabric wire (Track D)
 # ---------------------------------------------------------------------------
 
@@ -728,6 +792,16 @@ def policy_evaluate(
             },
             "decision_id": None,
             "source": "local-policy",
+        }
+
+    # Consent-plane terminal-surface envelope: an agent actor may not egress/operate
+    # on the terminal surface. Deny short-circuits (defence in depth, holds offline).
+    cp_decision, cp_reason = consent_plane_check(command, actor_id)
+    if cp_decision == "deny":
+        return {
+            "decision": {"outcome": "deny", "reason": cp_reason, "matched_rule": "consent-plane:terminal"},
+            "decision_id": None,
+            "source": "consent-plane",
         }
 
     if risk_level is None:
