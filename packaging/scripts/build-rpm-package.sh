@@ -47,19 +47,10 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 %files
 %license /LICENSE.md
 %doc /THIRD_PARTY_NOTICES.md
-/usr/bin/turtleterm
-/usr/bin/turtleterm-mux-server
-/usr/bin/turtle-term
-/usr/bin/turtle-agentd
-/usr/bin/turtle-agentctl
-/usr/bin/turtle-agent-status
-/usr/bin/turtle-tmux
-/usr/bin/turtle-cloudfog
-/usr/bin/turtle-superconscious
-/usr/bin/turtle-agent-machine
-/usr/bin/turtle-language
-/usr/bin/turtle-session
-/usr/bin/sourceos-term
+# Glob the whole staged tree so %files always matches what
+# stage-linux-package.sh installs (all agent commands, runtime, data) —
+# an explicit list silently desyncs and trips "unpackaged file(s) found".
+/usr/bin/*
 /etc/turtle-term/turtleterm.lua
 /usr/libexec/turtle-term/
 /usr/share/applications/ai.sourceos.TurtleTerm.desktop
@@ -69,7 +60,7 @@ if [ -f $repo_root/THIRD_PARTY_NOTICES.md ]; then cp $repo_root/THIRD_PARTY_NOTI
 EOF
 
 rpmbuild --define "_topdir $rpmbuild_root" -bb "$spec" >&2
-rpm="$(find "$rpmbuild_root/RPMS" -name 'turtle-term-*.rpm' -print -quit)"
+rpm="$(find "$rpmbuild_root/RPMS" -name 'turtleterm-*.rpm' -print -quit)"
 if [ -z "$rpm" ]; then
   echo "no turtle-term RPM built under $rpmbuild_root/RPMS" >&2
   find "$rpmbuild_root" -maxdepth 4 -type f -print >&2
@@ -81,6 +72,8 @@ python3 "$repo_root/packaging/scripts/write-native-package-manifest.py" \
   --kind rpm \
   --version "$version" \
   --arch "$arch" \
-  --out "$rpm.manifest.json"
+  --out "$rpm.manifest.json" >/dev/null
 
+# stdout must carry ONLY the package path — verify-rpm-package.sh captures it
+# via command substitution, so any earlier chatter corrupts "$rpm".
 echo "$rpm"

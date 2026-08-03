@@ -6,7 +6,7 @@ arch="${TURTLE_TERM_ARCH_ARCH:-$(uname -m)}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out_dir="${TURTLE_TERM_OUT_DIR:-$repo_root/dist}"
 pkgroot="$out_dir/arch-root"
-pkg="$out_dir/turtle-term-${version}-1-${arch}.pkg.tar.zst"
+pkg="$out_dir/turtleterm-${version}-1-${arch}.pkg.tar.zst"
 
 case "$arch" in
   x86_64|aarch64) ;;
@@ -26,8 +26,8 @@ TURTLE_TERM_RUNTIME_ETC_DIR="/etc" \
   bash "$repo_root/packaging/scripts/stage-linux-package.sh" >/dev/null
 
 cat > "$pkgroot/.PKGINFO" <<EOF
-pkgname = turtle-term
-pkgbase = turtle-term
+pkgname = turtleterm
+pkgbase = turtleterm
 pkgver = $version-1
 pkgdesc = TurtleTerm trusted terminal and agent workbench
 url = https://github.com/SourceOS-Linux/TurtleTerm
@@ -75,6 +75,8 @@ python3 "$repo_root/packaging/scripts/write-native-package-manifest.py" \
   --kind arch \
   --version "$version" \
   --arch "$arch" \
-  --out "$pkg.manifest.json"
+  --out "$pkg.manifest.json" >/dev/null
 
+# stdout must carry ONLY the package path — verify-arch-package.sh captures it
+# via command substitution, so any earlier chatter corrupts "$pkg".
 echo "$pkg"

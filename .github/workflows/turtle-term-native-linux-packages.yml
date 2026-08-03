@@ -97,15 +97,15 @@ jobs:
       - name: Verify package artifacts exist
         run: |
           ls -lah dist/native
-          test -n "$(find dist/native -name 'turtle-term_*.deb' -print -quit)"
-          test -n "$(find dist/native -name 'turtle-term_*.deb.sha256' -print -quit)"
-          test -n "$(find dist/native -name 'turtle-term_*.deb.manifest.json' -print -quit)"
-          test -n "$(find dist/native -name 'turtle-term-*.rpm' -print -quit)"
-          test -n "$(find dist/native -name 'turtle-term-*.rpm.sha256' -print -quit)"
-          test -n "$(find dist/native -name 'turtle-term-*.rpm.manifest.json' -print -quit)"
-          test -n "$(find dist/native -name 'turtle-term-*.pkg.tar.zst' -print -quit)"
-          test -n "$(find dist/native -name 'turtle-term-*.pkg.tar.zst.sha256' -print -quit)"
-          test -n "$(find dist/native -name 'turtle-term-*.pkg.tar.zst.manifest.json' -print -quit)"
+          test -n "$(find dist/native -name 'turtleterm_*.deb' -print -quit)"
+          test -n "$(find dist/native -name 'turtleterm_*.deb.sha256' -print -quit)"
+          test -n "$(find dist/native -name 'turtleterm_*.deb.manifest.json' -print -quit)"
+          test -n "$(find dist/native -name 'turtleterm-*.rpm' -print -quit)"
+          test -n "$(find dist/native -name 'turtleterm-*.rpm.sha256' -print -quit)"
+          test -n "$(find dist/native -name 'turtleterm-*.rpm.manifest.json' -print -quit)"
+          test -n "$(find dist/native -name 'turtleterm-*.pkg.tar.zst' -print -quit)"
+          test -n "$(find dist/native -name 'turtleterm-*.pkg.tar.zst.sha256' -print -quit)"
+          test -n "$(find dist/native -name 'turtleterm-*.pkg.tar.zst.manifest.json' -print -quit)"
 
       - name: Write native package index
         env:
@@ -137,15 +137,15 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: |
-            dist/native/turtle-term_*.deb
-            dist/native/turtle-term_*.deb.sha256
-            dist/native/turtle-term_*.deb.manifest.json
+            dist/native/turtleterm_*.deb
+            dist/native/turtleterm_*.deb.sha256
+            dist/native/turtleterm_*.deb.manifest.json
             dist/native/rpmbuild/RPMS/**/*.rpm
             dist/native/rpmbuild/RPMS/**/*.rpm.sha256
             dist/native/rpmbuild/RPMS/**/*.rpm.manifest.json
-            dist/native/turtle-term-*.pkg.tar.zst
-            dist/native/turtle-term-*.pkg.tar.zst.sha256
-            dist/native/turtle-term-*.pkg.tar.zst.manifest.json
+            dist/native/turtleterm-*.pkg.tar.zst
+            dist/native/turtleterm-*.pkg.tar.zst.sha256
+            dist/native/turtleterm-*.pkg.tar.zst.manifest.json
             dist/native/turtle-term-native-packages.index.json
             dist/native/turtle-term-native-packages.index.json.sha256
 
@@ -154,15 +154,15 @@ jobs:
         with:
           name: turtle-term-native-linux-${{ matrix.deb_arch }}
           path: |
-            dist/native/turtle-term_*.deb
-            dist/native/turtle-term_*.deb.sha256
-            dist/native/turtle-term_*.deb.manifest.json
+            dist/native/turtleterm_*.deb
+            dist/native/turtleterm_*.deb.sha256
+            dist/native/turtleterm_*.deb.manifest.json
             dist/native/rpmbuild/RPMS/**/*.rpm
             dist/native/rpmbuild/RPMS/**/*.rpm.sha256
             dist/native/rpmbuild/RPMS/**/*.rpm.manifest.json
-            dist/native/turtle-term-*.pkg.tar.zst
-            dist/native/turtle-term-*.pkg.tar.zst.sha256
-            dist/native/turtle-term-*.pkg.tar.zst.manifest.json
+            dist/native/turtleterm-*.pkg.tar.zst
+            dist/native/turtleterm-*.pkg.tar.zst.sha256
+            dist/native/turtleterm-*.pkg.tar.zst.manifest.json
             dist/native/turtle-term-native-packages.index.json
             dist/native/turtle-term-native-packages.index.json.sha256
 
