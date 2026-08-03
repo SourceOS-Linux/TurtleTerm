@@ -1,6 +1,6 @@
 # Maintainer: SourceOS Linux <maintainers@sourceos.ai>
 pkgname=turtleterm
-pkgver=1.4.0
+pkgver=0.1.0
 pkgrel=1
 pkgdesc="AI agent terminal fabric for SourceOS — WezTerm + 38 agent commands"
 arch=('x86_64' 'aarch64')
@@ -33,114 +33,15 @@ build() {
 package() {
   cd "$pkgname-$pkgver"
 
-  # Shared canonical staging (libexec/turtle-term layout) — mirrors rpm %install
-  # so deb/rpm/arch all install the identical agent-command surface.
+  # Single canonical staging (libexec/turtle-term layout) via the shared stage
+  # script — deb/rpm/arch all install the identical agent-command surface with
+  # the private WezTerm runtime under /usr/libexec/turtle-term (never on PATH)
+  # and launch wrappers that resolve the runtime at /usr.
   TURTLE_TERM_STAGE_PREFIX="$pkgdir/usr" \
     TURTLE_TERM_ETC_DIR="$pkgdir/etc" \
     TURTLE_TERM_RUNTIME_PREFIX="/usr" \
     TURTLE_TERM_RUNTIME_ETC_DIR="/etc" \
     bash packaging/scripts/stage-linux-package.sh
-
-  # WezTerm engine binaries → libexec
-  install -d "$pkgdir/usr/lib/turtleterm"
-  install -Dm755 target/release/wezterm            "$pkgdir/usr/lib/turtleterm/"
-  install -Dm755 target/release/wezterm-gui         "$pkgdir/usr/lib/turtleterm/"
-  install -Dm755 target/release/wezterm-mux-server  "$pkgdir/usr/lib/turtleterm/"
-
-  # turtleterm wrapper Lua launcher → libexec
-  install -d "$pkgdir/usr/lib/turtleterm-bin"
-  if [ -f "assets/sourceos/bin/turtleterm" ]; then
-    install -Dm755 assets/sourceos/bin/turtleterm \
-      "$pkgdir/usr/lib/turtleterm-bin/turtleterm"
-  fi
-  if [ -f "assets/sourceos/bin/turtleterm-mux-server" ]; then
-    install -Dm755 assets/sourceos/bin/turtleterm-mux-server \
-      "$pkgdir/usr/lib/turtleterm-bin/turtleterm-mux-server"
-  fi
-
-  # Shell wrapper shims
-  install -d "$pkgdir/usr/bin"
-  cat > "$pkgdir/usr/bin/turtleterm" << 'EOF'
-#!/bin/sh
-export TURTLE_TERM_RUNTIME_DIR="/usr/lib/turtleterm"
-export TURTLETERM_CONFIG="/etc/turtleterm/turtleterm.lua"
-exec "/usr/lib/turtleterm-bin/turtleterm" "$@"
-EOF
-  chmod 0755 "$pkgdir/usr/bin/turtleterm"
-
-  cat > "$pkgdir/usr/bin/turtleterm-mux-server" << 'EOF'
-#!/bin/sh
-export TURTLE_TERM_RUNTIME_DIR="/usr/lib/turtleterm"
-exec "/usr/lib/turtleterm-bin/turtleterm-mux-server" "$@"
-EOF
-  chmod 0755 "$pkgdir/usr/bin/turtleterm-mux-server"
-
-  # Agent scripts
-  for script in \
-    sourceos-term turtle-term turtle-agentd turtle-agentctl turtle-agent-status \
-    turtle-tmux turtle-cloudfog turtle-superconscious turtle-agent-machine \
-    turtle-language turtle-session turtle-synapseiq synapseiq-lsp \
-    turtle-plan-view turtle-selftest turtle-runbook turtle-voice turtle-sync \
-    turtle-perf turtle-persona turtle-files turtle-bg turtle-dash turtle-pr \
-    turtle-issue turtle-hooks turtle-gitea turtle-ci turtle-review turtle-watch turtle-netwatch \
-    turtle-cost turtle-copilot turtle-gh turtle-env turtle-diagnose \
-    turtle-apply turtle-chain turtle-ai-chat; do
-    src="assets/sourceos/bin/${script}"
-    if [ -f "${src}" ]; then
-      install -Dm755 "${src}" "$pkgdir/usr/bin/${script}"
-    fi
-  done
-
-  # MCP server
-  if [ -f "assets/sourceos/mcp/turtle-mcp-server" ]; then
-    install -d "$pkgdir/usr/share/turtleterm/mcp"
-    install -Dm755 assets/sourceos/mcp/turtle-mcp-server \
-      "$pkgdir/usr/share/turtleterm/mcp/"
-    ln -s /usr/share/turtleterm/mcp/turtle-mcp-server \
-      "$pkgdir/usr/bin/turtle-mcp-server"
-  fi
-
-  # Shell integration files
-  install -d "$pkgdir/usr/share/turtleterm/shell"
-  for f in \
-    turtle-shell-init.zsh turtle-shell-init.bash turtle-shell-init.fish \
-    turtle-shell-init.ps1 \
-    turtle-agentctl-completions.zsh turtle-agentctl-completions.bash \
-    turtle-agentctl-completions.fish turtle-agentctl-completions.ps1 \
-    turtle-gh-completions.zsh turtle-gh-completions.bash \
-    turtle-copilot-completions.zsh turtle-copilot-completions.bash; do
-    if [ -f "assets/sourceos/shell/${f}" ]; then
-      install -Dm644 "assets/sourceos/shell/${f}" \
-        "$pkgdir/usr/share/turtleterm/shell/${f}"
-    fi
-  done
-
-  # Config
-  install -d "$pkgdir/etc/turtleterm"
-  if [ -f "assets/sourceos/turtleterm.lua" ]; then
-    install -Dm644 assets/sourceos/turtleterm.lua \
-      "$pkgdir/etc/turtleterm/turtleterm.lua"
-  fi
-
-  # Desktop integration
-  if [ -f "assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop" ]; then
-    install -Dm644 assets/sourceos/desktop/ai.sourceos.TurtleTerm.desktop \
-      "$pkgdir/usr/share/applications/ai.sourceos.TurtleTerm.desktop"
-  fi
-  if [ -f "assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml" ]; then
-    install -Dm644 assets/sourceos/desktop/ai.sourceos.TurtleTerm.metainfo.xml \
-      "$pkgdir/usr/share/metainfo/ai.sourceos.TurtleTerm.metainfo.xml"
-  fi
-  if [ -f "assets/sourceos/brand/ai.sourceos.TurtleTerm.svg" ]; then
-    install -Dm644 assets/sourceos/brand/ai.sourceos.TurtleTerm.svg \
-      "$pkgdir/usr/share/icons/hicolor/scalable/apps/ai.sourceos.TurtleTerm.svg"
-  fi
-
-  # Neovim plugin, skills, docs
-  for dir in neovim skills brand desktop mcp; do
-    [ -d "assets/sourceos/$dir" ] && \
-      cp -r "assets/sourceos/$dir" "$pkgdir/usr/share/turtleterm/"
-  done
 
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

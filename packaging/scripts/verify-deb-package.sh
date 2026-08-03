@@ -39,7 +39,7 @@ for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious
     assert command in manifest['public_commands'], command
 PY
 
-dpkg-deb --field "$deb" Package | grep -qx 'turtle-term'
+dpkg-deb --field "$deb" Package | grep -qx 'turtleterm'
 dpkg-deb --field "$deb" Version | grep -qx '0.1.0'
 dpkg-deb --field "$deb" Architecture | grep -qx 'amd64'
 dpkg-deb --contents "$deb" > "$contents"

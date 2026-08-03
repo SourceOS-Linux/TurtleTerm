@@ -1,5 +1,5 @@
 Package: turtleterm
-Version: 1.4.0
+Version: 0.1.0
 Section: devel
 Priority: optional
 Architecture: amd64 arm64

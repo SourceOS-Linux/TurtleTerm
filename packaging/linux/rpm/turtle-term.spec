@@ -1,5 +1,5 @@
 Name:           turtleterm
-Version:        1.4.0
+Version:        0.1.0
 Release:        1%{?dist}
 Summary:        AI agent terminal fabric for SourceOS
 
