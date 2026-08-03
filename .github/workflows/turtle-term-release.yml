@@ -28,8 +28,12 @@ jobs:
         include:
           - os: macos-14
             target: macos-arm64
+          - os: macos-13
+            target: macos-x86_64
           - os: ubuntu-24.04
             target: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
 
     steps:
       - name: Check out repository
@@ -95,6 +99,14 @@ jobs:
             dist/turtle-term-*.tar.gz.sha256
             dist/turtle-term-*.tar.gz.manifest.json
 
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: dist/
+          format: spdx-json
+          artifact-name: turtle-term-${{ matrix.target }}.sbom.spdx.json
+          output-file: dist/turtle-term-${{ matrix.target }}.sbom.spdx.json
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -106,16 +118,14 @@ jobs:
 
       - name: Publish GitHub release assets
         if: startsWith(github.ref, 'refs/tags/turtle-term-v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="${GITHUB_REF_NAME}"
-          gh release create "$tag" \
-            --title "TurtleTerm ${tag}" \
-            --notes "TurtleTerm ${tag} — see CHANGELOG for details." \
-            2>/dev/null || true
-          gh release upload "$tag" \
-            dist/turtle-term-*.tar.gz \
-            dist/turtle-term-*.tar.gz.sha256 \
-            dist/turtle-term-*.tar.gz.manifest.json \
-            --clobber
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: TurtleTerm ${{ github.ref_name }}
+          body: "TurtleTerm ${{ github.ref_name }} — see CHANGELOG for details."
+          fail_on_unmatched_files: false
+          files: |
+            dist/turtle-term-*.tar.gz
+            dist/turtle-term-*.tar.gz.sha256
+            dist/turtle-term-*.tar.gz.manifest.json
+            dist/turtle-term-*.sbom.spdx.json

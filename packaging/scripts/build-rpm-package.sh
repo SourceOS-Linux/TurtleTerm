@@ -14,7 +14,7 @@ rm -rf "$rpmbuild_root"
 mkdir -p "$rpmbuild_root/BUILD" "$rpmbuild_root/BUILDROOT" "$rpmbuild_root/RPMS" "$rpmbuild_root/SOURCES" "$rpmbuild_root/SPECS" "$rpmbuild_root/SRPMS"
 
 cat > "$spec" <<EOF
-Name:           turtle-term
+Name:           turtleterm
 Version:        $version
 Release:        1%{?dist}
 Summary:        TurtleTerm trusted terminal and agent workbench

@@ -17,7 +17,7 @@ done
 TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_DEB_ARCH="amd64" \
   bash "$repo_root/packaging/scripts/build-deb-package.sh" >/dev/null
 
-deb="$tmp/turtle-term_0.1.0_amd64.deb"
+deb="$tmp/turtleterm_0.1.0_amd64.deb"
 contents="$tmp/deb-contents.txt"
 extract="$tmp/extract"
 test -f "$deb"
@@ -33,7 +33,7 @@ assert manifest['product'] == 'TurtleTerm'
 assert manifest['kind'] == 'deb'
 assert manifest['version'] == '0.1.0'
 assert manifest['arch'] == 'amd64'
-assert manifest['package'] == 'turtle-term_0.1.0_amd64.deb'
+assert manifest['package'] == 'turtleterm_0.1.0_amd64.deb'
 assert manifest['profile'] == '/etc/turtle-term/turtleterm.lua'
 for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious', 'turtle-agent-machine', 'turtle-language', 'turtle-session']:
     assert command in manifest['public_commands'], command

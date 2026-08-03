@@ -191,17 +191,24 @@ def symbols(path: Path) -> dict[str, Any]:
     sha = sha256_text(text)
     base = {"file": str(path), "language": lang, "content_sha256": sha, "mutationAllowed": False}
 
+    # The local AST walk is complete (classes AND their methods); the SynapseIQ
+    # LSP may only surface top-level symbols. Compute local first, then let the
+    # LSP enrich it — never drop a symbol the local pass found.
+    local = python_symbols(path, text) if lang == "python" else generic_symbols(path, text)
+
     ensure_synapseiq()
     synapse = synapseiq_symbols(str(path), text, lang)
     if synapse is not None:
         base["source"] = "synapseiq-lsp"
         base["synapseiq_url"] = synapseiq_url()
-        base["symbols"] = synapse.get("symbols", [])
+        symbols = list(synapse.get("symbols", []))
+        seen = {s.get("name") for s in symbols}
+        symbols.extend(s for s in local if s.get("name") not in seen)
+        base["symbols"] = sorted(symbols, key=lambda item: item.get("line", 0))
         return base
 
-    items = python_symbols(path, text) if lang == "python" else generic_symbols(path, text)
     base["source"] = "builtin-heuristic"
-    base["symbols"] = items
+    base["symbols"] = local
     return base
 
 

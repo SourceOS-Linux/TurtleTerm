@@ -20,12 +20,12 @@ def main() -> int:
     arch_builder = read("packaging/scripts/build-arch-package.sh")
     native_manifest = read("packaging/scripts/write-native-package-manifest.py")
 
-    assert "Package: turtle-term" in deb
+    assert "Package: turtleterm" in deb
     assert "Architecture: amd64 arm64" in deb
     assert "Homepage: https://github.com/SourceOS-Linux/TurtleTerm" in deb
     assert "libexec/turtle-term" in deb
 
-    assert "Name:           turtle-term" in rpm
+    assert "Name:           turtleterm" in rpm
     assert "ExclusiveArch:  x86_64 aarch64" in rpm
     assert "fontconfig-devel" in rpm
     assert "ai.sourceos.TurtleTerm.desktop" in rpm
@@ -34,7 +34,7 @@ def main() -> int:
     assert "%{_bindir}/turtle-agent-machine" in rpm
     assert "%{_bindir}/turtle-language" in rpm
 
-    assert "pkgname=turtle-term" in arch
+    assert "pkgname=turtleterm" in arch
     assert "arch=('x86_64' 'aarch64')" in arch
     assert "TURTLE_TERM_STAGE_PREFIX" in arch
 

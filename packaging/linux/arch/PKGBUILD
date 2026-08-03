@@ -33,6 +33,14 @@ build() {
 package() {
   cd "$pkgname-$pkgver"
 
+  # Shared canonical staging (libexec/turtle-term layout) — mirrors rpm %install
+  # so deb/rpm/arch all install the identical agent-command surface.
+  TURTLE_TERM_STAGE_PREFIX="$pkgdir/usr" \
+    TURTLE_TERM_ETC_DIR="$pkgdir/etc" \
+    TURTLE_TERM_RUNTIME_PREFIX="/usr" \
+    TURTLE_TERM_RUNTIME_ETC_DIR="/etc" \
+    bash packaging/scripts/stage-linux-package.sh
+
   # WezTerm engine binaries → libexec
   install -d "$pkgdir/usr/lib/turtleterm"
   install -Dm755 target/release/wezterm            "$pkgdir/usr/lib/turtleterm/"

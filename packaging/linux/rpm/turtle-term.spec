@@ -6,6 +6,7 @@ Summary:        AI agent terminal fabric for SourceOS
 License:        MIT
 URL:            https://github.com/SourceOS-Linux/TurtleTerm
 Source0:        %{name}-%{version}.tar.gz
+ExclusiveArch:  x86_64 aarch64
 
 BuildRequires:  rust cargo cmake pkg-config
 BuildRequires:  fontconfig-devel freetype-devel openssl-devel
@@ -172,6 +173,10 @@ fi
 %ghost %{_bindir}/turtle-chain
 %ghost %{_bindir}/turtle-selftest
 %ghost %{_bindir}/turtle-mcp-server
+%ghost %{_bindir}/turtle-cloudfog
+%ghost %{_bindir}/turtle-superconscious
+%ghost %{_bindir}/turtle-agent-machine
+%ghost %{_bindir}/turtle-language
 
 %changelog
 * Sat Jun 21 2026 SourceOS Linux <maintainers@sourceos.ai> - 1.4.0-1
