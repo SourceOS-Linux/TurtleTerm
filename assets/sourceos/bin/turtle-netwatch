@@ -290,9 +290,10 @@ def _consent_enforce(request: dict[str, Any]) -> tuple[bool, list[str], str]:
     policy-fabric engine when a sibling checkout is present; FAILS CLOSED (deny)
     otherwise — a network mutation must never proceed ungated."""
     root = os.environ.get("PROPHET_POLICY_FABRIC")
-    candidates = [root] if root else []
-    for p in Path(__file__).resolve().parents:
-        candidates.append(str(p / "policy-fabric"))
+    if root:
+        candidates = [root]  # explicit root honored alone -> a miss fails closed, no fallback
+    else:
+        candidates = [str(p / "policy-fabric") for p in Path(__file__).resolve().parents]
     for c in candidates:
         pf = Path(c) if c else None
         if pf and (pf / "policy_fabric" / "purpose_admissibility_gate.py").exists():
@@ -337,16 +338,126 @@ def cmd_propose(args) -> int:
         _print(args, {"decision": "deny", "denyReasons": reasons, "receipt": receipt["kind"]})
         print("REFUSED (fail-closed): network action not admissible.", file=sys.stderr)
         return 3
-    # admitted -> route to Governor (guardrail-fabric) for human approval; do NOT
-    # auto-apply. Applying requires --apply AND an approval token from the Governor.
-    approval = os.environ.get("NETWATCH_GOVERNOR_APPROVAL")
-    receipt = {"kind": "netwatch.action.proposed", "action": action,
-               "governor": "guardrail-fabric", "approved": bool(approval and args.apply),
+    # admitted by consent -> route to the Governor (guardrail-fabric) for a real
+    # PolicyDecision. Nothing auto-applies: the Governor default is ESCALATE
+    # (human required); only a recorded ADMIT decision + --apply applies; a
+    # recorded DENY refuses.
+    gov = _governor_decision(spec["capability"], args.target)
+    if gov == "deny":
+        receipt = {"kind": "netwatch.action.refused", "action": action,
+                   "denyReasons": ["Governor (guardrail-fabric) denied this action"], "ts": utc_now()}
+        _write_receipt(receipt)
+        _print(args, {"decision": "deny", "by": "governor", "receipt": receipt["kind"]})
+        print("REFUSED: Governor denied.", file=sys.stderr)
+        return 3
+    approved = gov == "allow"
+    receipt = {"kind": "netwatch.action.proposed", "action": action, "governor": "guardrail-fabric",
+               "governorDecision": gov, "applied": bool(approved and args.apply),
                "seal": _seal(action), "ts": utc_now()}
     _write_receipt(receipt)
-    status = "applied" if receipt["approved"] else "awaiting-governor-approval"
-    _print(args, {"decision": "admit", "status": status, "action": action["capability"],
-                  "target": args.target, "receipt": receipt["kind"]})
+    if approved and args.apply:
+        status = "applied"
+    elif approved:
+        status = "governor-approved (re-run with --apply to act)"
+    else:
+        status = "awaiting-governor-approval (run: turtle-netwatch decide --action ... --target ... --approve)"
+    _print(args, {"decision": "admit", "governorDecision": gov, "status": status,
+                  "action": action["capability"], "target": args.target, "receipt": receipt["kind"]})
+    return 0
+
+
+# --------------------------------------------------------------------------- governor (guardrail-fabric)
+def _guardrail():
+    """Bind to guardrail-fabric's decision module (the Governor). Discovery:
+    $PROPHET_GUARDRAIL_FABRIC -> a sibling guardrail-fabric checkout. Returns the
+    module or None; a network mutation cannot be *authorized* without it."""
+    root = os.environ.get("PROPHET_GUARDRAIL_FABRIC")
+    if root:
+        cands = [root]  # explicit root honored alone -> a miss fails closed, no fallback
+    else:
+        cands = [str(p / "guardrail-fabric") for p in Path(__file__).resolve().parents]
+    for c in cands:
+        gf = Path(c) if c else None
+        if gf and (gf / "guardrail_fabric" / "decision.py").exists():
+            sys.path.insert(0, str(gf))
+            try:
+                from guardrail_fabric import decision as gd  # type: ignore
+                return gd
+            except Exception:
+                return None
+    return None
+
+
+def _action_key(capability: str, target: str) -> str:
+    return f"{capability}|{target}"
+
+
+def _decisions_path() -> Path:
+    return state_dir() / "decisions.jsonl"
+
+
+def _governor_decision(capability: str, target: str) -> str:
+    """The latest recorded Governor decision for this action, or 'escalate'
+    (human required) when none exists — never a silent admit."""
+    latest = "escalate"
+    p = _decisions_path()
+    if p.exists():
+        for line in p.read_text().splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if r.get("actionKey") == _action_key(capability, target):
+                latest = r.get("decision", latest)
+    return latest
+
+
+def cmd_decide(args) -> int:
+    """The Governor surface: record a guardrail-fabric PolicyDecision (admit/deny)
+    for a proposed action. Fail-closed: without guardrail-fabric a network
+    mutation cannot be governed, so it cannot be authorized."""
+    gd = _guardrail()
+    if gd is None:
+        print("Governor unavailable: guardrail-fabric not found (set $PROPHET_GUARDRAIL_FABRIC); "
+              "a network mutation cannot be authorized.", file=sys.stderr)
+        return 3
+    capability = _ACTIONS[args.action]["capability"]  # key by capability, as propose/pending do
+    dec = gd.Decision.ALLOW if args.approve else gd.Decision.DENY
+    pd = gd.PolicyDecision.create(
+        policy_id="netwatch/network-mutation",
+        decision=dec,
+        reason=args.reason or ("operator approved after review" if args.approve else "operator denied"),
+        remediation="review netwatch findings (beaconing/egress) before applying",
+    )
+    rec = {"kind": "netwatch.governor.decision", "actionKey": _action_key(capability, args.target),
+           "decision": dec.value, "governorDecisionId": pd.decisionId,
+           "policyDecision": pd.to_dict(), "ts": utc_now()}
+    with _decisions_path().open("a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    _print(args, {"governor": "guardrail-fabric", "action": args.action, "target": args.target,
+                  "decision": dec.value, "decisionId": pd.decisionId})
+    return 0
+
+
+def cmd_pending(args) -> int:
+    """List proposed actions still awaiting a Governor decision (escalate)."""
+    sink = state_dir() / "actions.jsonl"
+    pending, seen = [], set()
+    if sink.exists():
+        for line in sink.read_text().splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if r.get("kind") != "netwatch.action.proposed":
+                continue
+            a = r["action"]
+            key = _action_key(a["capability"], a["args"].get("target", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            if _governor_decision(a["capability"], a["args"].get("target", "")) == "escalate":
+                pending.append({"capability": a["capability"], "target": a["args"].get("target"),
+                                "seal": r.get("seal"), "ts": r.get("ts")})
+    _print(args, pending if args.json else {"pending": len(pending), "actions": pending})
     return 0
 
 
@@ -387,9 +498,20 @@ def main(argv=None) -> int:
     pr.add_argument("--target", required=True)
     pr.add_argument("--apply", action="store_true")
     pr.add_argument("--json", action="store_true")
+    de = sub.add_parser("decide")  # the Governor surface
+    de.add_argument("--action", required=True, choices=list(_ACTIONS))
+    de.add_argument("--target", required=True)
+    g = de.add_mutually_exclusive_group(required=True)
+    g.add_argument("--approve", action="store_true")
+    g.add_argument("--deny", action="store_true")
+    de.add_argument("--reason", default=None)
+    de.add_argument("--json", action="store_true")
+    pe = sub.add_parser("pending")
+    pe.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
     return {"snapshot": cmd_snapshot, "observe": cmd_observe, "graph": cmd_graph,
-            "detect": cmd_detect, "propose": cmd_propose}[args.cmd](args)
+            "detect": cmd_detect, "propose": cmd_propose, "decide": cmd_decide,
+            "pending": cmd_pending}[args.cmd](args)
 
 
 if __name__ == "__main__":
