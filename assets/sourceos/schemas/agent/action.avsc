@@ -1,0 +1,11 @@
+{
+  "type": "record", "name": "Action", "namespace": "agent.v1",
+  "doc": "A proposed effect (e.g. net.block, net.throttle). Admissible ONLY via the consent plane; a network mutation is an operate/egress purpose.",
+  "fields": [
+    {"name": "schema", "type": "string", "default": "agent.v1.Action"},
+    {"name": "capability", "type": "string", "doc": "e.g. net.block, net.throttle"},
+    {"name": "args", "type": {"type": "map", "values": "string"}},
+    {"name": "ts", "type": "string"},
+    {"name": "policy", "type": {"type": "map", "values": "string"}, "doc": "space, purpose, gate decision name"}
+  ]
+}

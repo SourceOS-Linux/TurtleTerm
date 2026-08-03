@@ -1,0 +1,20 @@
+name: netwatch
+description: Network/Connections agent — observe → graph → detect → consent-gated propose
+# Executable by a user (`turtle-runbook run netwatch`) or an agent (each step is a
+# plain command with a deterministic, inspectable effect). Every mutating action
+# is refused fail-closed unless the consent plane admits it AND the Governor
+# (guardrail-fabric) approves — so this runbook is safe to run and to hand to an
+# agent.
+steps:
+  - cmd: turtle-netwatch snapshot
+    desc: "Point-in-time connection snapshot (portable: ss on Linux, lsof on macOS). Verifies a collector is present."
+  - cmd: turtle-netwatch observe --window 15 --interval 3
+    desc: "Observe for 15s; emit agent.v1 Observation events to the netwatch sink (schemas/agent/observation.avsc)."
+  - cmd: turtle-netwatch graph
+    desc: "Project the observations into a System Graph subgraph (KnowledgeUpdate delta) for hellgraph AtomSpace ingestion."
+  - cmd: turtle-netwatch detect
+    desc: "Scan the window for anomalies — beaconing (low-variance periodic contact) and egress fan-out. Exit 2 if any found."
+  - cmd: turtle-netwatch propose --action block-domain --target suspicious.example
+    desc: "Propose a network Action. It is ADMITTED-OR-REFUSED by the consent plane (operate purpose, system-space); on admit it is routed to the Governor for approval and NOT auto-applied. Deny => refused fail-closed."
+  - cmd: cat "${SOURCEOS_TERMINAL_RECEIPTS:-$HOME/.local/state/sourceos/terminal/receipts}/../netwatch/actions.jsonl"
+    desc: "Review the action receipts (proposed / refused) — every decision is hash-sealed and auditable."

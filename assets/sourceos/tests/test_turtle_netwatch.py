@@ -1,0 +1,102 @@
+"""turtle-netwatch — Network/Connections agent. Proven on synthetic fixtures so
+it runs offline in CI: graph projection, anomaly detection (beaconing +
+egress fan-out), and the fail-closed consent gate on a proposed network action.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+BIN = Path(__file__).resolve().parents[1] / "bin" / "turtle-netwatch"
+
+
+def _load():
+    from importlib.machinery import SourceFileLoader
+    loader = SourceFileLoader("turtle_netwatch", str(BIN))  # extensionless binary
+    spec = importlib.util.spec_from_loader("turtle_netwatch", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+nw = _load()
+
+
+def _obs(raddr, rport, proc, ts, external="true", sev="INFO"):
+    return {"schema": "agent.v1.Observation", "source": "netwatch", "type": "net.conn",
+            "ts": ts, "severity": sev,
+            "attrs": {"proto": "tcp", "raddr": raddr, "rport": rport, "process": proc,
+                      "pid": "100", "state": "ESTAB", "external": external}}
+
+
+def test_schemas_are_valid_avro_json():
+    d = BIN.parents[1] / "schemas" / "agent"
+    for f in ("observation.avsc", "action.avsc", "knowledge_update.avsc"):
+        j = json.loads((d / f).read_text())
+        assert j["namespace"] == "agent.v1" and j["type"] == "record"
+
+
+def test_graph_projects_processes_hosts_ports():
+    obs = [_obs("93.184.216.34", "443", "curl", "2026-08-02T00:00:00Z")]
+    ku = nw.build_system_graph(obs)
+    kinds = {n["kind"] for n in ku["patch"]["nodes"]}
+    assert {"Process", "Host", "Port"} <= kinds
+    assert ku["graph"] == "SYSTEM"
+    assert ku["patch"]["edges"][0]["rel"] == "CONNECTS_TO"
+
+
+def test_detect_flags_beaconing():
+    # 5 contacts to one dst every 60s, near-zero jitter -> beaconing (CRIT)
+    base = dt.datetime(2026, 8, 2, tzinfo=dt.timezone.utc)
+    obs = [_obs("185.220.101.1", "443", "backdoor",
+                (base + dt.timedelta(seconds=60 * i)).isoformat().replace("+00:00", "Z"))
+           for i in range(5)]
+    findings = nw.detect_anomalies(obs)
+    assert any(f["type"] == "net.beaconing" and f["severity"] == "CRIT" for f in findings)
+
+
+def test_detect_flags_egress_fanout():
+    obs = [_obs(f"203.0.113.{i}", "443", "scanner", "2026-08-02T00:00:00Z") for i in range(12)]
+    findings = nw.detect_anomalies(obs)
+    assert any(f["type"] == "net.egress_fanout" for f in findings)
+
+
+def test_detect_quiet_on_normal_traffic():
+    obs = [_obs("93.184.216.34", "443", "browser", "2026-08-02T00:00:00Z")]
+    assert nw.detect_anomalies(obs) == []
+
+
+def test_propose_fails_closed_without_consent_engine(tmp_path):
+    # no policy-fabric reachable -> a network mutation must be REFUSED (exit 3)
+    env = dict(os.environ)
+    env["SOURCEOS_TERMINAL_RECEIPTS"] = str(tmp_path / "r")
+    env["PROPHET_POLICY_FABRIC"] = str(tmp_path / "nonexistent")
+    r = subprocess.run([sys.executable, str(BIN), "propose", "--action", "block-domain",
+                        "--target", "evil.example", "--json"],
+                       env=env, text=True, capture_output=True)
+    assert r.returncode == 3, r.stderr
+    out = json.loads(r.stdout)
+    assert out["decision"] == "deny"
+    assert any("fail-closed" in x for x in out["denyReasons"])
+    # and it left an auditable refusal receipt
+    receipts = (tmp_path / "netwatch" / "actions.jsonl").read_text()
+    assert "netwatch.action.refused" in receipts
+
+
+def test_snapshot_runs_and_is_shaped(tmp_path):
+    env = dict(os.environ)
+    env["SOURCEOS_TERMINAL_RECEIPTS"] = str(tmp_path / "r")
+    r = subprocess.run([sys.executable, str(BIN), "snapshot", "--json"],
+                       env=env, text=True, capture_output=True)
+    assert r.returncode == 0
+    json.loads(r.stdout)  # a list (possibly empty if no ss/lsof) — must be valid JSON
+
+
+if __name__ == "__main__":
+    import pytest
+    sys.exit(pytest.main([__file__, "-q"]))

@@ -1,0 +1,13 @@
+{
+  "type": "record", "name": "Observation", "namespace": "agent.v1",
+  "doc": "An OS observation emitted by a node agent (e.g. netwatch net.conn / net.beaconing).",
+  "fields": [
+    {"name": "schema", "type": "string", "default": "agent.v1.Observation"},
+    {"name": "source", "type": "string", "doc": "emitting agent, e.g. netwatch"},
+    {"name": "type", "type": "string", "doc": "e.g. net.conn, net.beaconing, net.egress_fanout"},
+    {"name": "ts", "type": "string", "doc": "RFC3339 UTC"},
+    {"name": "attrs", "type": {"type": "map", "values": "string"}},
+    {"name": "severity", "type": {"type": "enum", "name": "Severity", "symbols": ["INFO", "WARN", "CRIT"]}},
+    {"name": "message", "type": ["null", "string"], "default": null}
+  ]
+}

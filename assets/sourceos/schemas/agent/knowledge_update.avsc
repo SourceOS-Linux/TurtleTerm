@@ -1,0 +1,14 @@
+{
+  "type": "record", "name": "KnowledgeUpdate", "namespace": "agent.v1",
+  "doc": "A System/User Graph delta for hellgraph AtomSpace ingestion.",
+  "fields": [
+    {"name": "schema", "type": "string", "default": "agent.v1.KnowledgeUpdate"},
+    {"name": "graph", "type": {"type": "enum", "name": "Graph", "symbols": ["USER", "SYSTEM"]}},
+    {"name": "ts", "type": "string"},
+    {"name": "patch", "type": {"type": "record", "name": "GraphPatch", "fields": [
+      {"name": "nodes", "type": {"type": "array", "items": {"type": "map", "values": ["null","string","boolean"]}}},
+      {"name": "edges", "type": {"type": "array", "items": {"type": "map", "values": "string"}}}
+    ]}},
+    {"name": "prov", "type": {"type": "map", "values": "string"}}
+  ]
+}
