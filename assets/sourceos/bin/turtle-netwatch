@@ -223,12 +223,47 @@ def _load_obs(args) -> list[dict[str, Any]]:
     return [json.loads(l) for l in src.read_text().splitlines() if l.strip()]
 
 
+def _discover_hellgraph() -> Path | None:
+    """Zero-config: $HELLGRAPH_HOME -> a sibling ~/dev/hellgraph checkout with a
+    built ingest bin. Returns the repo root or None (caller fails SOFT — graph
+    memory is not a security mutation)."""
+    root = os.environ.get("HELLGRAPH_HOME")
+    cands = [Path(root)] if root else [p / "hellgraph" for p in Path(__file__).resolve().parents]
+    for c in cands:
+        if (c / "bin" / "hellgraph-agent-ingest.mjs").exists() and (c / "ts" / "dist" / "index.mjs").exists():
+            return c
+    return None
+
+
+def _ingest_to_hellgraph(ku: dict[str, Any]) -> dict[str, Any]:
+    """Ingest a KnowledgeUpdate into hellgraph's AtomSpace. FAIL-SOFT: if node or
+    hellgraph is unavailable, the delta is still on the sink; we just report that
+    it was not ingested (memory, not a fail-closed gate)."""
+    hg = _discover_hellgraph()
+    if hg is None:
+        return {"ingested": False, "reason": "hellgraph not found (set $HELLGRAPH_HOME); "
+                "System Graph delta written to sink but not ingested"}
+    if not shutil.which("node"):
+        return {"ingested": False, "reason": "node not on PATH; delta on sink, not ingested"}
+    try:
+        r = subprocess.run(["node", str(hg / "bin" / "hellgraph-agent-ingest.mjs"), "-"],
+                           input=json.dumps(ku), text=True, capture_output=True, timeout=30)
+        if r.returncode != 0:
+            return {"ingested": False, "reason": f"hellgraph ingest failed: {r.stderr.strip()[:200]}"}
+        return {"ingested": True, "hellgraph": json.loads(r.stdout or "{}").get("ingested", {})}
+    except Exception as exc:  # fail-soft
+        return {"ingested": False, "reason": f"ingest error: {exc}"}
+
+
 def cmd_graph(args) -> int:
     ku = build_system_graph(_load_obs(args))
     out = state_dir() / "system_graph.json"
     out.write_text(json.dumps(ku, indent=2))
-    _print(args, ku if args.json else {"nodes": len(ku["patch"]["nodes"]),
-                                       "edges": len(ku["patch"]["edges"]), "sink": str(out)})
+    result: dict[str, Any] = {"nodes": len(ku["patch"]["nodes"]),
+                              "edges": len(ku["patch"]["edges"]), "sink": str(out)}
+    if getattr(args, "ingest", False):
+        result["ingest"] = _ingest_to_hellgraph(ku)
+    _print(args, ku if args.json else result)
     return 0
 
 
@@ -489,6 +524,9 @@ def main(argv=None) -> int:
         s.add_argument("--json", action="store_true")
         if name in ("graph", "detect"):
             s.add_argument("--from", dest="from", default=None)
+        if name == "graph":
+            s.add_argument("--ingest", action="store_true",
+                           help="ingest the System Graph delta into hellgraph's AtomSpace (fail-soft)")
     o = sub.add_parser("observe")
     o.add_argument("--window", type=int, default=5)
     o.add_argument("--interval", type=int, default=1)
