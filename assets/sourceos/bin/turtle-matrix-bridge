@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+# MIT License
+# Copyright (c) 2026 @mdheller
+#
+# turtle-matrix-bridge — bridge between TurtleTerm mesh events and a Matrix room.
+#
+# Tails the memory-mesh JSONL and forwards shell events to a Matrix room via the
+# Matrix CS API.  Also provides a send-message path used by the mx/mxf shell
+# functions.
+#
+# Config (env vars or ~/.config/sourceos/matrix.yaml):
+#   MATRIX_HOMESERVER_URL   e.g. https://matrix.org or http://localhost:8448
+#   MATRIX_ACCESS_TOKEN     bot user access token
+#   MATRIX_BOT_ROOM_ID      default room to post into (!roomid:server)
+#   MATRIX_BRIDGE_EVENTS    comma-separated mesh event types to forward
+#                           default: cloudshell-connect,k3s-tunnel-start,split-view,error-triage
+#
+# Usage:
+#   turtle-matrix-bridge daemon          # tail mesh + forward events (runs forever)
+#   turtle-matrix-bridge send <text>     # post plain text to default room
+#   turtle-matrix-bridge send-file <path> [<room_id>]  # post file content as code block
+#   turtle-matrix-bridge send-code <lang> <path>       # formatted code block
+#   turtle-matrix-bridge wormhole-send <path>          # start wormhole send, post code to room
+#   turtle-matrix-bridge wormhole-recv <code> [<room>] # receive wormhole, post result to room
+#   turtle-matrix-bridge status          # show config + connectivity
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from pathlib import Path
+from typing import Any
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+YAML_CONFIG = Path.home() / ".config" / "sourceos" / "matrix.yaml"
+MESH_JSONL   = Path.home() / ".local" / "state" / "sourceos" / "memory-mesh" / "context.jsonl"
+STATE_DIR    = Path.home() / ".local" / "state" / "sourceos"
+CURSOR_FILE  = STATE_DIR / "matrix-bridge-cursor"
+
+DEFAULT_FORWARD_EVENTS = {
+    "cloudshell-connect",
+    "k3s-tunnel-start",
+    "split-view",
+    "error-triage",
+    "note-saved",
+    "runbook-run",
+}
+
+def _load_yaml_config() -> dict[str, str]:
+    if not YAML_CONFIG.exists():
+        return {}
+    try:
+        import re as _re
+        cfg: dict[str, str] = {}
+        with open(YAML_CONFIG) as f:
+            for line in f:
+                line = line.strip()
+                m = _re.match(r'^(\w[\w_]*):\s*(.+)$', line)
+                if m:
+                    cfg[m.group(1)] = m.group(2).strip('"\'')
+        return cfg
+    except Exception:
+        return {}
+
+_yaml = _load_yaml_config()
+
+def _cfg(key: str, default: str = "") -> str:
+    return os.environ.get(key) or _yaml.get(key.lower().replace("matrix_", "").replace("_", "_")) or _yaml.get(key) or default
+
+HOMESERVER_URL  = _cfg("MATRIX_HOMESERVER_URL", "http://localhost:8448").rstrip("/")
+ACCESS_TOKEN    = _cfg("MATRIX_ACCESS_TOKEN", "")
+DEFAULT_ROOM_ID = _cfg("MATRIX_BOT_ROOM_ID", "")
+_ev_cfg         = _cfg("MATRIX_BRIDGE_EVENTS", "")
+FORWARD_EVENTS  = set(_ev_cfg.split(",")) if _ev_cfg else DEFAULT_FORWARD_EVENTS
+
+# ── Matrix CS API helpers ─────────────────────────────────────────────────────
+
+def _headers() -> dict[str, str]:
+    h = {"Content-Type": "application/json"}
+    if ACCESS_TOKEN:
+        h["Authorization"] = f"Bearer {ACCESS_TOKEN}"
+    return h
+
+def _req(method: str, path: str, body: dict | None = None, timeout: int = 10) -> dict:
+    url = f"{HOMESERVER_URL}{path}"
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(url, data=data, headers=_headers(), method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode()
+        raise RuntimeError(f"Matrix HTTP {e.code}: {body_text}") from e
+
+def _send_message(room_id: str, text: str, thread_event_id: str | None = None,
+                  formatted_html: str | None = None) -> str:
+    txn = uuid.uuid4().hex
+    content: dict[str, Any] = {
+        "msgtype": "m.text",
+        "body": text,
+    }
+    if formatted_html:
+        content["format"] = "org.matrix.custom.html"
+        content["formatted_body"] = formatted_html
+    if thread_event_id:
+        content["m.relates_to"] = {
+            "rel_type": "m.thread",
+            "event_id": thread_event_id,
+        }
+    result = _req("PUT", f"/_matrix/client/v3/rooms/{urllib.parse.quote(room_id)}/send/m.room.message/{txn}", content)
+    return result.get("event_id", "")
+
+# python 3.9+ has urllib.parse but we import lazily
+import urllib.parse
+
+def _send_code_block(room_id: str, code: str, lang: str = "", label: str = "") -> str:
+    import html
+    plain = f"```{lang}\n{code}\n```"
+    if label:
+        plain = f"{label}\n{plain}"
+    escaped = html.escape(code)
+    fmted = f"<p><strong>{html.escape(label)}</strong></p>" if label else ""
+    fmted += f"<pre><code class=\"language-{html.escape(lang)}\">{escaped}</code></pre>"
+    return _send_message(room_id, plain, formatted_html=fmted)
+
+# ── Wormhole ──────────────────────────────────────────────────────────────────
+
+def _wormhole_bin() -> str | None:
+    for candidate in ["wormhole", "wormhole-william"]:
+        try:
+            result = subprocess.run(
+                ["which", candidate], capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                return candidate
+        except Exception:
+            continue
+    return None
+
+_WORMHOLE_CODE_RE = re.compile(r'\b(\d+-[\w]+-[\w]+(?:-[\w]+)*)\b')
+
+def _wormhole_send(path: str, room_id: str) -> str:
+    bin_ = _wormhole_bin()
+    if not bin_:
+        return "⚠ magic-wormhole not found. Install with: pip install magic-wormhole  or  brew install magic-wormhole"
+
+    _send_message(room_id, f"⏳ Starting wormhole send for `{Path(path).name}`…")
+
+    proc = subprocess.Popen(
+        [bin_, "send", path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    code: str | None = None
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        line = proc.stdout.readline() if proc.stdout else ""
+        if not line:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.2)
+            continue
+        m = _WORMHOLE_CODE_RE.search(line)
+        if m:
+            code = m.group(1)
+            break
+
+    if not code:
+        proc.terminate()
+        return "⚠ Could not get wormhole code within 60s"
+
+    # proc stays running in background — receiver picks up the file
+    reply = (
+        f"📦 **Wormhole code:** `{code}`\n\n"
+        f"Receive with:\n```\nwormhole receive {code}\n```\n"
+        f"or in this room:\n```\n!qes wormhole recv {code}\n```"
+    )
+    _send_message(room_id, reply, formatted_html=(
+        f"<p>📦 <strong>Wormhole code:</strong> <code>{code}</code></p>"
+        f"<p>Receive with: <code>wormhole receive {code}</code>"
+        f"<br>or in this room: <code>!qes wormhole recv {code}</code></p>"
+    ))
+    return code
+
+def _wormhole_recv(code: str, room_id: str) -> str:
+    bin_ = _wormhole_bin()
+    if not bin_:
+        return "⚠ magic-wormhole not found. Install with: pip install magic-wormhole"
+
+    dest = Path.home() / "Downloads" / "wormhole-recv"
+    dest.mkdir(parents=True, exist_ok=True)
+    _send_message(room_id, f"⏳ Receiving wormhole `{code}`…")
+
+    try:
+        result = subprocess.run(
+            [bin_, "receive", "--accept-file", "--output-file", str(dest / code), code],
+            capture_output=True, text=True, timeout=120, cwd=str(dest),
+        )
+    except subprocess.TimeoutExpired:
+        return "⚠ wormhole receive timed out (120s)"
+
+    if result.returncode != 0:
+        return f"⚠ wormhole receive failed:\n```\n{result.stderr[:800]}\n```"
+
+    # Find what was downloaded
+    out = result.stdout.strip() or result.stderr.strip()
+    path_match = re.search(r'Received file written to (.+)', out)
+    saved = path_match.group(1).strip() if path_match else str(dest)
+    return f"✅ Received → `{saved}`"
+
+# ── Mesh event tail ───────────────────────────────────────────────────────────
+
+def _read_cursor() -> int:
+    try:
+        return int(CURSOR_FILE.read_text().strip())
+    except Exception:
+        return 0
+
+def _write_cursor(pos: int) -> None:
+    CURSOR_FILE.write_text(str(pos))
+
+def _event_to_matrix_body(event: dict) -> str | None:
+    ev_type = event.get("type", "")
+    if ev_type not in FORWARD_EVENTS:
+        return None
+
+    ts   = event.get("ts", "")[:19].replace("T", " ")
+    data = event.get("data", {})
+    title = event.get("title", ev_type)
+
+    if ev_type == "cloudshell-connect":
+        host = data.get("host", "?")
+        return f"🔗 **Cloudshell connected** → `{host}` at {ts}"
+
+    if ev_type == "k3s-tunnel-start":
+        port = data.get("local_port", "16443")
+        return f"🚇 **k3s tunnel open** → `localhost:{port}` at {ts}"
+
+    if ev_type == "split-view":
+        left  = data.get("left", "")
+        right = data.get("right", "")
+        return f"⧉ **Split view** opened: `{left}` ‖ `{right}` at {ts}"
+
+    if ev_type == "error-triage":
+        cmd = data.get("cmd", "")[:80]
+        rc  = data.get("rc", "?")
+        return f"⚠ **Error triage** — `{cmd}` exited {rc} at {ts}"
+
+    if ev_type == "note-saved":
+        name = data.get("title", data.get("name", ""))
+        return f"📝 **Note saved:** `{name}` at {ts}"
+
+    if ev_type == "runbook-run":
+        name = data.get("name", "")
+        return f"📋 **Runbook run:** `{name}` at {ts}"
+
+    return f"ℹ **{title}** at {ts}"
+
+def _daemon(room_id: str) -> None:
+    print(f"turtle-matrix-bridge: daemon starting, room={room_id}", flush=True)
+    pos = _read_cursor()
+
+    while True:
+        if not MESH_JSONL.exists():
+            time.sleep(5)
+            continue
+
+        with open(MESH_JSONL) as f:
+            f.seek(pos)
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                pos = f.tell()
+                _write_cursor(pos)
+                try:
+                    event = json.loads(line.strip())
+                except json.JSONDecodeError:
+                    continue
+                body = _event_to_matrix_body(event)
+                if body:
+                    try:
+                        _send_message(room_id, body)
+                        print(f"  → forwarded: {event.get('type')}", flush=True)
+                    except Exception as exc:
+                        print(f"  ⚠ send failed: {exc}", flush=True)
+
+        time.sleep(2)
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def _require_room(argv: list[str], offset: int) -> str:
+    if len(argv) > offset:
+        return argv[offset]
+    if DEFAULT_ROOM_ID:
+        return DEFAULT_ROOM_ID
+    print("⚠ No room ID. Set MATRIX_BOT_ROOM_ID or pass as argument.", file=sys.stderr)
+    sys.exit(1)
+
+def _status() -> None:
+    print(f"homeserver : {HOMESERVER_URL}")
+    print(f"token      : {'set' if ACCESS_TOKEN else 'NOT SET'}")
+    print(f"room       : {DEFAULT_ROOM_ID or 'NOT SET'}")
+    print(f"forward    : {', '.join(sorted(FORWARD_EVENTS))}")
+    print(f"mesh jsonl : {'exists' if MESH_JSONL.exists() else 'missing'}")
+    print(f"cursor     : {_read_cursor()} bytes")
+    print(f"wormhole   : {_wormhole_bin() or 'not found'}")
+    if ACCESS_TOKEN and HOMESERVER_URL:
+        try:
+            me = _req("GET", "/_matrix/client/v3/account/whoami")
+            print(f"whoami     : {me.get('user_id', '?')}")
+        except Exception as exc:
+            print(f"whoami     : ⚠ {exc}")
+
+def main() -> None:
+    argv = sys.argv[1:]
+    if not argv:
+        print(__doc__.strip())
+        sys.exit(0)
+
+    cmd = argv[0]
+
+    if cmd == "daemon":
+        room = _require_room(argv, 1)
+        _daemon(room)
+
+    elif cmd == "send":
+        if len(argv) < 2:
+            print("Usage: turtle-matrix-bridge send <text> [<room_id>]", file=sys.stderr)
+            sys.exit(1)
+        text = argv[1]
+        room = _require_room(argv, 2)
+        eid = _send_message(room, text)
+        print(f"sent: {eid}")
+
+    elif cmd == "send-file":
+        if len(argv) < 2:
+            print("Usage: turtle-matrix-bridge send-file <path> [<room_id>]", file=sys.stderr)
+            sys.exit(1)
+        path = Path(argv[1])
+        room = _require_room(argv, 2)
+        try:
+            content = path.read_text(errors="replace")
+        except Exception as exc:
+            print(f"⚠ Cannot read {path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        lang = path.suffix.lstrip(".") or "text"
+        eid = _send_code_block(room, content[:8000], lang=lang, label=str(path.name))
+        print(f"sent: {eid}")
+
+    elif cmd == "send-code":
+        if len(argv) < 3:
+            print("Usage: turtle-matrix-bridge send-code <lang> <path> [<room_id>]", file=sys.stderr)
+            sys.exit(1)
+        lang = argv[1]
+        path = Path(argv[2])
+        room = _require_room(argv, 3)
+        content = path.read_text(errors="replace")
+        eid = _send_code_block(room, content[:8000], lang=lang, label=str(path.name))
+        print(f"sent: {eid}")
+
+    elif cmd == "wormhole-send":
+        if len(argv) < 2:
+            print("Usage: turtle-matrix-bridge wormhole-send <path> [<room_id>]", file=sys.stderr)
+            sys.exit(1)
+        path = argv[1]
+        room = _require_room(argv, 2)
+        code = _wormhole_send(path, room)
+        print(code)
+
+    elif cmd == "wormhole-recv":
+        if len(argv) < 2:
+            print("Usage: turtle-matrix-bridge wormhole-recv <code> [<room_id>]", file=sys.stderr)
+            sys.exit(1)
+        code = argv[1]
+        room = _require_room(argv, 2)
+        result = _wormhole_recv(code, room)
+        _send_message(room, result)
+        print(result)
+
+    elif cmd == "status":
+        _status()
+
+    else:
+        print(f"Unknown command: {cmd}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
