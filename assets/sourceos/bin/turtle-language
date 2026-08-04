@@ -198,13 +198,23 @@ def symbols(path: Path) -> dict[str, Any]:
 
     ensure_synapseiq()
     synapse = synapseiq_symbols(str(path), text, lang)
-    if synapse is not None:
+    if isinstance(synapse, dict):
         base["source"] = "synapseiq-lsp"
         base["synapseiq_url"] = synapseiq_url()
-        symbols = list(synapse.get("symbols", []))
-        seen = {s.get("name") for s in symbols}
-        symbols.extend(s for s in local if s.get("name") not in seen)
-        base["symbols"] = sorted(symbols, key=lambda item: item.get("line", 0))
+        # A flaky LSP may return a null "symbols", scalars, or non-dict entries —
+        # keep only well-formed symbol dicts so enrichment can never crash the
+        # command (this path has no CI coverage when the LSP is offline).
+        lsp_symbols = [s for s in (synapse.get("symbols") or []) if isinstance(s, dict)]
+
+        # Dedup on (name, line): a class method must NOT be dropped just because a
+        # top-level symbol shares its name — only a genuine duplicate is skipped.
+        def _key(sym: dict[str, Any]) -> tuple[Any, Any]:
+            return (sym.get("name"), sym.get("line"))
+
+        seen = {_key(s) for s in lsp_symbols}
+        merged = lsp_symbols + [s for s in local if _key(s) not in seen]
+        # A present-but-null "line" must not blow up the sort.
+        base["symbols"] = sorted(merged, key=lambda item: (item.get("line") or 0))
         return base
 
     base["source"] = "builtin-heuristic"

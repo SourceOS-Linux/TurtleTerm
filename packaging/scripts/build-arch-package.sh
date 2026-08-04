@@ -36,6 +36,7 @@ packager = SourceOS Linux <maintainers@sourceos.local>
 size = 0
 arch = $arch
 license = MIT
+depend = python
 depend = fontconfig
 depend = freetype2
 depend = libx11

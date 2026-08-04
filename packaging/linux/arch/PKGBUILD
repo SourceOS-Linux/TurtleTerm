@@ -16,22 +16,24 @@ optdepends=(
 )
 source=("$pkgname-$pkgver.tar.gz::https://github.com/SourceOS-Linux/TurtleTerm/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
+# GitHub's tag tarball extracts to <Repo>-<version>, not <pkgname>-<version>.
+_srcdir="TurtleTerm-$pkgver"
 
 prepare() {
-  cd "$pkgname-$pkgver"
+  cd "$_srcdir"
   export RUSTUP_TOOLCHAIN=stable
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-  cd "$pkgname-$pkgver"
+  cd "$_srcdir"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
   cargo build --release --locked -p wezterm -p wezterm-gui -p wezterm-mux-server
 }
 
 package() {
-  cd "$pkgname-$pkgver"
+  cd "$_srcdir"
 
   # Single canonical staging (libexec/turtle-term layout) via the shared stage
   # script — deb/rpm/arch all install the identical agent-command surface with
@@ -43,5 +45,5 @@ package() {
     TURTLE_TERM_RUNTIME_ETC_DIR="/etc" \
     bash packaging/scripts/stage-linux-package.sh
 
-  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 LICENSE.md "$pkgdir/usr/share/licenses/$pkgname/LICENSE.md"
 }

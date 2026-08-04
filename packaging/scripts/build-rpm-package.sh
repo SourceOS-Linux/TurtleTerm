@@ -21,6 +21,7 @@ Summary:        TurtleTerm trusted terminal and agent workbench
 License:        MIT
 URL:            https://github.com/SourceOS-Linux/TurtleTerm
 BuildArch:      $arch
+Requires:       python3 >= 3.10
 Requires:       fontconfig
 Requires:       freetype
 Requires:       libX11

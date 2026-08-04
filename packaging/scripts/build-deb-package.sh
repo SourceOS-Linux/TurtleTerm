@@ -37,7 +37,7 @@ Section: devel
 Priority: optional
 Architecture: $arch
 Maintainer: SourceOS Linux <maintainers@sourceos.local>
-Depends: libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkbcommon0, zlib1g
+Depends: libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkbcommon0, zlib1g, python3 (>= 3.10)
 Homepage: https://github.com/SourceOS-Linux/TurtleTerm
 Description: TurtleTerm trusted terminal and agent workbench
  TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench
