@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+# turtle-arm-generate — Architecture Reference Manual (ARM) generator for TurtleTerm.
+# Reads ADR-*.md files from a configured directory and synthesises a consolidated
+# ARM document at ~/.local/state/sourceos/arm/ARM.md.
+#
+# Usage:
+#   turtle-arm-generate generate [--adr-dir <path>] [--output <path>]
+#   turtle-arm-generate show [--section <title>]
+#   turtle-arm-generate search <query>
+#   turtle-arm-generate status
+#   turtle-arm-generate watch [--interval 60]
+#
+# SPDX-License-Identifier: MIT
+# Author: @mdheller
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import sys
+import time
+from datetime import datetime, timezone
+from typing import NamedTuple
+
+# ── colour helpers ────────────────────────────────────────────────────────────
+
+_TEAL   = '\033[38;2;57;197;207m'
+_GREEN  = '\033[38;2;63;185;80m'
+_RED    = '\033[38;2;248;81;73m'
+_YELLOW = '\033[38;2;210;153;34m'
+_DIM    = '\033[2m'
+_BOLD   = '\033[1m'
+_RESET  = '\033[0m'
+
+
+def _c(s: str, col: str) -> str:
+    return f'{col}{s}{_RESET}'
+
+
+def _die(msg: str) -> None:
+    print(_c(f'error: {msg}', _RED), file=sys.stderr)
+    sys.exit(1)
+
+
+# ── defaults ──────────────────────────────────────────────────────────────────
+
+_DEFAULT_ADR_DIR = pathlib.Path.home() / 'dev' / 'prophet-platform' / 'adr'
+_DEFAULT_ARM_DIR = pathlib.Path.home() / '.local' / 'state' / 'sourceos' / 'arm'
+_DEFAULT_OUTPUT  = _DEFAULT_ARM_DIR / 'ARM.md'
+_INDEX_PATH      = _DEFAULT_ARM_DIR / 'index.json'
+
+# Standard ADR section headings to extract
+_KNOWN_SECTIONS  = ('context', 'decision', 'consequences', 'status')
+
+
+# ── ADR data model ────────────────────────────────────────────────────────────
+
+class AdrRecord(NamedTuple):
+    adr_id: str       # e.g. "ADR-030"
+    title: str        # first # heading text (minus the id prefix)
+    status: str       # e.g. "Accepted", "Proposed"
+    date: str         # from front-matter or empty string
+    deciders: str     # from front-matter or empty string
+    sections: dict[str, str]   # {lowercase_name: content}
+    raw_body: str     # full file text (fallback)
+    source_path: str  # absolute path to the .md file
+
+
+# ── parser ────────────────────────────────────────────────────────────────────
+
+def _slug(title: str) -> str:
+    """GitHub-flavour anchor slug."""
+    s = title.lower()
+    s = re.sub(r'[^\w\s-]', '', s)
+    s = re.sub(r'[\s_]+', '-', s)
+    s = re.sub(r'-+', '-', s).strip('-')
+    return s
+
+
+def _extract_sections(body: str) -> dict[str, str]:
+    """Split an ADR body into {section_name: content} for known headings."""
+    sections: dict[str, str] = {}
+    # Match ## Heading (case-insensitive)
+    pattern = re.compile(r'^##\s+(.+)$', re.MULTILINE)
+    headings = list(pattern.finditer(body))
+    for idx, match in enumerate(headings):
+        heading = match.group(1).strip().lower()
+        start   = match.end()
+        end     = headings[idx + 1].start() if idx + 1 < len(headings) else len(body)
+        content = body[start:end].strip()
+        sections[heading] = content
+    return sections
+
+
+def _parse_adr(path: pathlib.Path) -> AdrRecord:
+    text = path.read_text(encoding='utf-8', errors='replace')
+
+    # Derive ADR-id from filename  ADR-030-some-title.md  →  ADR-030
+    stem   = path.stem  # "ADR-030-prophet-platform-integration"
+    id_match = re.match(r'(ADR-\d+)', stem, re.IGNORECASE)
+    adr_id   = id_match.group(1).upper() if id_match else stem.split('-')[0].upper()
+
+    # Extract the first # heading as title
+    h1_match = re.search(r'^#\s+(.+)$', text, re.MULTILINE)
+    raw_title = h1_match.group(1).strip() if h1_match else stem
+
+    # Strip "ADR-NNN:" or "ADR-NNN " prefix from title for cleanliness
+    title = re.sub(r'^ADR-\d+[:\s]*', '', raw_title, flags=re.IGNORECASE).strip()
+    if not title:
+        title = raw_title
+
+    sections = _extract_sections(text)
+
+    # Status: look in sections, then front-matter key
+    status_text = sections.get('status', '')
+    # First non-blank line of the status section is the status value
+    status_first_line = next((l.strip() for l in status_text.splitlines() if l.strip()), '')
+    status = status_first_line if status_first_line else 'Unknown'
+
+    # Date / Deciders — optional front-matter style keys inside the body
+    date_match     = re.search(r'^[*_-]*date[*_-]*[:\s]+(.+)$', text, re.IGNORECASE | re.MULTILINE)
+    decider_match  = re.search(r'^[*_-]*deciders?[*_-]*[:\s]+(.+)$', text, re.IGNORECASE | re.MULTILINE)
+    date           = date_match.group(1).strip()     if date_match     else ''
+    deciders       = decider_match.group(1).strip()  if decider_match  else ''
+
+    return AdrRecord(
+        adr_id=adr_id,
+        title=title,
+        status=status,
+        date=date,
+        deciders=deciders,
+        sections=sections,
+        raw_body=text,
+        source_path=str(path),
+    )
+
+
+def _load_adrs(adr_dir: pathlib.Path) -> list[AdrRecord]:
+    """Load all ADR-*.md files sorted by ADR-id."""
+    if not adr_dir.exists():
+        _die(f'ADR directory not found: {adr_dir}')
+    files = sorted(adr_dir.glob('ADR-*.md'), key=lambda p: p.name.upper())
+    if not files:
+        _die(f'No ADR-*.md files found in {adr_dir}')
+    records = []
+    for f in files:
+        try:
+            records.append(_parse_adr(f))
+        except Exception as exc:  # noqa: BLE001
+            print(_c(f'warning: skipping {f.name}: {exc}', _YELLOW), file=sys.stderr)
+    return records
+
+
+# ── ARM renderer ──────────────────────────────────────────────────────────────
+
+def _render_adr_section(record: AdrRecord) -> str:
+    parts: list[str] = []
+
+    heading_slug = _slug(f'{record.adr_id} {record.title}')
+    parts.append(f'## {record.adr_id}: {record.title}\n')
+    parts.append(f'**Status:** {record.status}  ')
+    if record.date:
+        parts.append(f'\n**Date:** {record.date}  ')
+    if record.deciders:
+        parts.append(f'\n**Deciders:** {record.deciders}  ')
+    parts.append('\n')
+
+    # Try to render structured sections; fall back to verbatim body
+    has_any = any(k in record.sections for k in _KNOWN_SECTIONS)
+    if has_any:
+        for section_key in ('context', 'decision', 'consequences'):
+            if section_key in record.sections:
+                parts.append(f'\n### {section_key.capitalize()}\n')
+                parts.append(record.sections[section_key])
+                parts.append('\n')
+        # Any extra sections not in the known set
+        for key, content in record.sections.items():
+            if key not in _KNOWN_SECTIONS and content:
+                parts.append(f'\n### {key.capitalize()}\n')
+                parts.append(content)
+                parts.append('\n')
+    else:
+        # Include full body (strip the first # heading we already rendered)
+        body = re.sub(r'^#[^#].*\n', '', record.raw_body, count=1)
+        parts.append(body.strip())
+        parts.append('\n')
+
+    parts.append('\n---\n')
+    return ''.join(parts)
+
+
+def _render_arm(records: list[AdrRecord], timestamp: str) -> str:
+    lines: list[str] = [
+        '# Architecture Reference Manual\n',
+        f'> Auto-generated from ADRs. Last updated: {timestamp}\n',
+        '\n## Table of Contents\n',
+    ]
+    for r in records:
+        anchor = _slug(f'{r.adr_id} {r.title}')
+        lines.append(f'- [{r.adr_id}: {r.title}](#{anchor})\n')
+    lines.append('\n---\n\n')
+    for r in records:
+        lines.append(_render_adr_section(r))
+        lines.append('\n')
+    return ''.join(lines)
+
+
+# ── index.json ────────────────────────────────────────────────────────────────
+
+def _write_index(records: list[AdrRecord], timestamp: str, index_path: pathlib.Path) -> None:
+    data = {
+        'generated_at': timestamp,
+        'adr_count': len(records),
+        'adrs': [
+            {
+                'id': r.adr_id,
+                'title': r.title,
+                'status': r.status,
+                'file': r.source_path,
+            }
+            for r in records
+        ],
+    }
+    index_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+
+# ── commands ──────────────────────────────────────────────────────────────────
+
+def _cmd_generate(args: argparse.Namespace) -> None:
+    adr_dir = pathlib.Path(args.adr_dir).expanduser()
+    output  = pathlib.Path(args.output).expanduser()
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    records   = _load_adrs(adr_dir)
+    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    arm_text  = _render_arm(records, timestamp)
+
+    output.write_text(arm_text, encoding='utf-8')
+    _write_index(records, timestamp, _INDEX_PATH)
+
+    print(
+        _c('✔', _GREEN) + f' ARM generated: {output}'
+        + f'  ({len(records)} ADRs, {len(arm_text)} bytes)',
+    )
+
+
+def _cmd_show(args: argparse.Namespace) -> None:
+    output = pathlib.Path(getattr(args, 'output', str(_DEFAULT_OUTPUT))).expanduser()
+    if not output.exists():
+        _die(f'ARM not found at {output}. Run `turtle-arm-generate generate` first.')
+    text = output.read_text(encoding='utf-8')
+
+    section = getattr(args, 'section', None)
+    if section:
+        # Find the section heading (case-insensitive)
+        pattern = re.compile(rf'^##\s+{re.escape(section)}\b.*$', re.MULTILINE | re.IGNORECASE)
+        m = pattern.search(text)
+        if not m:
+            _die(f'Section not found: {section!r}')
+        # Print from that heading to the next ---
+        start = m.start()
+        end_m = re.search(r'^---$', text[start:], re.MULTILINE)
+        end   = start + end_m.start() if end_m else len(text)
+        print(text[start:end].strip())
+    else:
+        print(text)
+
+
+def _cmd_search(args: argparse.Namespace) -> None:
+    output = pathlib.Path(_DEFAULT_OUTPUT).expanduser()
+    if not output.exists():
+        _die(f'ARM not found at {output}. Run `turtle-arm-generate generate` first.')
+    text  = output.read_text(encoding='utf-8')
+    query = args.query
+
+    matches: list[str] = []
+    lines = text.splitlines()
+    for idx, line in enumerate(lines):
+        if query.lower() in line.lower():
+            context_start = max(0, idx - 2)
+            context_end   = min(len(lines), idx + 3)
+            snippet = '\n'.join(lines[context_start:context_end])
+            matches.append(f'[line {idx + 1}]\n{snippet}')
+
+    if not matches:
+        print(_c(f'No matches for: {query!r}', _YELLOW))
+        return
+    separator = '\n' + ('─' * 40) + '\n'
+    print(separator.join(matches))
+
+
+def _cmd_status(args: argparse.Namespace) -> None:  # noqa: ARG001
+    output    = _DEFAULT_OUTPUT
+    index     = _INDEX_PATH
+
+    arm_exists   = output.exists()
+    index_exists = index.exists()
+
+    if not arm_exists:
+        print(_c('ARM not yet generated.', _YELLOW))
+        print(f'  Run: turtle-arm-generate generate')
+        return
+
+    stat = output.stat()
+    mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    adr_count = '?'
+    generated_at = mtime
+    if index_exists:
+        try:
+            data = json.loads(index.read_text(encoding='utf-8'))
+            adr_count    = data.get('adr_count', '?')
+            generated_at = data.get('generated_at', mtime)
+        except Exception:  # noqa: BLE001
+            pass
+
+    print(_c('ARM status', _TEAL))
+    print(f'  Path:          {output}')
+    print(f'  Generated:     {generated_at}')
+    print(f'  ADR count:     {adr_count}')
+    print(f'  Size:          {stat.st_size} bytes')
+    print(f'  Index:         {index}  ({"present" if index_exists else "missing"})')
+
+
+def _cmd_watch(args: argparse.Namespace) -> None:
+    adr_dir  = pathlib.Path(args.adr_dir).expanduser()
+    output   = pathlib.Path(args.output).expanduser()
+    interval = args.interval
+
+    print(_c(f'Watching {adr_dir} every {interval}s — Ctrl-C to stop', _DIM))
+    last_digest: str | None = None
+
+    while True:
+        try:
+            files = sorted(adr_dir.glob('ADR-*.md'))
+            digest = hashlib.md5(
+                b''.join(
+                    (str(f) + str(f.stat().st_mtime)).encode()
+                    for f in files
+                )
+            ).hexdigest()
+
+            if digest != last_digest:
+                last_digest = digest
+                ts = datetime.now(timezone.utc).strftime('%H:%M:%S')
+                print(f'[{ts}] Change detected — regenerating…')
+                records   = _load_adrs(adr_dir)
+                timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(_render_arm(records, timestamp), encoding='utf-8')
+                _write_index(records, timestamp, _INDEX_PATH)
+                print(f'[{ts}] Done — {len(records)} ADRs → {output}')
+
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            print('\nWatch stopped.')
+            break
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog='turtle-arm-generate',
+        description='Architecture Reference Manual (ARM) generator — synthesise ADRs.',
+    )
+    sub = p.add_subparsers(dest='command', required=True)
+
+    # generate
+    g = sub.add_parser('generate', help='Read ADRs and write ARM.md')
+    g.add_argument('--adr-dir', default=str(_DEFAULT_ADR_DIR),
+                   help=f'Directory of ADR-*.md files (default: {_DEFAULT_ADR_DIR})')
+    g.add_argument('--output', default=str(_DEFAULT_OUTPUT),
+                   help=f'Output path for ARM.md (default: {_DEFAULT_OUTPUT})')
+
+    # show
+    s = sub.add_parser('show', help='Print the ARM or a specific section')
+    s.add_argument('--section', default=None, metavar='TITLE',
+                   help='Print only the section whose heading matches TITLE')
+    s.add_argument('--output', default=str(_DEFAULT_OUTPUT),
+                   help=argparse.SUPPRESS)
+
+    # search
+    sr = sub.add_parser('search', help='Search the ARM for a query string')
+    sr.add_argument('query', help='String to search for')
+
+    # status
+    sub.add_parser('status', help='Show ARM status and ADR count')
+
+    # watch
+    w = sub.add_parser('watch', help='Poll for ADR changes and regenerate automatically')
+    w.add_argument('--adr-dir', default=str(_DEFAULT_ADR_DIR),
+                   help=f'Directory of ADR-*.md files (default: {_DEFAULT_ADR_DIR})')
+    w.add_argument('--output', default=str(_DEFAULT_OUTPUT),
+                   help=f'Output path for ARM.md (default: {_DEFAULT_OUTPUT})')
+    w.add_argument('--interval', type=int, default=60, metavar='SECS',
+                   help='Poll interval in seconds (default: 60)')
+
+    return p
+
+
+_COMMANDS = {
+    'generate': _cmd_generate,
+    'show':     _cmd_show,
+    'search':   _cmd_search,
+    'status':   _cmd_status,
+    'watch':    _cmd_watch,
+}
+
+
+def main() -> None:
+    parser = _build_parser()
+    args   = parser.parse_args()
+    handler = _COMMANDS.get(args.command)
+    if handler is None:
+        parser.print_help()
+        sys.exit(1)
+    handler(args)
+
+
+if __name__ == '__main__':
+    main()

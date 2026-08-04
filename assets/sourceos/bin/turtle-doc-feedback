@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+# MIT License
+# Copyright (c) 2026 @mdheller
+#
+# turtle-doc-feedback — doc feedback receipts and Noetica-derived FAQ distillation.
+#
+# Storage:
+#   ~/.local/state/sourceos/doc-feedback/receipts.jsonl
+#   ~/.local/state/sourceos/doc-feedback/faq-stubs.jsonl
+#
+# Usage:
+#   turtle-doc-feedback submit <doc_ref> <sentiment> [<comment>]
+#       sentiment: up | down | neutral | question
+#   turtle-doc-feedback list [<doc_ref>]
+#   turtle-doc-feedback distill [<doc_ref>]
+#   turtle-doc-feedback faq [<doc_ref>]
+#   turtle-doc-feedback status
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+_STATE_DIR   = Path.home() / ".local" / "state" / "sourceos" / "doc-feedback"
+_RECEIPTS    = _STATE_DIR / "receipts.jsonl"
+_FAQ_STUBS   = _STATE_DIR / "faq-stubs.jsonl"
+
+_VALID_SENTIMENTS = {"up", "down", "neutral", "question"}
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _ensure_dir() -> None:
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    records: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return records
+
+
+def _append_jsonl(path: Path, record: dict) -> None:
+    _ensure_dir()
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _noetica_bin() -> str:
+    """Locate turtle-noetica-stream on PATH or relative to this script."""
+    import shutil
+    found = shutil.which("turtle-noetica-stream")
+    if found:
+        return found
+    this_dir = Path(__file__).resolve().parent
+    candidate = this_dir / "turtle-noetica-stream"
+    if candidate.exists():
+        return str(candidate)
+    return "turtle-noetica-stream"
+
+
+# ── Sub-commands ──────────────────────────────────────────────────────────────
+
+
+def cmd_submit(args: list[str]) -> int:
+    if len(args) < 2:
+        print(
+            "Usage: turtle-doc-feedback submit <doc_ref> <sentiment> [<comment>]\n"
+            "  sentiment: up | down | neutral | question",
+            file=sys.stderr,
+        )
+        return 1
+
+    doc_ref   = args[0]
+    sentiment = args[1].lower()
+    comment   = " ".join(args[2:]) if len(args) > 2 else ""
+
+    if sentiment not in _VALID_SENTIMENTS:
+        print(
+            f"Invalid sentiment {sentiment!r}. Must be one of: {', '.join(sorted(_VALID_SENTIMENTS))}",
+            file=sys.stderr,
+        )
+        return 1
+
+    receipt: dict = {
+        "ts":         _now_iso(),
+        "doc_ref":    doc_ref,
+        "sentiment":  sentiment,
+        "comment":    comment,
+        "source":     "shell",
+        "session_id": str(uuid.uuid4()),
+    }
+    _append_jsonl(_RECEIPTS, receipt)
+
+    print(f"✓ Feedback recorded — {sentiment} on {doc_ref!r}")
+    if comment:
+        print(f"  Comment: {comment}")
+    print(f"  Receipt: {_RECEIPTS}")
+    return 0
+
+
+def cmd_list(args: list[str]) -> int:
+    filter_ref = args[0] if args else None
+    records = _read_jsonl(_RECEIPTS)
+
+    if filter_ref:
+        records = [r for r in records if r.get("doc_ref") == filter_ref]
+
+    if not records:
+        label = f"for {filter_ref!r}" if filter_ref else "in KB"
+        print(f"(no feedback receipts {label})")
+        return 0
+
+    for r in records:
+        ts       = r.get("ts", "")[:16]
+        ref      = r.get("doc_ref", "?")
+        sent     = r.get("sentiment", "?")
+        comment  = r.get("comment", "")
+        line     = f"{ts}  {sent:<9}  {ref}"
+        if comment:
+            line += f"  — {comment[:80]}"
+        print(line)
+
+    print(f"\n({len(records)} receipt{'s' if len(records) != 1 else ''})")
+    return 0
+
+
+def cmd_distill(args: list[str]) -> int:
+    filter_ref = args[0] if args else None
+    records = _read_jsonl(_RECEIPTS)
+
+    # Keep only receipts that carry useful feedback content
+    useful_sentiments = {"question", "neutral", "down"}
+    records = [r for r in records if r.get("sentiment") in useful_sentiments]
+
+    if filter_ref:
+        records = [r for r in records if r.get("doc_ref") == filter_ref]
+
+    if not records:
+        label = f"for {filter_ref!r}" if filter_ref else ""
+        print(f"No question/neutral/down receipts found{' ' + label if label else ''}. Nothing to distill.")
+        return 0
+
+    # Group by doc_ref
+    groups: dict[str, list[dict]] = {}
+    for r in records:
+        ref = r.get("doc_ref", "unknown")
+        groups.setdefault(ref, []).append(r)
+
+    noetica = _noetica_bin()
+    distilled = 0
+
+    for doc_ref, group in groups.items():
+        comments = [r.get("comment", "").strip() for r in group if r.get("comment", "").strip()]
+        if not comments:
+            # Synthesise a generic question from sentiment counts
+            comments = [f"User expressed {r.get('sentiment')} sentiment" for r in group]
+
+        comments_block = "\n".join(f"- {c}" for c in comments)
+        prompt = (
+            f"Based on these feedback questions about the document '{doc_ref}':\n"
+            f"{comments_block}\n\n"
+            "Generate a concise FAQ entry in this exact format:\n"
+            "Q: <question>\nA: <answer>"
+        )
+
+        env = dict(os.environ)
+        env["TURTLE_PROMPT"]    = prompt
+        env["TURTLE_MAX_TOKENS"] = "300"
+
+        print(f"Distilling {len(group)} receipt(s) for {doc_ref!r}…", flush=True)
+
+        try:
+            result = subprocess.run(
+                ["python3", noetica],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            response = (result.stdout or "").strip()
+            if not response:
+                response = result.stderr.strip() or "(no response from Noetica)"
+        except subprocess.TimeoutExpired:
+            response = "(Noetica call timed out after 60s)"
+        except Exception as exc:
+            response = f"(error calling Noetica: {exc})"
+
+        # Parse Q/A from response; fall back to raw text
+        question = ""
+        answer   = ""
+        for line in response.splitlines():
+            if line.startswith("Q:") and not question:
+                question = line[2:].strip()
+            elif line.startswith("A:") and not answer:
+                answer = line[2:].strip()
+        if not question:
+            question = comments[0][:120] if comments else doc_ref
+        if not answer:
+            answer = response[:400] or "(distillation produced no answer)"
+
+        stub: dict = {
+            "ts":              _now_iso(),
+            "doc_ref":         doc_ref,
+            "question":        question,
+            "answer":          answer,
+            "source_receipts": len(group),
+        }
+        _append_jsonl(_FAQ_STUBS, stub)
+        print(f"  → FAQ stub written for {doc_ref!r}")
+        distilled += 1
+
+    print(f"\nDistilled {distilled} doc_ref(s). Stubs: {_FAQ_STUBS}")
+    return 0
+
+
+def cmd_faq(args: list[str]) -> int:
+    filter_ref = args[0] if args else None
+    stubs = _read_jsonl(_FAQ_STUBS)
+
+    if filter_ref:
+        stubs = [s for s in stubs if s.get("doc_ref") == filter_ref]
+
+    if not stubs:
+        label = f"for {filter_ref!r}" if filter_ref else ""
+        print(f"(no FAQ stubs found{' ' + label if label else ''})")
+        return 0
+
+    # Deduplicate: keep last stub per (doc_ref, question)
+    seen: dict[tuple[str, str], dict] = {}
+    for s in stubs:
+        key = (s.get("doc_ref", ""), s.get("question", ""))
+        seen[key] = s
+
+    for stub in seen.values():
+        ref      = stub.get("doc_ref", "?")
+        question = stub.get("question", "?")
+        answer   = stub.get("answer", "?")
+        n        = stub.get("source_receipts", 0)
+        ts       = stub.get("ts", "")[:10]
+
+        print(f"── {ref}  [{ts}  {n} receipt(s)]")
+        print(f"   Q: {question}")
+        print(f"   A: {answer}")
+        print()
+
+    return 0
+
+
+def cmd_status(_args: list[str]) -> int:
+    receipt_count = len(_read_jsonl(_RECEIPTS))
+    stub_count    = len(_read_jsonl(_FAQ_STUBS))
+
+    print(f"KB path  : {_STATE_DIR}")
+    print(f"Receipts : {_RECEIPTS}  ({receipt_count} record(s))")
+    print(f"FAQ stubs: {_FAQ_STUBS}  ({stub_count} record(s))")
+    return 0
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+_COMMANDS = {
+    "submit":  cmd_submit,
+    "list":    cmd_list,
+    "distill": cmd_distill,
+    "faq":     cmd_faq,
+    "status":  cmd_status,
+}
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        print(
+            "Usage: turtle-doc-feedback <subcommand> [args]\n"
+            "  submit  <doc_ref> <sentiment> [<comment>]\n"
+            "  list    [<doc_ref>]\n"
+            "  distill [<doc_ref>]\n"
+            "  faq     [<doc_ref>]\n"
+            "  status",
+            file=sys.stderr,
+        )
+        return 1
+
+    sub  = argv[0]
+    rest = argv[1:]
+
+    handler = _COMMANDS.get(sub)
+    if handler is None:
+        print(f"Unknown subcommand: {sub!r}. Try: {', '.join(_COMMANDS)}", file=sys.stderr)
+        return 1
+
+    return handler(rest)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

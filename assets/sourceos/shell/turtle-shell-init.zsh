@@ -2049,6 +2049,49 @@ mxctx() { python3 "$(_turtle_matrix_bridge_bin)" ctx "$@" }
 # mxstatus   — show Matrix bridge config + connectivity
 mxstatus() { python3 "$(_turtle_matrix_bridge_bin)" status }
 
+# ── Support tickets ────────────────────────────────────────────────────────────
+
+_turtle_ticket_bin() {
+    local _b
+    for _b in \
+        "${TURTLE_SOURCEOS_BIN:-$HOME/.local/share/sourceos/bin}/turtle-ticket" \
+        "${${(%):-%x}:h}/turtle-ticket"; do
+        [[ -x "$_b" ]] && { printf '%s' "$_b"; return; }
+    done
+    printf '%s' "$(dirname "${(%):-%x}")/turtle-ticket"
+}
+
+# ticket open <title> [--priority p1] [--repo <repo>] [--body <text>]
+#   Open a support ticket or case record
+ticket() { python3 "$(_turtle_ticket_bin)" "$@" }
+
+# tko <title> [--priority p1]  — quick-open shorthand
+tko() {
+    [[ -z "$1" ]] && { printf 'Usage: tko <title> [--priority p1]\n' >&2; return 1; }
+    python3 "$(_turtle_ticket_bin)" open "$@"
+}
+
+# tkl [--open|--closed] [--repo <repo>]  — list tickets
+tkl() { python3 "$(_turtle_ticket_bin)" list "$@" }
+
+# tks <query>  — search tickets
+tks() {
+    [[ -z "$1" ]] && { printf 'Usage: tks <query>\n' >&2; return 1; }
+    python3 "$(_turtle_ticket_bin)" search "$@"
+}
+
+# tkc <ticket_id> [--resolution <text>]  — close ticket
+tkc() {
+    [[ -z "$1" ]] && { printf 'Usage: tkc <ticket_id>\n' >&2; return 1; }
+    python3 "$(_turtle_ticket_bin)" close "$@"
+}
+
+# tkn <ticket_id> <comment>  — add comment/note to ticket
+tkn() {
+    [[ $# -lt 2 ]] && { printf 'Usage: tkn <ticket_id> <comment>\n' >&2; return 1; }
+    python3 "$(_turtle_ticket_bin)" comment "$@"
+}
+
 # Auto-start Matrix bridge daemon at shell init if config is present
 if [[ -f "${HOME}/.config/sourceos/matrix.yaml" ]] || \
    [[ -n "${MATRIX_ACCESS_TOKEN:-}" ]]; then
