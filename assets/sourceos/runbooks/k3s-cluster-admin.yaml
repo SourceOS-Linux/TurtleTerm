@@ -1,0 +1,25 @@
+name: k3s-cluster-admin
+description: "k3s twin cluster admin — open tunnel, verify connectivity, inspect workloads"
+tags: [k3s, devsecops, cloudshell, tunnel, kubectl]
+vars:
+  NAMESPACE: "kube-system"
+  KUBECONFIG: "${CLOUDSHELL_K3S_KUBECONFIG:-$HOME/.kube/config-k3s-twin}"
+steps:
+  - cmd: csh-status
+    desc: "Show cloudshell-fog config and current tunnel/proxy state."
+  - cmd: ktunnel start
+    desc: "Open k3s API tunnel: localhost:16443 → k3s-twin:6443 via cloudshell-fog bastion. Safe to re-run if already up."
+  - cmd: k3s get nodes -o wide
+    desc: "Verify k3s twin reachability and node readiness via the tunnel."
+  - cmd: k3s get pods -n ${NAMESPACE} --field-selector='status.phase!=Running'
+    desc: "Surface any pods that are NOT running in the target namespace — the first triage signal."
+  - cmd: k3s get events -n ${NAMESPACE} --sort-by='.metadata.creationTimestamp' | tail -30
+    desc: "Last 30 cluster events sorted by timestamp — quick anomaly scan."
+  - cmd: k3s top nodes
+    desc: "CPU/memory pressure across nodes (requires metrics-server)."
+  - cmd: k3s top pods -n ${NAMESPACE} --sort-by=memory
+    desc: "Top pods by memory in the target namespace."
+  - cmd: k3s get all -A --show-labels
+    desc: "Full cluster inventory with labels — useful for verifying GitOps-applied state."
+  - cmd: ktunnel status
+    desc: "Confirm tunnel is still alive after the admin session."

@@ -1,0 +1,24 @@
+name: cloudshell-devsecops
+description: "Cloudshell-fog DevSecOps session — bastion SSH, SOCKS5 proxy, remote exec patterns"
+tags: [cloudshell, devsecops, ssh, bastion, proxy, k3s]
+vars:
+  REMOTE_CMD: "kubectl get nodes"
+  SRC: "~/.kube/config-k3s-twin"
+  DST: "cloudshell:~/.kube/config-k3s-twin"
+steps:
+  - cmd: csh-status
+    desc: "Print full cloudshell-fog connection config and live tunnel/proxy status."
+  - cmd: csh-exec "whoami && hostname && uptime"
+    desc: "Non-interactive smoke-test — verify bastion reachability and identity."
+  - cmd: csh-exec "${REMOTE_CMD}"
+    desc: "Run an arbitrary remote command on the cloudshell bastion. Edit REMOTE_CMD var to taste."
+  - cmd: ktunnel start
+    desc: "Forward k3s API port (localhost:16443 → k3s-twin:6443) through the bastion."
+  - cmd: kproxy start
+    desc: "Open SOCKS5 proxy on localhost:1080 via cloudshell — routes sovereign browsing through the fog network."
+  - cmd: csh-copy "${SRC}" "${DST}"
+    desc: "Copy kubeconfig or any file to/from cloudshell via scp. Set SRC/DST vars: prefix 'cloudshell:' for remote side."
+  - cmd: csh
+    desc: "Drop into a full interactive SSH session on the cloudshell-fog bastion (CMD+SHIFT+K)."
+  - cmd: ktunnel stop
+    desc: "Tear down the k3s API tunnel cleanly when done."
