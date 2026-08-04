@@ -630,6 +630,72 @@ tcv() {
     "$_voice_bin" "$@"
 }
 
+# ============================================================
+# note — quick-capture to ~/notes (Obsidian-competitive)
+# Usage: note "my idea about X"   capture inline
+#        note                      open $EDITOR for a new note
+#        note bl <slug>            show backlinks for that note
+# ============================================================
+note() {
+    local _title="${1:-}"
+    local _notes_dir="${HOME}/notes"
+    local _ts; _ts="$(date +%Y-%m-%d)"
+
+    if [[ "${_title:-}" == "bl" ]]; then
+        local _slug="${2:-}"
+        local _blinks_bin
+        _blinks_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-notes-backlinks"
+        [[ -x "$_blinks_bin" ]] && python3 "$_blinks_bin" --backlinks "$_slug" || echo "(backlinks unavailable)" >&2
+        return
+    fi
+
+    if [[ -z "$_title" ]]; then
+        local _fname="${_notes_dir}/${_ts}-untitled.md"
+        mkdir -p "$_notes_dir"
+        ${EDITOR:-nano} "$_fname"
+        return
+    fi
+
+    local _slug; _slug="$(echo "${_title:0:60}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')"
+    local _fname="${_notes_dir}/${_ts}-${_slug}.md"
+    mkdir -p "$_notes_dir"
+    {
+        printf '# %s\n\n' "$_title"
+        printf '_Captured: %s_\n\n' "$(date '+%Y-%m-%d %H:%M')"
+    } >> "$_fname"
+
+    # Append to memory mesh
+    local _mesh_dir="${HOME}/.local/state/sourceos/memory-mesh"
+    if [[ -d "$_mesh_dir" ]]; then
+        local _entry; _entry="$(printf '{"ts":"%s","type":"note","title":"%s","data":{"file":"%s"}}' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$(echo "$_title" | tr '"' "'")" \
+            "$_fname")"
+        echo "$_entry" >> "${_mesh_dir}/context.jsonl" 2>/dev/null
+    fi
+
+    printf '\e[38;2;57;197;207m◆\e[0m Captured: \e[38;2;230;237;243m%s\e[0m\n' "$_fname"
+    printf '  Open with: \e[2m$EDITOR %s\e[0m\n' "$_fname"
+}
+
+# note_watch — manually start/restart the backlinks watch daemon
+# The daemon is auto-started at shell init; use this to restart it if stopped.
+note_watch() {
+    local _blinks_bin
+    _blinks_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-notes-backlinks"
+    [[ -x "$_blinks_bin" ]] || { echo "(turtle-notes-backlinks not found)" >&2; return 1; }
+    local _pid_file="/tmp/turtle-notes-backlinks.pid"
+    # Kill existing daemon if running
+    if [[ -f "$_pid_file" ]]; then
+        local _old_pid; _old_pid="$(cat "$_pid_file" 2>/dev/null)"
+        kill "$_old_pid" 2>/dev/null || true
+        rm -f "$_pid_file"
+    fi
+    python3 "$_blinks_bin" --watch &! 2>/dev/null
+    echo $! > "$_pid_file" 2>/dev/null
+    printf '\e[38;2;57;197;207m◆\e[0m backlinks daemon started (pid %s)\n' "$(cat "$_pid_file" 2>/dev/null)"
+}
+
 # tsc — screen-region capture → Noetica query (ChatGPT Desktop gap closure)
 # Usage: tsc                        (interactive region select, ask what it shows)
 #        tsc "what is the error?"   (ask specific question about captured region)
