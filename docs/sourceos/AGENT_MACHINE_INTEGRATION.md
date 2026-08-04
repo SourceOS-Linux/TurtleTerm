@@ -86,6 +86,41 @@ turtle-agentctl inspect-surface agent-machine/local-podman
 turtle-agentctl request-execution --surface agent-machine/local-podman -- make test
 ```
 
+## Governed web acquisition
+
+Agent Machine exposes **web acquisition** as a first-class governed capability — the `acquire`
+built-in tool (advertised via Agent Machine's `/api/status` tool list, and over the Noetica MCP).
+It fetches or crawls a URL through the governed acquisition plane (policy → robots → rate →
+reputation → provenance → optional SynapseIQ enrichment → sink) and lands the result as evidence.
+TurtleTerm surfaces it through the same boundary as any other side effect — it does not fetch.
+
+Side-effect class: `network_call`; capability requirement: `net`. Because it egresses, Policy Fabric
+admission and the Agent Registry grant are mandatory, and the request fails closed when no acquisition
+worker is configured (`ACQUIRE_WORKER_URL` unset → 503, recorded as a failed governed run).
+
+```text
+TurtleTerm user or agent asks to acquire a URL
+  -> turtle-agentd normalizes the request (surface, session, pane context)
+  -> Agent Registry resolves the `acquire` tool identity + grant
+  -> Policy Fabric evaluates the network_call side effect + egress policy
+  -> Agent Machine runs the governed acquisition (POST /api/acquire → worker)
+  -> a governed run + provenance receipt are emitted (streamed to /api/governance)
+  -> TurtleTerm displays status, the provenance receipt, and the replay reference
+```
+
+```bash
+# inspect the capability, then request a governed acquisition through the surface
+turtle-agentctl inspect-tool acquire
+turtle-agentctl request-execution --surface agent-machine/local-podman -- \
+  acquire --url https://example.com --account sovereign --tier T1
+```
+
+The landed document carries its provenance (content hash, tier, posture, egress) into whichever sink
+the estate configured — the Prophet Mesh evidence store, the local ledger, or the workspace note
+inbox (GooseNotes) — so the terminal receipt cross-links to the same evidence record. Surfacing this
+as a native command/profile in the TurtleTerm UI (command palette entry, receipt rendering) is
+TurtleTerm-side work; the capability, its governance, and its receipts already exist in Agent Machine.
+
 ## Non-goals
 
 - TurtleTerm does not own runtime placement.
