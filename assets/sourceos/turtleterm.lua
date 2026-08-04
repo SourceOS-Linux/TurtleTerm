@@ -928,63 +928,77 @@ function turtle_ssh_picker(window, pane)
   )
 end
 
--- Feature: CTRL+SHIFT+P — preview file (image via imgcat, code via bat/cat)
+-- Feature: CTRL+SHIFT+P — smart inline file render (images/PDF/CSV/JSON/code)
+-- Uses turtle-render: images via iTerm2 protocol, PDFs, CSV tables, syntax highlight.
 local function turtle_preview_file()
   return wezterm.action_callback(function(window, pane)
+    local render_bin = turtle_bin('turtle-render')
+
+    local function spawn_render(w, p, path)
+      w:perform_action(
+        act.SpawnCommandInNewPane {
+          direction = 'Right', size = { Percent = 50 },
+          command = { args = {
+            'sh', '-c',
+            'python3 ' .. wezterm.shell_quote_arg(render_bin) .. ' ' .. wezterm.shell_quote_arg(path)
+            .. '; printf "\\n\\033[2m  press Enter to close \\033[0m"; read -r _',
+          }},
+        }, p
+      )
+      w:toast_notification('TurtleTerm Render', path:match('[^/]+$') or path, nil, 2000)
+    end
+
     -- 1. Try selection
     local path = ''
     local sel = window:get_selection_text_for_pane(pane)
-    if sel and sel:match('^[%w_/%.%-~]+$') and #sel < 300 then
+    if sel and sel:match('^[%w_/%.%-~%.]+$') and #sel < 400 then
       path = sel:gsub('^%s+', ''):gsub('%s+$', '')
     end
-    -- 2. Try input zone
+
+    -- 2. Try last output zone — scan for file path patterns
+    if path == '' then
+      pcall(function()
+        local zones = pane:get_semantic_zones()
+        for _, z in ipairs(zones) do
+          if z.semantic_type == 'Output' then
+            local text = pane:get_text_from_semantic_zone(z) or ''
+            -- Match absolute or relative paths with known visual extensions
+            local m = text:match('([%w_/%.%-~]+%.%a+)')
+            if m and m:match('%.(png|jpg|jpeg|gif|webp|bmp|svg|pdf|csv|json|md)$') then
+              path = m
+            end
+          end
+        end
+      end)
+    end
+
+    -- 3. Try input zone
     if path == '' then
       pcall(function()
         local zones = pane:get_semantic_zones()
         for _, z in ipairs(zones) do
           if z.semantic_type == 'Input' then
             local t = pane:get_text_from_semantic_zone(z)
-            if t then path = t:gsub('^%s+', ''):gsub('%s+$', '') end
+            if t then path = t:gsub('^%s+', ''):gsub('%s+$', ''):match('[^%s]+$') or '' end
           end
         end
       end)
     end
 
-    local image_exts = { png=1, jpg=1, jpeg=1, gif=1, bmp=1, webp=1, svg=1, tiff=1, tif=1, ico=1 }
-    local ext = path:lower():match('%.([a-z]+)$') or ''
-
-    if path == '' then
-      -- 3. Prompt
-      window:perform_action(act.PromptInputLine {
-        description = '🐢 Preview file: enter path',
-        action = wezterm.action_callback(function(w2, p2, line)
-          if line and line ~= '' then
-            local ext2 = line:lower():match('%.([a-z]+)$') or ''
-            local is_img = image_exts[ext2] ~= nil
-            w2:perform_action(act.SpawnCommandInNewPane {
-              direction = 'Right', size = { Percent = 50 },
-              command = { args = is_img
-                and {'sh', '-c', 'imgcat ' .. line .. '; printf "\\npress Enter..."; read -r _'}
-                or  {'sh', '-c', 'bat --paging=never ' .. line .. ' 2>/dev/null || cat ' .. line .. '; printf "\\npress Enter..."; read -r _'}
-              },
-            }, p2)
-          end
-        end),
-      }, pane)
+    if path ~= '' then
+      spawn_render(window, pane, path)
       return
     end
 
-    local is_img = image_exts[ext] ~= nil
-    window:perform_action(
-      act.SpawnCommandInNewPane {
-        direction = 'Right', size = { Percent = 50 },
-        command = { args = is_img
-          and {'sh', '-c', 'imgcat ' .. path .. ' 2>/dev/null; printf "\\npress Enter..."; read -r _'}
-          or  {'sh', '-c', 'bat --paging=never ' .. path .. ' 2>/dev/null || cat ' .. path .. '; printf "\\npress Enter..."; read -r _'}
-        },
-      }, pane
-    )
-    window:toast_notification('TurtleTerm Preview', path, nil, 2000)
+    -- 4. Prompt
+    window:perform_action(act.PromptInputLine {
+      description = '◆ Render file: enter path (image/PDF/CSV/JSON/code)',
+      action = wezterm.action_callback(function(w2, p2, line)
+        if line and line ~= '' then
+          spawn_render(w2, p2, line)
+        end
+      end),
+    }, pane)
   end)
 end
 
@@ -1398,7 +1412,7 @@ local PALETTE_COMMANDS = {
   -- Navigation
   { label = '🔍  History fuzzy search       CTRL+R',        id = 'history_search' },
   { label = '🔍  Search output              CTRL+SHIFT+F',  id = 'search_output' },
-  { label = '👁  Preview file (bat/imgcat)  CTRL+SHIFT+P',  id = 'preview' },
+  { label = '👁  Render file (img/PDF/CSV/JSON)  CTRL+SHIFT+P',  id = 'preview' },
   { label = '🗺  Atlas context              CTRL+SHIFT+A',  id = 'atlas_context' },
   -- Workflows
   { label = '⚙   Browse workflows           CTRL+SHIFT+W', id = 'workflows' },

@@ -308,6 +308,69 @@ if (( ${chpwd_functions[(I)_turtle_mesh_cd]} == 0 )); then
 fi
 
 # ============================================================
+# Inline file rendering
+# ============================================================
+
+_turtle_render_bin() {
+    local _bin
+    _bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-render"
+    [[ -x "$_bin" ]] && echo "$_bin" && return
+    echo "turtle-render"
+}
+
+# smart cat: auto-renders images/PDF/CSV/JSON inline; falls through to system cat otherwise.
+# Disable with TURTLE_SMART_CAT=0.
+_TURTLE_IMAGE_EXTS=(png jpg jpeg gif webp bmp ico tiff tif avif svg)
+_TURTLE_RENDER_EXTS=(pdf csv tsv json md markdown)
+
+cat() {
+    if [[ "${TURTLE_SMART_CAT:-1}" == "0" ]]; then
+        command cat "$@"
+        return
+    fi
+    local visual=0
+    for arg in "$@"; do
+        [[ "$arg" == -* ]] && continue
+        local ext="${arg:l:e}"  # lowercase extension
+        if (( ${_TURTLE_IMAGE_EXTS[(I)$ext]} )) || (( ${_TURTLE_RENDER_EXTS[(I)$ext]} )); then
+            visual=1
+            break
+        fi
+    done
+    if (( visual )); then
+        local _rbin; _rbin="$(_turtle_render_bin)"
+        local render_args=()
+        for arg in "$@"; do
+            [[ "$arg" == -* ]] && { command cat "$@"; return; }
+            render_args+=("$arg")
+        done
+        "$_rbin" "${render_args[@]}"
+    else
+        command cat "$@"
+    fi
+}
+
+# lsi — ls with inline image thumbnails (width=18 cols each)
+lsi() {
+    local dir="${1:-.}"
+    local _rbin; _rbin="$(_turtle_render_bin)"
+    local found=0
+    for f in "$dir"/*.{png,jpg,jpeg,gif,webp,bmp,tiff,svg}(N); do
+        [[ -f "$f" ]] || continue
+        found=1
+        printf "\033[38;2;88;166;255m%s\033[0m\n" "$(basename "$f")"
+        "$_rbin" --width 18 "$f" 2>/dev/null
+    done
+    (( found )) || ls "$dir"
+}
+
+# vv — visual view: always renders regardless of file type (explicit alias)
+vv() {
+    local _rbin; _rbin="$(_turtle_render_bin)"
+    "$_rbin" "$@"
+}
+
+# ============================================================
 # AI ghost-text — two modes:
 #   1. Explicit: ALT+/ or CTRL+SPACE fires immediately (synchronous)
 #   2. Debounced: auto-fires after ~1s of idle if ANTHROPIC_API_KEY set

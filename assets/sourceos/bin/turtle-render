@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""turtle-render — inline file renderer for TurtleTerm.
+
+Renders files inside the terminal using protocol-appropriate methods:
+  Images  (.png .jpg .gif .webp .svg .bmp .ico) — iTerm2/WezTerm inline protocol
+  PDFs    (.pdf)      — first page via pdftoppm/Pillow → inline image + metadata
+  CSV     (.csv .tsv) — aligned table printed inline
+  JSON    (.json)     — colorized pretty-print
+  TOML/YAML (.toml .yaml .yml) — syntax-highlighted via bat
+  Markdown (.md .markdown) — rendered via mdcat or bat
+  Code    (anything else) — bat with syntax highlight + line numbers
+
+Usage:
+  turtle-render file.png
+  turtle-render data.csv
+  turtle-render --width 100 diagram.svg
+  cat file.json | turtle-render --stdin --type json
+  turtle-render file.pdf --page 2
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import csv
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+# ── image rendering (iTerm2 / WezTerm inline protocol) ────────────────────────
+
+def emit_image_bytes(data: bytes, filename: str = "", width: int = 0) -> None:
+    b64 = base64.b64encode(data).decode("ascii")
+    size = len(data)
+    fn_b64 = base64.b64encode(filename.encode()).decode() if filename else ""
+    parts = [f"size={size}", "inline=1"]
+    if fn_b64:
+        parts.append(f"name={fn_b64}")
+    if width:
+        parts.append(f"width={width}")
+    sys.stdout.buffer.write(f"\x1b]1337;File={';'.join(parts)}:{b64}\x07\n".encode())
+    sys.stdout.buffer.flush()
+
+
+def render_image(path: Path, width: int = 0) -> bool:
+    try:
+        data = path.read_bytes()
+        emit_image_bytes(data, path.name, width)
+        dim_info = ""
+        # Try to get dimensions via PIL
+        try:
+            from PIL import Image as _PILImage  # type: ignore
+            with _PILImage.open(path) as img:
+                dim_info = f"  {img.width}×{img.height}  {img.mode}"
+        except Exception:
+            pass
+        size_kb = len(data) / 1024
+        print(f"\033[2m  {path.name}  {size_kb:.1f}KB{dim_info}\033[0m")
+        return True
+    except Exception as e:
+        print(f"render_image: {e}", file=sys.stderr)
+        return False
+
+
+def render_svg(path: Path, width: int = 0) -> bool:
+    # Try cairosvg → PNG → inline
+    try:
+        import cairosvg  # type: ignore
+        png_data = cairosvg.svg2png(url=str(path), output_width=800)
+        emit_image_bytes(png_data, path.name, width or 80)
+        print(f"\033[2m  {path.name}  (SVG→PNG)\033[0m")
+        return True
+    except Exception:
+        pass
+    # Fallback: show as source code
+    return render_code(path)
+
+
+# ── PDF rendering ──────────────────────────────────────────────────────────────
+
+def render_pdf(path: Path, page: int = 1, width: int = 0) -> bool:
+    # Try pdftoppm (poppler-utils)
+    if shutil.which("pdftoppm"):
+        try:
+            result = subprocess.run(
+                ["pdftoppm", "-r", "144", "-f", str(page), "-l", str(page),
+                 "-png", "-singlefile", str(path), "/tmp/turtle-pdf-render"],
+                capture_output=True, timeout=15,
+            )
+            png_path = Path("/tmp/turtle-pdf-render.png")
+            if png_path.exists():
+                data = png_path.read_bytes()
+                emit_image_bytes(data, f"{path.name} (p{page})", width or 80)
+                png_path.unlink(missing_ok=True)
+                # Show metadata
+                _show_pdf_meta(path)
+                return True
+        except Exception:
+            pass
+
+    # Try Pillow (PDF support requires Pillow + poppler or pdf2image)
+    try:
+        from pdf2image import convert_from_path  # type: ignore
+        imgs = convert_from_path(str(path), first_page=page, last_page=page, dpi=144)
+        if imgs:
+            buf = io.BytesIO()
+            imgs[0].save(buf, format="PNG")
+            emit_image_bytes(buf.getvalue(), f"{path.name} (p{page})", width or 80)
+            _show_pdf_meta(path)
+            return True
+    except Exception:
+        pass
+
+    # Final fallback: metadata only
+    return _show_pdf_meta(path)
+
+
+def _show_pdf_meta(path: Path) -> bool:
+    meta_lines = [f"\033[38;2;88;166;255m◆ PDF\033[0m  {path.name}"]
+    if shutil.which("pdfinfo"):
+        try:
+            out = subprocess.check_output(["pdfinfo", str(path)], timeout=5, text=True)
+            for line in out.splitlines()[:8]:
+                if any(k in line for k in ("Pages:", "Title:", "Author:", "Creator:", "File size")):
+                    meta_lines.append(f"  \033[2m{line.strip()}\033[0m")
+        except Exception:
+            pass
+    print("\n".join(meta_lines))
+    return True
+
+
+# ── CSV / TSV rendering ────────────────────────────────────────────────────────
+
+def render_csv(path: Path | None = None, text: str | None = None, max_rows: int = 40) -> bool:
+    try:
+        if path:
+            text = path.read_text(errors="replace")
+        if not text:
+            return False
+
+        dialect = "excel-tab" if (path and path.suffix == ".tsv") else "excel"
+        reader = csv.reader(io.StringIO(text), dialect=dialect)
+        rows = list(reader)
+        if not rows:
+            print("(empty CSV)")
+            return True
+
+        header = rows[0]
+        data_rows = rows[1:max_rows + 1]
+        truncated = len(rows) - 1 > max_rows
+
+        # Compute column widths
+        col_w = [len(h) for h in header]
+        for row in data_rows:
+            for i, cell in enumerate(row):
+                if i < len(col_w):
+                    col_w[i] = max(col_w[i], min(len(cell), 40))
+
+        def fmt_row(row: list[str], color: str = "") -> str:
+            cells = []
+            for i, cell in enumerate(row):
+                w = col_w[i] if i < len(col_w) else 10
+                cells.append(cell[:w].ljust(w))
+            return color + "  " + "  │  ".join(cells) + "\033[0m"
+
+        sep = "  " + "──┼──".join("─" * w for w in col_w)
+
+        print()
+        print(fmt_row(header, "\033[38;2;88;166;255m\033[1m"))
+        print(f"\033[2m{sep}\033[0m")
+        for row in data_rows:
+            print(fmt_row(row))
+        if truncated:
+            print(f"\033[2m  … {len(rows)-1-max_rows} more rows\033[0m")
+        print(f"\033[2m  {len(header)} columns  ·  {len(rows)-1} rows\033[0m")
+        print()
+        return True
+    except Exception as e:
+        print(f"render_csv: {e}", file=sys.stderr)
+        return False
+
+
+# ── JSON rendering ─────────────────────────────────────────────────────────────
+
+def render_json(path: Path | None = None, text: str | None = None) -> bool:
+    if path:
+        text = path.read_text(errors="replace")
+    if not text:
+        return False
+
+    # Try bat for syntax highlight first
+    if shutil.which("bat"):
+        try:
+            subprocess.run(
+                ["bat", "--language=json", "--style=numbers,header-filename",
+                 "--color=always", "--paging=never"] +
+                ([str(path)] if path else []),
+                input=text.encode() if not path else None,
+                check=False, timeout=10,
+            )
+            return True
+        except Exception:
+            pass
+
+    # Fallback: python pretty-print
+    try:
+        parsed = json.loads(text)
+        pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+        print(pretty[:8000])
+        if len(pretty) > 8000:
+            print("\033[2m  … truncated\033[0m")
+        return True
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}", file=sys.stderr)
+        return False
+
+
+# ── markdown rendering ─────────────────────────────────────────────────────────
+
+def render_markdown(path: Path) -> bool:
+    for cmd in [["mdcat", str(path)], ["glow", str(path)], ["bat", "--language=md", "--style=full", str(path)]]:
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.run(cmd, check=False, timeout=15)
+                return True
+            except Exception:
+                pass
+    return render_code(path)
+
+
+# ── generic code rendering ─────────────────────────────────────────────────────
+
+def render_code(path: Path) -> bool:
+    if shutil.which("bat"):
+        try:
+            subprocess.run(
+                ["bat", "--style=numbers,header-filename,grid", "--color=always", "--paging=never", str(path)],
+                check=False, timeout=15,
+            )
+            return True
+        except Exception:
+            pass
+    try:
+        print(path.read_text(errors="replace"))
+        return True
+    except Exception as e:
+        print(f"render_code: {e}", file=sys.stderr)
+        return False
+
+
+# ── dispatcher ─────────────────────────────────────────────────────────────────
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff", ".tif", ".avif"}
+CODE_EXTS  = {".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".c", ".cpp", ".h",
+              ".java", ".rb", ".sh", ".bash", ".zsh", ".lua", ".toml", ".yaml", ".yml",
+              ".tf", ".hcl", ".sql", ".css", ".scss", ".html", ".xml", ".dockerfile"}
+
+
+def render_file(path: Path, width: int = 0, page: int = 1) -> bool:
+    ext = path.suffix.lower()
+
+    if ext in IMAGE_EXTS:
+        return render_image(path, width)
+    if ext == ".svg":
+        return render_svg(path, width)
+    if ext == ".pdf":
+        return render_pdf(path, page, width)
+    if ext in {".csv", ".tsv"}:
+        return render_csv(path)
+    if ext == ".json":
+        return render_json(path)
+    if ext in {".md", ".markdown"}:
+        return render_markdown(path)
+    if ext in CODE_EXTS or path.stat().st_size < 512 * 1024:
+        return render_code(path)
+
+    # Binary / unknown: show metadata
+    size = path.stat().st_size
+    print(f"\033[38;2;139;148;158m  {path.name}  {size/1024:.1f}KB  (binary — no renderer)\033[0m")
+    return True
+
+
+# ── main ───────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="TurtleTerm inline file renderer")
+    parser.add_argument("files", nargs="*")
+    parser.add_argument("--width", type=int, default=0, help="image width in columns")
+    parser.add_argument("--page",  type=int, default=1, help="PDF page number")
+    parser.add_argument("--stdin", action="store_true", help="read from stdin")
+    parser.add_argument("--type",  default="", help="force file type (json/csv/image/code)")
+    args = parser.parse_args()
+
+    ok = True
+
+    if args.stdin or (not args.files and not sys.stdin.isatty()):
+        data = sys.stdin.buffer.read()
+        ftype = args.type.lower()
+        if ftype == "image":
+            emit_image_bytes(data, "stdin", args.width)
+        elif ftype in ("json", ""):
+            try:
+                json.loads(data)
+                render_json(text=data.decode(errors="replace"))
+            except Exception:
+                render_csv(text=data.decode(errors="replace"))
+        elif ftype == "csv":
+            render_csv(text=data.decode(errors="replace"))
+        else:
+            sys.stdout.buffer.write(data)
+        return
+
+    for fname in args.files:
+        path = Path(fname).expanduser()
+        if not path.exists():
+            print(f"turtle-render: not found: {fname}", file=sys.stderr)
+            ok = False
+            continue
+        if not render_file(path, args.width, args.page):
+            ok = False
+
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()
