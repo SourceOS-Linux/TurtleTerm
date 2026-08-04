@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""turtle-capture — capture terminal output to Goose Notes + memory mesh.
+
+Usage:
+  some-command | turtle-capture "note title"   # pipe output
+  turtle-capture                                # capture last history entry
+  turtle-capture -f output.txt                  # read from file
+
+Output goes to:
+  1. ~/notes/{YYYY-MM-DD}-{slug}.md             (Goose Notes pickup dir)
+  2. ~/.local/state/sourceos/memory-mesh/context.jsonl  (mesh event)
+  3. Goose Notes HTTP API on :8765 (if running)
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib import error as urlerr
+from urllib import request as urlreq
+
+MESH_DIR = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
+HISTORY_FILE = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "terminal" / "history.jsonl"
+NOTES_DIR = Path(os.getenv("GOOSE_NOTES_DIR", str(Path.home() / "notes")))
+GOOSE_API = os.getenv("GOOSE_NOTES_API", "http://localhost:8765")
+NOETICA_URL = os.getenv("NOETICA_URL", "http://localhost:7700")
+
+
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def slugify(s: str) -> str:
+    s = s.lower().strip()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"[\s_-]+", "-", s)
+    return s[:60]
+
+
+def git_branch() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.DEVNULL, timeout=2, text=True
+        ).strip()
+    except Exception:
+        return ""
+
+
+def last_history_entry() -> dict | None:
+    if not HISTORY_FILE.exists():
+        return None
+    try:
+        lines = HISTORY_FILE.read_text(errors="replace").splitlines()
+        for line in reversed(lines):
+            try:
+                return json.loads(line)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
+def write_mesh_event(kind: str, title: str, content: str, source: str = "terminal") -> None:
+    MESH_DIR.mkdir(parents=True, exist_ok=True)
+    ctx_file = MESH_DIR / "context.jsonl"
+    event = {
+        "ts": now_iso(),
+        "kind": kind,
+        "source": source,
+        "title": title,
+        "content": content[:500],
+    }
+    with ctx_file.open("a") as f:
+        f.write(json.dumps(event) + "\n")
+    # Cap at 5000 lines
+    try:
+        lines = ctx_file.read_text(errors="replace").splitlines()
+        if len(lines) > 5000:
+            ctx_file.write_text("\n".join(lines[-5000:]) + "\n")
+    except Exception:
+        pass
+
+
+def write_active_context(cwd: str, branch: str, title: str) -> None:
+    MESH_DIR.mkdir(parents=True, exist_ok=True)
+    active = {
+        "updated": now_iso(),
+        "cwd": cwd,
+        "branch": branch,
+        "focus": title,
+    }
+    (MESH_DIR / "active.json").write_text(json.dumps(active, indent=2))
+
+
+def write_note_file(title: str, body: str, cwd: str, branch: str, tags: list[str]) -> Path:
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    date = datetime.date.today().isoformat()
+    slug = slugify(title)
+    fname = NOTES_DIR / f"{date}-{slug}.md"
+
+    branch_line = f"\nbranch: {branch}" if branch else ""
+    frontmatter = f"""---
+title: "{title}"
+date: {now_iso()}
+source: terminal
+cwd: {cwd}{branch_line}
+tags: [{", ".join(tags)}]
+---
+
+"""
+    fname.write_text(frontmatter + body)
+    return fname
+
+
+def post_to_goose_notes(title: str, body: str, tags: list[str]) -> bool:
+    payload = json.dumps({
+        "title": title,
+        "body": body,
+        "tags": tags,
+        "source_type": "terminal",
+    }).encode()
+    try:
+        req = urlreq.Request(
+            f"{GOOSE_API}/api/notes",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urlreq.urlopen(req, timeout=2) as r:
+            return r.status < 300
+    except Exception:
+        return False
+
+
+def generate_title_via_noetica(content: str) -> str:
+    """Ask Noetica to suggest a note title from content."""
+    try:
+        payload = json.dumps({
+            "messages": [{
+                "role": "user",
+                "content": (
+                    f"Generate a concise, descriptive title (max 8 words) for this terminal capture:\n\n"
+                    f"{content[:400]}\n\nReply with ONLY the title, nothing else."
+                ),
+            }],
+            "stream": False,
+        }).encode()
+        req = urlreq.Request(
+            f"{NOETICA_URL}/api/chat",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urlreq.urlopen(req, timeout=3) as r:
+            data = json.load(r)
+            content_out = data.get("message", {}).get("content", "") or data.get("content", "")
+            title = content_out.strip().strip('"').strip("'")
+            if title and len(title) < 100:
+                return title
+    except Exception:
+        pass
+    return ""
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Capture terminal output to Goose Notes + memory mesh")
+    parser.add_argument("title", nargs="?", default="", help="Note title (auto-generated if omitted)")
+    parser.add_argument("-f", "--file", help="Read content from file instead of stdin")
+    parser.add_argument("-t", "--tag", action="append", default=[], help="Add tag")
+    parser.add_argument("--no-notes", action="store_true", help="Skip writing to ~/notes/")
+    parser.add_argument("--no-mesh", action="store_true", help="Skip writing to memory mesh")
+    parser.add_argument("--context", action="store_true", help="Include last shell history as context")
+    args = parser.parse_args()
+
+    cwd = os.getcwd()
+    branch = git_branch()
+
+    # Read content
+    if args.file:
+        try:
+            content = Path(args.file).read_text(errors="replace")
+        except Exception as e:
+            print(f"turtle-capture: cannot read {args.file}: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif not sys.stdin.isatty():
+        content = sys.stdin.read()
+    else:
+        # No pipe: capture last history entry
+        entry = last_history_entry()
+        if not entry:
+            print("turtle-capture: no stdin and no history — pipe output or use -f", file=sys.stderr)
+            sys.exit(1)
+        cmd = entry.get("cmd", "")
+        content = f"$ {cmd}\n\n(exit {entry.get('exit', 0)}, {entry.get('duration', 0):.1f}s)"
+        if not args.title:
+            args.title = cmd[:60]
+
+    if not content.strip():
+        print("turtle-capture: empty content, nothing to capture", file=sys.stderr)
+        sys.exit(1)
+
+    # Context block
+    if args.context:
+        entry = last_history_entry()
+        if entry:
+            content = f"$ {entry.get('cmd', '')}\n\n{content}"
+
+    # Generate title
+    title = args.title.strip()
+    if not title:
+        title = generate_title_via_noetica(content)
+    if not title:
+        # Fallback: first non-empty line
+        for line in content.splitlines():
+            line = line.strip().lstrip("$").strip()
+            if line:
+                title = line[:60]
+                break
+    if not title:
+        title = f"Capture {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+    tags = args.tag or ["terminal"]
+    if branch:
+        tags.append(branch)
+
+    # Format body with context header
+    branch_info = f" · {branch}" if branch else ""
+    body = f"**Source:** `{cwd}`{branch_info}\n\n```\n{content.rstrip()}\n```\n"
+
+    results = []
+
+    # Write to ~/notes/
+    if not args.no_notes:
+        note_path = write_note_file(title, body, cwd, branch, tags)
+        results.append(f"note: {note_path}")
+
+    # Write to memory mesh
+    if not args.no_mesh:
+        write_mesh_event("capture", title, content[:500], source="terminal")
+        write_active_context(cwd, branch, title)
+        results.append("mesh: updated")
+
+    # Try Goose Notes API
+    if post_to_goose_notes(title, body, tags):
+        results.append("goose-notes-api: synced")
+
+    print(f"captured: {title!r}")
+    for r in results:
+        print(f"  → {r}")
+
+
+if __name__ == "__main__":
+    main()

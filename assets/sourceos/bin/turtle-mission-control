@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""turtle-mission-control — live multi-agent status panel.
+
+CMD+SHIFT+M in TurtleTerm opens this in a bottom split.
+Shows: all running AI agents, memory mesh recent events, Noetica health.
+Auto-refreshes every 2s using ANSI in-place rewrite.
+
+Agents tracked:
+  - Claude Code  (claude, claude-code, claude_code)
+  - Goose        (goose, goose-notes)
+  - Noetica      (noetica, prophetd, noetica-agent)
+  - Autonomous   (turtle-autonomous, turtle-agent)
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib import request as urlreq
+
+NOETICA_URL = os.getenv("NOETICA_URL", "http://localhost:7700")
+BEARBROWSER_PORT = int(os.getenv("BEARBROWSER_PORT", "9339"))
+MESH_DIR = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
+HISTORY_FILE = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "terminal" / "history.jsonl"
+
+# TurtleTerm Dark palette (ANSI 24-bit)
+C_BG       = "\033[48;2;13;17;23m"
+C_RESET    = "\033[0m"
+C_DIM      = "\033[2m"
+C_BOLD     = "\033[1m"
+C_TEAL     = "\033[38;2;63;185;80m"      # green-teal — running
+C_BLUE     = "\033[38;2;88;166;255m"     # blue — headings
+C_ORANGE   = "\033[38;2;255;123;114m"    # orange/red — errors
+C_YELLOW   = "\033[38;2;210;153;34m"     # yellow — warnings
+C_WHITE    = "\033[38;2;230;237;243m"    # fg
+C_GREY     = "\033[38;2;139;148;158m"    # dim fg
+C_PURPLE   = "\033[38;2;188;140;255m"    # purple — memory mesh
+C_CYAN     = "\033[38;2;0;200;200m"      # cyan — BearBrowser
+
+AGENT_PATTERNS = [
+    ("Claude Code", re.compile(r'claude[\-_]?code|claude --', re.I)),
+    ("Goose",       re.compile(r'\bgoose\b', re.I)),
+    ("Noetica",     re.compile(r'noetica|prophetd|noetica.agent', re.I)),
+    ("Autonomous",  re.compile(r'turtle.auto|turtle.agent|autonomous', re.I)),
+]
+
+
+def elapsed(start_ts: str) -> str:
+    try:
+        t = datetime.datetime.fromisoformat(start_ts.replace("Z", "+00:00"))
+        s = int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds())
+        if s < 60:
+            return f"{s}s"
+        elif s < 3600:
+            return f"{s//60}m{s%60:02d}s"
+        else:
+            return f"{s//3600}h{(s%3600)//60:02d}m"
+    except Exception:
+        return "?"
+
+
+def get_running_agents() -> list[dict]:
+    agents = []
+    try:
+        out = subprocess.check_output(["ps", "aux"], text=True, timeout=3)
+        for line in out.splitlines()[1:]:
+            parts = line.split(None, 10)
+            if len(parts) < 11:
+                continue
+            pid, cpu, mem, cmd = parts[1], parts[2], parts[3], parts[10]
+            if "/bin/ps" in cmd or "turtle-mission" in cmd:
+                continue
+            for name, pat in AGENT_PATTERNS:
+                if pat.search(cmd):
+                    agents.append({
+                        "name": name,
+                        "pid": pid,
+                        "cpu": cpu,
+                        "mem": mem,
+                        "cmd": cmd[:100],
+                    })
+                    break
+    except Exception:
+        pass
+    return agents
+
+
+def noetica_status() -> dict:
+    try:
+        with urlreq.urlopen(f"{NOETICA_URL}/health", timeout=1) as r:
+            data = json.load(r)
+            return {"ok": True, "data": data}
+    except Exception:
+        pass
+    return {"ok": False}
+
+
+def bearbrowser_status() -> dict:
+    try:
+        with urlreq.urlopen(f"http://127.0.0.1:{BEARBROWSER_PORT}/health", timeout=1) as r:
+            data = json.load(r)
+            tabs = data.get("tabs", 0)
+            return {"ok": True, "tabs": tabs}
+    except Exception:
+        pass
+    return {"ok": False}
+
+
+def recent_mesh_events(limit: int = 8) -> list[dict]:
+    ctx = MESH_DIR / "context.jsonl"
+    if not ctx.exists():
+        return []
+    events = []
+    try:
+        lines = ctx.read_text(errors="replace").splitlines()
+        for line in lines[-100:]:
+            try:
+                events.append(json.loads(line))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return events[-limit:]
+
+
+def recent_commands(limit: int = 5) -> list[dict]:
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        lines = HISTORY_FILE.read_text(errors="replace").splitlines()
+        cmds = []
+        for line in lines[-50:]:
+            try:
+                cmds.append(json.loads(line))
+            except Exception:
+                pass
+        return cmds[-limit:]
+    except Exception:
+        return []
+
+
+def hr(width: int = 70) -> str:
+    return C_GREY + "─" * width + C_RESET
+
+
+def format_panel(agents: list[dict], noetica: dict, bb: dict, mesh: list[dict], cmds: list[dict], now: str) -> str:
+    lines = []
+    W = 72
+
+    # Header
+    lines.append("")
+    lines.append(f"  {C_BLUE}{C_BOLD}◆ Mission Control{C_RESET}  {C_GREY}{now}  q=quit  r=refresh{C_RESET}")
+    lines.append(f"  {hr(W)}")
+
+    # Agents section
+    lines.append(f"  {C_BLUE}AGENTS{C_RESET}  {C_GREY}({len(agents)} running){C_RESET}")
+    if not agents:
+        lines.append(f"  {C_DIM}  — no agent processes detected{C_RESET}")
+    for ag in agents:
+        status_c = C_TEAL
+        lines.append(
+            f"  {status_c}●{C_RESET}  {C_WHITE}{ag['name']:<14}{C_RESET}"
+            f"  {C_GREY}pid={ag['pid']}  cpu={ag['cpu']}%  mem={ag['mem']}%{C_RESET}"
+        )
+        cmd_preview = ag["cmd"][:55].strip()
+        lines.append(f"     {C_DIM}{cmd_preview}{C_RESET}")
+
+    lines.append(f"  {hr(W)}")
+
+    # Services section
+    lines.append(f"  {C_BLUE}SERVICES{C_RESET}")
+
+    noe_dot = (C_TEAL + "●") if noetica["ok"] else (C_ORANGE + "○")
+    noe_detail = ""
+    if noetica["ok"]:
+        d = noetica.get("data", {})
+        brain = d.get("brain", "?")
+        queries = d.get("queries", "?")
+        noe_detail = f"  brain={brain}  queries={queries}"
+    else:
+        noe_detail = "  unreachable — start noetica or set NOETICA_URL"
+    lines.append(f"  {noe_dot}{C_RESET}  {C_WHITE}Noetica{C_RESET}  {C_GREY}{noe_detail}{C_RESET}")
+
+    bb_dot = (C_CYAN + "●") if bb["ok"] else (C_ORANGE + "○")
+    bb_detail = f"  {bb.get('tabs', 0)} tab(s)" if bb["ok"] else "  unreachable — open BearBrowser"
+    lines.append(f"  {bb_dot}{C_RESET}  {C_WHITE}BearBrowser{C_RESET}  {C_GREY}{bb_detail}{C_RESET}")
+
+    lines.append(f"  {hr(W)}")
+
+    # Memory mesh section
+    lines.append(f"  {C_PURPLE}MEMORY MESH{C_RESET}  {C_GREY}(recent events){C_RESET}")
+    if not mesh:
+        lines.append(f"  {C_DIM}  — no events yet (turtle-capture to add){C_RESET}")
+    for ev in reversed(mesh):
+        ts = ev.get("ts", "")[:16]
+        kind = ev.get("kind", "?")[:12]
+        src = ev.get("source", "?")[:10]
+        title = ev.get("title", ev.get("content", ""))[:50]
+        lines.append(
+            f"  {C_PURPLE}·{C_RESET}  {C_GREY}{ts}{C_RESET}"
+            f"  {C_YELLOW}{kind:<12}{C_RESET}"
+            f"  {C_GREY}[{src}]{C_RESET}"
+            f"  {C_WHITE}{title}{C_RESET}"
+        )
+
+    lines.append(f"  {hr(W)}")
+
+    # Recent shell history
+    lines.append(f"  {C_BLUE}RECENT SHELL{C_RESET}  {C_GREY}(last 5 commands){C_RESET}")
+    if not cmds:
+        lines.append(f"  {C_DIM}  — no history yet{C_RESET}")
+    for c in reversed(cmds):
+        cmd = c.get("cmd", "")[:60]
+        ex = c.get("exit", 0)
+        dur = c.get("duration", 0)
+        ex_c = C_TEAL if ex == 0 else C_ORANGE
+        dur_s = f"  {dur:.0f}s" if dur and dur > 0.5 else ""
+        lines.append(f"  {ex_c}{'✓' if ex==0 else f'✗{ex}'}{C_RESET}  {C_WHITE}{cmd}{C_RESET}{C_GREY}{dur_s}{C_RESET}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true", help="print once and exit (no live refresh)")
+    args = parser.parse_args()
+
+    if args.once:
+        agents = get_running_agents()
+        noetica = noetica_status()
+        bb = bearbrowser_status()
+        mesh = recent_mesh_events()
+        cmds = recent_commands()
+        now = datetime.datetime.now().strftime("%H:%M:%S")
+        print(format_panel(agents, noetica, bb, mesh, cmds, now))
+        return
+
+    # Live refresh loop
+    try:
+        while True:
+            agents = get_running_agents()
+            noetica = noetica_status()
+            bb = bearbrowser_status()
+            mesh = recent_mesh_events()
+            cmds = recent_commands()
+            now = datetime.datetime.now().strftime("%H:%M:%S")
+            panel = format_panel(agents, noetica, bb, mesh, cmds, now)
+
+            # Count lines for in-place rewrite
+            panel_lines = panel.splitlines()
+            n = len(panel_lines)
+
+            # Move cursor up by n lines if not first paint
+            if hasattr(main, "_painted"):
+                sys.stdout.write(f"\033[{main._painted}A\033[J")
+            main._painted = n
+
+            sys.stdout.write(panel + "\n")
+            sys.stdout.flush()
+
+            # Wait for 2s but break on 'q'
+            import select
+            rlist, _, _ = select.select([sys.stdin], [], [], 2.0)
+            if rlist:
+                ch = sys.stdin.read(1)
+                if ch in ("q", "Q", "\x03"):
+                    break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write(C_RESET + "\n")
+
+
+if __name__ == "__main__":
+    main()

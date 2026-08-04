@@ -1040,6 +1040,133 @@ local function turtle_atlas_context()
 end
 
 -- ============================================================
+-- Mission Control (CMD+SHIFT+M) — multi-agent status panel
+-- Opens turtle-mission-control in a bottom split (25% height).
+-- ============================================================
+
+local function turtle_mission_control()
+  return wezterm.action_callback(function(window, pane)
+    -- Toggle: close if already open
+    local mc_id = wezterm.GLOBAL.mission_control_pane_id
+    if mc_id then
+      local found = false
+      for _, p in ipairs(window:mux_window():panes()) do
+        if p:pane_id() == mc_id then found = true; break end
+      end
+      if found then
+        wezterm.GLOBAL.mission_control_pane_id = nil
+        window:toast_notification('TurtleTerm', 'Mission Control closed', nil, 1500)
+        return
+      end
+    end
+    local new_pane = pane:split {
+      direction = 'Bottom',
+      size = 0.28,
+      command = {
+        args = {
+          'python3', turtle_bin('turtle-mission-control'),
+        },
+      },
+    }
+    if new_pane then
+      wezterm.GLOBAL.mission_control_pane_id = new_pane:pane_id()
+    end
+  end)
+end
+
+-- ============================================================
+-- Capture (CMD+SHIFT+C) — save selection/last-output to Goose Notes + mesh
+-- ============================================================
+
+local function turtle_capture_selection()
+  return wezterm.action_callback(function(window, pane)
+    local sel = window:get_selection_text_for_pane(pane)
+    -- Fall back to last output zone
+    if not sel or sel == '' then
+      pcall(function()
+        local zones = pane:get_semantic_zones()
+        for _, z in ipairs(zones) do
+          if z.semantic_type == 'Output' then
+            sel = pane:get_text_from_semantic_zone(z) or ''
+          end
+        end
+      end)
+    end
+    if not sel or sel == '' then
+      window:toast_notification('TurtleTerm', 'Select output first, then CMD+SHIFT+C to capture', nil, 3000)
+      return
+    end
+    local tmp = '/tmp/turtle-capture-sel.txt'
+    local f = io.open(tmp, 'w')
+    if f then f:write(sel); f:close() end
+    window:perform_action(
+      act.SpawnCommandInNewPane {
+        direction = 'Bottom',
+        size = { Percent = 20 },
+        command = { args = {
+          'sh', '-c',
+          'python3 "' .. turtle_bin('turtle-capture') .. '" < /tmp/turtle-capture-sel.txt'
+          .. ' && printf "\\n  captured ✓ — press Enter to close\\n" && read -r _'
+          .. ' || (printf "\\ncapture failed\\n"; read -r _)',
+        }},
+      }, pane
+    )
+    window:toast_notification('TurtleTerm', 'Capturing to Goose Notes…', nil, 2000)
+  end)
+end
+
+-- ============================================================
+-- Recall (CMD+SHIFT+L) — query memory mesh in a split pane
+-- ============================================================
+
+local function turtle_recall()
+  return wezterm.action_callback(function(window, pane)
+    window:perform_action(
+      act.PromptInputLine {
+        description = '◆ Memory Recall — describe what you\'re looking for',
+        action = wezterm.action_callback(function(w, p, query)
+          if not query or query == '' then return end
+          w:perform_action(
+            act.SpawnCommandInNewPane {
+              direction = 'Right',
+              size = { Percent = 42 },
+              command = { args = {
+                'sh', '-c',
+                'python3 "' .. turtle_bin('turtle-recall') .. '" ' .. wezterm.shell_quote_arg(query)
+                .. '; echo; printf "  press Enter to close... "; read -r _',
+              }},
+            }, p
+          )
+          w:toast_notification('TurtleTerm Recall', 'Searching: ' .. query, nil, 2000)
+        end),
+      }, pane
+    )
+  end)
+end
+
+-- ============================================================
+-- Mesh push (CMD+SHIFT+U) — sync memory mesh to/from GCS
+-- ============================================================
+
+local function turtle_mesh_push()
+  return wezterm.action_callback(function(window, pane)
+    window:perform_action(
+      act.SpawnCommandInNewPane {
+        direction = 'Bottom',
+        size = { Percent = 15 },
+        command = { args = {
+          'sh', '-c',
+          'python3 "' .. turtle_bin('turtle-mesh-push') .. '"'
+          .. ' && printf "\\n  sync complete ✓ — press Enter\\n" && read -r _'
+          .. ' || (printf "\\nsync failed (gsutil required)\\n"; read -r _)',
+        }},
+      }, pane
+    )
+    window:toast_notification('TurtleTerm', 'Syncing memory mesh…', nil, 2000)
+  end)
+end
+
+-- ============================================================
 -- AI Sidebar (CTRL+SHIFT+X)
 -- ============================================================
 
@@ -1290,6 +1417,11 @@ local PALETTE_COMMANDS = {
   -- Workspace
   { label = '💾  Save workspace              CMD+SHIFT+S',   id = 'workspace_save'    },
   { label = '📂  Restore workspace           CMD+SHIFT+O',   id = 'workspace_restore' },
+  -- Memory mesh / cross-app integration
+  { label = '◆  Mission Control (agents)    CMD+SHIFT+M',   id = 'mission_control'   },
+  { label = '◆  Capture to Goose Notes      CMD+SHIFT+C',   id = 'capture'           },
+  { label = '◆  Memory Mesh Recall          CMD+SHIFT+L',   id = 'recall'            },
+  { label = '◆  Sync mesh to GCS           CMD+SHIFT+U',   id = 'mesh_push'         },
 }
 
 local function turtle_command_palette()
@@ -1376,6 +1508,10 @@ local function turtle_command_palette()
             theme_picker       = turtle_theme_picker(),
             workspace_save     = turtle_workspace_save(),
             workspace_restore  = turtle_workspace_restore(),
+            mission_control    = turtle_mission_control(),
+            capture            = turtle_capture_selection(),
+            recall             = turtle_recall(),
+            mesh_push          = turtle_mesh_push(),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end
@@ -1973,6 +2109,11 @@ config.keys = {
   { key = 'h', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_ssh_picker(w, p) end) },
   { key = 's', mods = 'CMD|SHIFT',  action = turtle_workspace_save()    },  -- Save workspace
   { key = 'o', mods = 'CMD|SHIFT',  action = turtle_workspace_restore() },  -- Restore workspace
+  -- Memory mesh integration
+  { key = 'm', mods = 'CMD|SHIFT',  action = turtle_mission_control() },    -- Mission Control panel
+  { key = 'c', mods = 'CMD|SHIFT',  action = turtle_capture_selection() },  -- Capture to Goose Notes
+  { key = 'l', mods = 'CMD|SHIFT',  action = turtle_recall() },             -- Memory mesh recall
+  { key = 'u', mods = 'CMD|SHIFT',  action = turtle_mesh_push() },          -- Sync mesh to GCS
   {
     key = 's',
     mods = 'CTRL|SHIFT',

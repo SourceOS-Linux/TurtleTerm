@@ -257,6 +257,57 @@ bindkey '^R' _turtle_history_widget
 bindkey '\er' history-incremental-search-backward
 
 # ============================================================
+# Memory mesh: ?? recall, tc capture, mission control
+# ============================================================
+
+# ?? <query> — quick memory recall from any prompt
+# Example: ?? postgres replica setup
+??() {
+    local _turtle_recall_bin
+    _turtle_recall_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-recall"
+    [[ -x "$_turtle_recall_bin" ]] || _turtle_recall_bin="turtle-recall"
+    "$_turtle_recall_bin" "$@"
+}
+
+# tc — pipe alias to capture terminal output to Goose Notes + mesh
+# Example: docker logs myapp | tc "app crash log"
+tc() {
+    local _turtle_capture_bin
+    _turtle_capture_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-capture"
+    [[ -x "$_turtle_capture_bin" ]] || _turtle_capture_bin="turtle-capture"
+    "$_turtle_capture_bin" "$@"
+}
+
+# mc — toggle mission control panel (TurtleTerm only; graceful no-op elsewhere)
+_turtle_mc() {
+    local _mc_bin
+    _mc_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-mission-control"
+    [[ -x "$_mc_bin" ]] || _mc_bin="turtle-mission-control"
+    if [[ -n "${WEZTERM_PANE:-}" ]]; then
+        # In WezTerm: prefer the CMD+SHIFT+M binding; fallback to running in pane
+        "$_mc_bin" --once
+    else
+        "$_mc_bin" --once
+    fi
+}
+
+# Auto-write memory mesh active context on each directory change
+_turtle_mesh_cd() {
+    local _state="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _branch=""
+    _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    mkdir -p "$_state"
+    printf '{"updated":"%s","cwd":"%s","branch":"%s","focus":"cd %s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD" "$_branch" "$PWD" \
+        > "$_state/active.json"
+}
+
+# Hook into chpwd for passive context tracking
+if (( ${chpwd_functions[(I)_turtle_mesh_cd]} == 0 )); then
+    chpwd_functions+=(_turtle_mesh_cd)
+fi
+
+# ============================================================
 # AI ghost-text — two modes:
 #   1. Explicit: ALT+/ or CTRL+SPACE fires immediately (synchronous)
 #   2. Debounced: auto-fires after ~1s of idle if ANTHROPIC_API_KEY set
