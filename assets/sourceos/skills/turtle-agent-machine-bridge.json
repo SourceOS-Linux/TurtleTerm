@@ -12,7 +12,8 @@
       "agent-machine.probe",
       "agent-machine.render",
       "agent-machine.evaluate",
-      "agent-machine.receipts"
+      "agent-machine.receipts",
+      "agent-machine.acquire"
     ],
     "filePatterns": [
       "*.agent-pod.json"
@@ -22,7 +23,8 @@
       "agentpod",
       "runtime-surface",
       "activation-decision",
-      "runtime-evidence"
+      "runtime-evidence",
+      "web-acquisition"
     ]
   },
   "requires": {
@@ -47,7 +49,8 @@
     "agentpod-plan",
     "activation-decision",
     "runtime-evidence-reference",
-    "storage-receipt-reference"
+    "storage-receipt-reference",
+    "acquisition-provenance-receipt"
   ],
   "reviewMode": true,
   "allowShellExecution": false,
