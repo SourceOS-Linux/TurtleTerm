@@ -89,6 +89,16 @@ def _k3s_tunnel_alive() -> bool:
         return False
 
 
+def _matrix_bridge_alive() -> bool:
+    pid_file = Path.home() / ".local" / "state" / "sourceos" / "matrix-bridge.pid"
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
 def gather_state() -> dict:
     mesh   = load_jsonl_tail(MESH_DIR / "context.jsonl", 60)
     active = load_json(MESH_DIR / "active.json")
@@ -140,9 +150,10 @@ def gather_state() -> dict:
         "board":      board,
         "bb_cands":   bb_cands,
         "notes":      notes,
-        "searxng_ok":    searxng_ok,
-        "k3s_tunnel_up": _k3s_tunnel_alive(),
-        "runbooks":      runbooks,
+        "searxng_ok":       searxng_ok,
+        "k3s_tunnel_up":    _k3s_tunnel_alive(),
+        "matrix_bridge_up": _matrix_bridge_alive(),
+        "runbooks":         runbooks,
     }
 
 
@@ -282,6 +293,7 @@ h2{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em
   <span id="pr-badge">PRs —</span>
   <span id="board-badge">Board —</span>
   <span id="k3s-badge"><span class="dot dot-yellow pulse"></span>k3s …</span>
+  <span id="matrix-badge"><span class="dot dot-yellow pulse"></span>Matrix …</span>
   <span id="ts-badge" style="margin-left:auto;color:var(--dim)">—</span>
 </div>
 
@@ -350,6 +362,10 @@ function render(state) {
   document.getElementById('k3s-badge').innerHTML = state.k3s_tunnel_up
     ? `<span class="dot dot-green"></span>k3s <span class="badge badge-green">up</span>`
     : `<span class="dot dot-red"></span>k3s <span class="badge badge-red">down</span>`
+
+  document.getElementById('matrix-badge').innerHTML = state.matrix_bridge_up
+    ? `<span class="dot dot-green"></span>Matrix <span class="badge badge-green">live</span>`
+    : `<span class="dot dot-red"></span>Matrix <span class="badge badge-red">off</span>`
 
   document.getElementById('ts-badge').textContent = new Date(state.ts).toLocaleTimeString()
 

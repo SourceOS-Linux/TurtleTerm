@@ -1955,3 +1955,72 @@ csh-copy() { python3 "$(_turtle_ssh_tunnel_bin)" copy "$@" }
 
 # csh-status — show all cloudshell/tunnel status at a glance
 csh-status() { python3 "$(_turtle_ssh_tunnel_bin)" status }
+
+# ── Matrix bridge ─────────────────────────────────────────────────────────────
+
+_turtle_matrix_bridge_bin() {
+    local _b
+    for _b in \
+        "${TURTLE_SOURCEOS_BIN:-$HOME/.local/share/sourceos/bin}/turtle-matrix-bridge" \
+        "${${(%):-%x}:h}/turtle-matrix-bridge"; do
+        [[ -x "$_b" ]] && { printf '%s' "$_b"; return; }
+    done
+    printf '%s' "$(dirname "${(%):-%x}")/turtle-matrix-bridge"
+}
+
+# mx <message> [room_id]  — post a plain text message to the default Matrix room
+mx() {
+    if [[ -z "$1" ]]; then
+        printf 'Usage: mx <message> [room_id]\n' >&2
+        return 1
+    fi
+    python3 "$(_turtle_matrix_bridge_bin)" send "$@"
+}
+
+# mxf <file> [room_id]    — post a file as a code block to the Matrix room
+mxf() {
+    if [[ -z "$1" ]]; then
+        printf 'Usage: mxf <file> [room_id]\n' >&2
+        return 1
+    fi
+    python3 "$(_turtle_matrix_bridge_bin)" send-file "$@"
+}
+
+# mxw <file> [room_id]    — wormhole-send a file and post the code to the Matrix room
+mxw() {
+    if [[ -z "$1" ]]; then
+        printf 'Usage: mxw <file> [room_id]\n' >&2
+        return 1
+    fi
+    python3 "$(_turtle_matrix_bridge_bin)" wormhole-send "$@"
+}
+
+# mxr <code> [room_id]    — wormhole-receive by code, post result to Matrix room
+mxr() {
+    if [[ -z "$1" ]]; then
+        printf 'Usage: mxr <wormhole-code> [room_id]\n' >&2
+        return 1
+    fi
+    python3 "$(_turtle_matrix_bridge_bin)" wormhole-recv "$@"
+}
+
+# mxstatus               — show Matrix bridge config + connectivity
+mxstatus() { python3 "$(_turtle_matrix_bridge_bin)" status }
+
+# Auto-start Matrix bridge daemon at shell init if config is present
+if [[ -f "${HOME}/.config/sourceos/matrix.yaml" ]] || \
+   [[ -n "${MATRIX_ACCESS_TOKEN:-}" ]]; then
+    local _mx_pid_file="${HOME}/.local/state/sourceos/matrix-bridge.pid"
+    if [[ -f "$_mx_pid_file" ]]; then
+        local _mx_pid; _mx_pid="$(cat "$_mx_pid_file" 2>/dev/null)"
+        if ! kill -0 "$_mx_pid" 2>/dev/null; then
+            rm -f "$_mx_pid_file"
+        fi
+    fi
+    if [[ ! -f "$_mx_pid_file" ]] && [[ -n "${MATRIX_BOT_ROOM_ID:-}" ]]; then
+        python3 "$(_turtle_matrix_bridge_bin)" daemon \
+            "${MATRIX_BOT_ROOM_ID}" \
+            >> "${HOME}/.local/state/sourceos/matrix-bridge.log" 2>&1 &!
+        printf '%d' $! > "$_mx_pid_file"
+    fi
+fi

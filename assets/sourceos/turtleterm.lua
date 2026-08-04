@@ -1454,6 +1454,11 @@ local PALETTE_COMMANDS = {
   { label = '☁  CloudShell SSH (csh)          CMD+SHIFT+K',   id = 'cloudshell_ssh'    },
   { label = '☁  k3s tunnel start (ktunnel)    —',             id = 'k3s_tunnel'        },
   { label = '☁  CloudShell status (csh-status) —',            id = 'cloudshell_status' },
+  -- Matrix bridge
+  { label = '💬  Matrix: send message (mx)     CMD+SHIFT+ALT+M',  id = 'matrix_send'       },
+  { label = '💬  Matrix: send file (mxf)       —',            id = 'matrix_send_file'  },
+  { label = '🕳  Matrix: wormhole send (mxw)   —',            id = 'matrix_wormhole'   },
+  { label = '💬  Matrix: bridge status (mxstatus) —',         id = 'matrix_status'     },
 }
 
 local function turtle_command_palette()
@@ -1558,6 +1563,10 @@ local function turtle_command_palette()
             cloudshell_ssh     = act.SendString('csh\n'),
             k3s_tunnel         = act.SendString('ktunnel start\n'),
             cloudshell_status  = act.SendString('csh-status\n'),
+            matrix_send        = act.SendString('mx '),
+            matrix_send_file   = act.SendString('mxf '),
+            matrix_wormhole    = act.SendString('mxw '),
+            matrix_status      = act.SendString('mxstatus\n'),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end
@@ -2530,6 +2539,22 @@ config.keys = {
           }),
           pane
         )
+      end),
+    },
+    -- Matrix send (CMD+SHIFT+ALT+M) — post a message to the default Matrix room
+    {
+      key = 'm',
+      mods = 'CMD|SHIFT|ALT',
+      action = wezterm.action_callback(function(window, pane)
+        window:perform_action(act.SendString('mx '), pane)
+      end),
+    },
+    -- Matrix wormhole send (CMD+SHIFT+ALT+W) — send file via wormhole, post code to room
+    {
+      key = 'w',
+      mods = 'CMD|SHIFT|ALT',
+      action = wezterm.action_callback(function(window, pane)
+        window:perform_action(act.SendString('mxw '), pane)
       end),
     },
     -- Diagnose all integrations (CMD+SHIFT+ALT+D)
