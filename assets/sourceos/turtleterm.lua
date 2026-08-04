@@ -1410,6 +1410,8 @@ local PALETTE_COMMANDS = {
   -- SynapseIQ
   { label = '⬡  Diagnose file (SynapseIQ)  CTRL+SHIFT+D', id = 'diagnose' },
   -- Navigation
+  { label = '🔍  Web search (ws)              —',             id = 'web_search'        },
+  { label = '🌐  Noetica + web citations (noes) —',          id = 'noetica_search'    },
   { label = '🔍  History fuzzy search       CTRL+R',        id = 'history_search' },
   { label = '🔍  Search output              CTRL+SHIFT+F',  id = 'search_output' },
   { label = '👁  Render file (img/PDF/CSV/JSON)  CTRL+SHIFT+P',  id = 'preview' },
@@ -1446,6 +1448,8 @@ local PALETTE_COMMANDS = {
   { label = '⎇  Semantic git log (glog)     —',             id = 'glog'              },
   { label = '⎇  Git diff highlight (td)     —',             id = 'tdiff'             },
   { label = '⏱  Resource usage (last cmd)   —',             id = 'rss_info'          },
+  { label = '📋  Runbook list (rb list)       —',             id = 'runbook_list'      },
+  { label = '🔍  Runbook search (rb search)   —',             id = 'runbook_search'    },
 }
 
 local function turtle_command_palette()
@@ -1543,6 +1547,10 @@ local function turtle_command_palette()
             mesh_dashboard     = act.SendString('mesh\n'),
             glog               = act.SendString('glog\n'),
             tdiff              = act.SendString('td\n'),
+            web_search         = act.SendString('ws '),
+            noetica_search     = act.SendString('noes '),
+            runbook_list       = act.SendString('rb list\n'),
+            runbook_search     = act.SendString('rb search '),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end

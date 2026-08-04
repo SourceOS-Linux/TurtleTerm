@@ -1,155 +1,583 @@
 #!/usr/bin/env python3
-"""turtle-runbook — Git-native runbook runner for TurtleTerm.
+# turtle-runbook — cloud-shared runbook CLI for TurtleTerm.
+# Sovereign equivalent of Warp Drive's team runbook library.
+#
+# Runbooks are YAML files stored locally at:
+#   ~/.local/state/sourceos/runbooks/
+# and synced to GCS:
+#   gs://<bucket>/runbooks/
+#
+# Usage:
+#   turtle-runbook list                   list all local runbooks
+#   turtle-runbook show <name>            print steps
+#   turtle-runbook run <name> [KEY=VAL…]  execute steps interactively
+#   turtle-runbook new <name>             create a runbook in $EDITOR
+#   turtle-runbook push                   sync local → GCS
+#   turtle-runbook pull                   sync GCS → local (merge, skip newer)
+#   turtle-runbook search <query>         fuzzy search names/descriptions/tags
+#   turtle-runbook share <name>           print GCS URI for sharing
+#
+# SPDX-License-Identifier: MIT
+# Author: @mdheller
 
-Runbooks are YAML files stored in .turtle/runbooks/ (project) or
-~/.config/turtleterm/runbooks/ (user-global).
-
-Format:
-  name: deploy-staging
-  description: Deploy app to staging
-  steps:
-    - cmd: npm run build
-      desc: Build production bundle
-    - cmd: docker build -t app:staging .
-      desc: Build Docker image
-
-Usage:
-  turtle-runbook list              List available runbooks
-  turtle-runbook show NAME         Show runbook steps
-  turtle-runbook run NAME          Run as a plan (injects steps to terminal)
-  turtle-runbook create NAME       Interactive runbook creation wizard
-"""
 from __future__ import annotations
-import json
+
+import argparse
 import os
+import pathlib
+import re
+import shutil
 import subprocess
 import sys
-from pathlib import Path
+import tempfile
+from typing import Any
 
-AGENTCTL = Path(__file__).parent / "turtle-agentctl"
+try:
+    import yaml as _yaml_mod
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
 
+# ── colour helpers (ANSI only, no curses) ────────────────────────────────────
 
-def agentd(payload: dict) -> dict | None:
-    try:
-        r = subprocess.run(
-            [sys.executable, str(AGENTCTL), "--stdio"],
-            input=json.dumps(payload), text=True, capture_output=True, timeout=15,
-        )
-        return json.loads(r.stdout)
-    except Exception:
-        return None
-
-
-def cmd_list(args: list[str]) -> int:
-    d = args[0] if args else "."
-    r = agentd({"action": "runbook_list", "dir": d})
-    if not r:
-        print("Error: agentd not responding", file=sys.stderr)
-        return 1
-    runbooks = r.get("data", {}).get("runbooks", [])
-    if not runbooks:
-        print("No runbooks found.")
-        print(f"Create one in .turtle/runbooks/ or ~/.config/turtleterm/runbooks/")
-        return 0
-    print(f"{'NAME':<30}  {'STEPS':>5}  DESCRIPTION")
-    print("-" * 70)
-    for rb in runbooks:
-        print(f"{rb['name']:<30}  {rb.get('steps',0):>5}  {rb.get('description','')[:35]}")
-    return 0
+_TEAL   = '\033[38;2;57;197;207m'
+_GREEN  = '\033[38;2;63;185;80m'
+_RED    = '\033[38;2;248;81;73m'
+_YELLOW = '\033[38;2;210;153;34m'
+_DIM    = '\033[2m'
+_BOLD   = '\033[1m'
+_RESET  = '\033[0m'
 
 
-def cmd_show(args: list[str]) -> int:
-    if not args:
-        print("Usage: turtle-runbook show NAME", file=sys.stderr)
-        return 1
-    r = agentd({"action": "runbook_show", "name": args[0]})
-    if not r or r.get("status") != "ok":
-        print(f"Error: {(r or {}).get('data', {}).get('message', 'not found')}", file=sys.stderr)
-        return 1
-    rb = r.get("data", {}).get("runbook", {})
-    print(f"\n  {rb.get('name', args[0])}")
-    print(f"  {rb.get('description', '')}\n")
-    for i, step in enumerate(rb.get("steps", []), 1):
-        cmd  = step.get("cmd", step) if isinstance(step, dict) else str(step)
-        desc = step.get("desc", "") if isinstance(step, dict) else ""
-        print(f"  {i:2}.  {desc or cmd}")
-        if desc:
-            print(f"       $ {cmd}")
-    print()
-    return 0
+def _c(s: str, col: str) -> str:
+    return f'{col}{s}{_RESET}'
 
 
-def cmd_run(args: list[str]) -> int:
-    if not args:
-        print("Usage: turtle-runbook run NAME", file=sys.stderr)
-        return 1
-    name = args[0]
-    print(f"Submitting runbook '{name}' as plan...")
-    r = agentd({"action": "runbook_run", "name": name})
-    if not r:
-        print("Error: agentd not responding", file=sys.stderr)
-        return 1
-    if r.get("status") != "ok":
-        msg = (r.get("data") or {}).get("message", "unknown error")
-        print(f"Error: {msg}", file=sys.stderr)
-        return 1
-    plan = r.get("data", {})
-    print(f"Plan created: {plan.get('goal', name)}")
-    print(f"  Steps: {len(plan.get('steps', []))}")
-    print(f"  First command will appear in terminal — press Enter to execute.")
-    return 0
+# ── stdlib YAML parser for runbook files ─────────────────────────────────────
+
+def _parse_yaml_basic(text: str) -> dict[str, Any]:
+    """
+    Minimal YAML parser — covers the runbook schema only.
+    Handles scalars, bracket tag lists, and sequences of mappings.
+    """
+    lines = text.splitlines()
+    root: dict[str, Any] = {}
+    i = 0
+    n = len(lines)
+
+    def indent_of(line: str) -> int:
+        return len(line) - len(line.lstrip())
+
+    def parse_scalar(raw: str) -> Any:
+        raw = raw.strip()
+        if raw.startswith('[') and raw.endswith(']'):
+            inner = raw[1:-1]
+            return [v.strip().strip('"').strip("'") for v in inner.split(',') if v.strip()]
+        if (raw.startswith('"') and raw.endswith('"')) or \
+           (raw.startswith("'") and raw.endswith("'")):
+            return raw[1:-1]
+        if raw in ('true', 'True'):
+            return True
+        if raw in ('false', 'False'):
+            return False
+        if raw in ('null', '~', ''):
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+        return raw
+
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            i += 1
+            continue
+
+        m = re.match(r'^([\w][\w\s-]*):\s*(.*)', line)
+        if not m:
+            i += 1
+            continue
+
+        key = m.group(1).strip()
+        val_raw = m.group(2).strip()
+        i += 1
+
+        if val_raw:
+            root[key] = parse_scalar(val_raw)
+            continue
+
+        # look-ahead for block sequence or block mapping
+        items: list[Any] = []
+        mapping: dict[str, Any] = {}
+
+        while i < n:
+            nline = lines[i]
+            nstripped = nline.strip()
+            if not nstripped or nstripped.startswith('#'):
+                i += 1
+                continue
+            if indent_of(nline) == 0:
+                break
+            if nstripped.startswith('- '):
+                entry: dict[str, Any] = {}
+                first_field = nstripped[2:].strip()
+                fm = re.match(r'^([\w][\w\s-]*):\s*(.*)', first_field)
+                if fm:
+                    entry[fm.group(1).strip()] = parse_scalar(fm.group(2).strip())
+                i += 1
+                # sub-keys of this sequence item (indent >= 4)
+                while i < n and indent_of(lines[i]) >= 4:
+                    sl = lines[i].strip()
+                    sm = re.match(r'^([\w][\w\s-]*):\s*(.*)', sl)
+                    if sm:
+                        entry[sm.group(1).strip()] = parse_scalar(sm.group(2).strip())
+                    i += 1
+                items.append(entry)
+            else:
+                km = re.match(r'^([\w][\w\s-]*):\s*(.*)', nstripped)
+                if km:
+                    mapping[km.group(1).strip()] = parse_scalar(km.group(2).strip())
+                i += 1
+
+        if items:
+            root[key] = items
+        elif mapping:
+            root[key] = mapping
+        else:
+            root[key] = None
+
+    return root
 
 
-def cmd_create(args: list[str]) -> int:
-    if not args:
-        print("Usage: turtle-runbook create NAME", file=sys.stderr)
-        return 1
-    name = args[0]
-    print(f"Creating runbook: {name}")
-    description = input("Description: ").strip()
-    steps = []
-    print("Enter steps (empty cmd to finish):")
-    while True:
-        cmd = input(f"  Step {len(steps)+1} cmd: ").strip()
-        if not cmd:
-            break
-        desc = input(f"  Step {len(steps)+1} desc: ").strip()
-        steps.append({"cmd": cmd, "desc": desc})
+def _load_yaml(path: pathlib.Path) -> dict[str, Any]:
+    text = path.read_text(errors='replace')
+    if _HAS_YAML:
+        return _yaml_mod.safe_load(text) or {}
+    return _parse_yaml_basic(text)
+
+
+def _dump_yaml_basic(data: dict[str, Any]) -> str:
+    lines: list[str] = []
+
+    def scalar(v: Any) -> str:
+        if v is None:
+            return ''
+        if isinstance(v, bool):
+            return 'true' if v else 'false'
+        if isinstance(v, (int, float)):
+            return str(v)
+        s = str(v)
+        if any(c in s for c in ':#{}[]|>&*!,') or s in ('true', 'false', 'null'):
+            return f'"{s}"'
+        return s
+
+    for k, v in data.items():
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            lines.append(f'{k}:')
+            for item in v:
+                first = True
+                for ik, iv in item.items():
+                    prefix = '  - ' if first else '    '
+                    first = False
+                    lines.append(f'{prefix}{ik}: {scalar(iv)}')
+        elif isinstance(v, list):
+            lines.append(f'{k}: [' + ', '.join(scalar(t) for t in v) + ']')
+        elif isinstance(v, dict):
+            lines.append(f'{k}:')
+            for dk, dv in v.items():
+                lines.append(f'  {dk}: {scalar(dv)}')
+        else:
+            lines.append(f'{k}: {scalar(v)}')
+    return '\n'.join(lines) + '\n'
+
+
+# ── paths ─────────────────────────────────────────────────────────────────────
+
+def _runbook_dir() -> pathlib.Path:
+    state = pathlib.Path(
+        os.environ.get('XDG_STATE_HOME', os.path.expanduser('~/.local/state'))
+    )
+    d = state / 'sourceos' / 'runbooks'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _bucket() -> str:
+    bucket_file = pathlib.Path(
+        os.environ.get('XDG_STATE_HOME', os.path.expanduser('~/.local/state'))
+    ) / 'sourceos' / 'mesh-bucket'
+    if bucket_file.exists():
+        return bucket_file.read_text().strip() or 'sourceos-mesh'
+    return 'sourceos-mesh'
+
+
+def _gcs_prefix() -> str:
+    return f'gs://{_bucket()}/runbooks'
+
+
+def _list_local() -> list[pathlib.Path]:
+    return sorted(_runbook_dir().glob('*.yaml'))
+
+
+def _load_runbook(name: str) -> dict[str, Any]:
+    path = _runbook_dir() / f'{name}.yaml'
+    if not path.exists():
+        print(f'{_RED}runbook not found:{_RESET} {name}', file=sys.stderr)
+        sys.exit(1)
+    return _load_yaml(path)
+
+
+def _substitute_vars(cmd: str, env: dict[str, str]) -> str:
+    """Replace ${VAR:-default} / ${VAR} / $VAR from env then os.environ."""
+    def replace(m: re.Match) -> str:
+        varname = m.group(1) or m.group(2) or m.group(3)
+        default = m.group(4)  # only present for ${VAR:-default} form
+        val = env.get(varname, os.environ.get(varname))
+        if val is not None:
+            return val
+        if default is not None:
+            return default
+        return m.group(0)  # leave unexpanded
+    # ${VAR:-default}
+    cmd = re.sub(
+        r'\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}',
+        replace, cmd
+    )
+    # ${VAR}
+    cmd = re.sub(
+        r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',
+        lambda m: env.get(m.group(1), os.environ.get(m.group(1), m.group(0))),
+        cmd
+    )
+    # $VAR (word boundary)
+    cmd = re.sub(
+        r'\$([A-Za-z_][A-Za-z0-9_]*)',
+        lambda m: env.get(m.group(1), os.environ.get(m.group(1), m.group(0))),
+        cmd
+    )
+    return cmd
+
+
+def _gsutil_base() -> list[str]:
+    if shutil.which('gsutil'):
+        return ['gsutil']
+    if shutil.which('gcloud'):
+        return ['gcloud', 'storage']
+    return ['gsutil']  # will fail with a useful error if missing
+
+
+# ── subcommands ───────────────────────────────────────────────────────────────
+
+def cmd_list(_args: argparse.Namespace) -> None:
+    paths = _list_local()
+    if not paths:
+        print(f'{_DIM}No runbooks in {_runbook_dir()}{_RESET}')
+        print(f'{_DIM}Create one:  rb new <name>{_RESET}')
+        return
+    max_name = max(len(p.stem) for p in paths)
+    for p in paths:
+        rb = _load_yaml(p)
+        desc = rb.get('description', '')
+        tags = rb.get('tags', [])
+        tag_str = _c(' [' + ', '.join(str(t) for t in tags) + ']', _DIM) if tags else ''
+        print(f'  {_c(p.stem.ljust(max_name), _TEAL)}  {desc}{tag_str}')
+
+
+def cmd_show(args: argparse.Namespace) -> None:
+    rb = _load_runbook(args.name)
+    print(f'\n{_BOLD}{_c(rb.get("name", args.name), _TEAL)}{_RESET}')
+    if rb.get('description'):
+        print(f'  {rb["description"]}')
+    if rb.get('author'):
+        print(f'  {_c("author: " + rb["author"], _DIM)}')
+    if rb.get('tags'):
+        print(f'  {_c("tags: " + ", ".join(str(t) for t in rb["tags"]), _DIM)}')
+    steps = rb.get('steps', [])
     if not steps:
-        print("No steps entered, runbook not saved.")
-        return 1
-    rb_dir = Path(".turtle") / "runbooks"
-    rb_dir.mkdir(parents=True, exist_ok=True)
-    rb_file = rb_dir / f"{name}.yaml"
-    lines = [f"name: {name}", f"description: {description}", "steps:"]
-    for s in steps:
-        lines.append(f"  - cmd: {s['cmd']}")
-        if s["desc"]:
-            lines.append(f"    desc: {s['desc']}")
-    rb_file.write_text("\n".join(lines) + "\n")
-    print(f"Saved: {rb_file}")
-    print(f"Run with: turtle-runbook run {name}")
-    return 0
+        print(f'\n  {_c("(no steps)", _DIM)}')
+        return
+    print(f'\n  {_c("Steps:", _DIM)}')
+    for i, step in enumerate(steps, 1):
+        step_name = step.get('name', f'step {i}')
+        step_cmd  = step.get('cmd', '')
+        print(f'\n  {_c(str(i), _YELLOW)}. {_BOLD}{step_name}{_RESET}')
+        print(f'     {_c(step_cmd, _DIM)}')
+    vars_block = rb.get('vars') or {}
+    if vars_block:
+        print(f'\n  {_c("Variables:", _DIM)}')
+        for k, v in vars_block.items():
+            print(f'    {_c(k, _TEAL)} = {v!r}')
+    print()
 
 
-def main() -> int:
-    args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help"):
-        print(__doc__)
-        return 0
-    subcmd = args[0]
-    rest   = args[1:]
-    if subcmd == "list":
-        return cmd_list(rest)
-    if subcmd == "show":
-        return cmd_show(rest)
-    if subcmd == "run":
-        return cmd_run(rest)
-    if subcmd == "create":
-        return cmd_create(rest)
-    print(f"Unknown command: {subcmd}. Use: list, show, run, create", file=sys.stderr)
-    return 1
+def cmd_run(args: argparse.Namespace) -> None:
+    rb = _load_runbook(args.name)
+    steps = rb.get('steps', [])
+    if not steps:
+        print(f'{_YELLOW}No steps in runbook {args.name}.{_RESET}')
+        return
+
+    # Merge vars: runbook defaults ← CLI KEY=VAL overrides
+    env: dict[str, str] = {}
+    for k, v in (rb.get('vars') or {}).items():
+        env[k] = str(v) if v is not None else ''
+    for kv in (args.vars or []):
+        if '=' in kv:
+            k, v = kv.split('=', 1)
+            env[k] = v
+
+    total = len(steps)
+    print(f'\n{_BOLD}{_c(rb.get("name", args.name), _TEAL)}{_RESET}  '
+          f'{_c(f"({total} step{"s" if total != 1 else ""})", _DIM)}\n')
+
+    for i, step in enumerate(steps, 1):
+        step_name = step.get('name', f'Step {i}')
+        raw_cmd   = step.get('cmd', '')
+        cmd       = _substitute_vars(raw_cmd, env)
+
+        print(f'{_BOLD}Step {i}/{total}:{_RESET} {step_name}')
+        print(f'  {_c("$ " + cmd, _DIM)}')
+
+        try:
+            choice = input(
+                f'  {_c("[Enter to run / s to skip / q to quit]", _YELLOW)} '
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print(f'\n{_c("aborted", _DIM)}')
+            sys.exit(130)
+
+        if choice == 'q':
+            print(_c('quit', _DIM))
+            sys.exit(0)
+        if choice == 's':
+            print(f'  {_c("skipped", _DIM)}\n')
+            continue
+
+        result = subprocess.run(cmd, shell=True)
+        rc = result.returncode
+        if rc == 0:
+            print(f'  {_c(f"exit {rc}", _TEAL)}\n')
+        else:
+            print(f'  {_c(f"exit {rc}", _RED)}\n')
+
+    print(f'{_c("Done.", _GREEN)}')
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def cmd_new(args: argparse.Namespace) -> None:
+    path = _runbook_dir() / f'{args.name}.yaml'
+    if path.exists():
+        print(f'{_YELLOW}Runbook already exists:{_RESET} {path}')
+        try:
+            choice = input('Overwrite? [y/N] ').strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print('\nAborted.')
+            return
+        if choice != 'y':
+            print('Aborted.')
+            return
+
+    template = (
+        f'name: {args.name}\n'
+        f'description: ""\n'
+        f'tags: []\n'
+        f'author: {os.environ.get("USER", "")}\n'
+        f'steps:\n'
+        f'  - name: First step\n'
+        f'    cmd: echo "hello"\n'
+        f'vars: {{}}\n'
+    )
+    editor = os.environ.get('EDITOR', 'nano')
+    with tempfile.NamedTemporaryFile(suffix='.yaml', mode='w', delete=False) as tmp:
+        tmp.write(template)
+        tmp_path = pathlib.Path(tmp.name)
+    try:
+        subprocess.run([editor, str(tmp_path)])
+        path.write_text(tmp_path.read_text())
+        print(f'{_c("Saved:", _TEAL)} {path}')
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def cmd_push(_args: argparse.Namespace) -> None:
+    paths = _list_local()
+    if not paths:
+        print(f'{_YELLOW}No local runbooks to push.{_RESET}')
+        return
+    prefix = _gcs_prefix()
+    base = _gsutil_base()
+    errors = 0
+    for p in paths:
+        dest = f'{prefix}/{p.name}'
+        print(f'  {_c("pushing " + p.name + " → " + dest, _DIM)}')
+        result = subprocess.run(base + ['cp', str(p), dest], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f'  {_c("failed:", _RED)} {result.stderr.strip()}')
+            errors += 1
+        else:
+            print(f'  {_c("ok", _TEAL)}')
+    if errors == 0:
+        print(f'\n{_c("Push complete.", _GREEN)}  {_c(f"({len(paths)} runbooks)", _DIM)}')
+    else:
+        print(f'\n{_c(f"{errors} error(s) during push.", _YELLOW)}')
+        sys.exit(1)
+
+
+def cmd_pull(_args: argparse.Namespace) -> None:
+    prefix = _gcs_prefix()
+    base   = _gsutil_base()
+    local_dir = _runbook_dir()
+
+    if base[0] == 'gsutil':
+        list_args = base + ['ls', f'{prefix}/']
+    else:
+        list_args = base + ['ls', '--recursive', f'{prefix}/']
+
+    list_result = subprocess.run(list_args, capture_output=True, text=True)
+    if list_result.returncode != 0:
+        print(f'{_YELLOW}Could not list GCS runbooks — is gsutil/gcloud configured?{_RESET}')
+        print(f'  {_c(list_result.stderr.strip(), _DIM)}')
+        sys.exit(1)
+
+    remote_files = [
+        line.strip() for line in list_result.stdout.splitlines()
+        if line.strip().endswith('.yaml')
+    ]
+    if not remote_files:
+        print(f'{_c(f"No remote runbooks found at {prefix}/", _DIM)}')
+        return
+
+    errors = updated = skipped = 0
+    for remote in remote_files:
+        name  = pathlib.Path(remote).name
+        local = local_dir / name
+        with tempfile.NamedTemporaryFile(suffix='.yaml', delete=False) as tmp:
+            tmp_path = pathlib.Path(tmp.name)
+        try:
+            dl = subprocess.run(base + ['cp', remote, str(tmp_path)], capture_output=True, text=True)
+            if dl.returncode != 0:
+                print(f'  {_c("failed to fetch " + name + ":", _RED)} {dl.stderr.strip()}')
+                errors += 1
+                continue
+            if local.exists() and local.stat().st_mtime >= tmp_path.stat().st_mtime:
+                print(f'  {_c(name + ": local is newer — skipping", _DIM)}')
+                skipped += 1
+            else:
+                tmp_path.replace(local)
+                print(f'  {_c("updated", _TEAL)} {name}')
+                updated += 1
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    print(
+        f'\n{_c("Pull complete.", _GREEN)}  '
+        f'{_c(f"updated={updated}  skipped={skipped}  errors={errors}", _DIM)}'
+    )
+    if errors:
+        sys.exit(1)
+
+
+def cmd_search(args: argparse.Namespace) -> None:
+    query = args.query.lower()
+    paths = _list_local()
+    scored: list[tuple[int, str, str, list]] = []
+
+    for p in paths:
+        rb   = _load_yaml(p)
+        name = p.stem.lower()
+        desc = (rb.get('description') or '').lower()
+        tags = [str(t).lower() for t in (rb.get('tags') or [])]
+        score = 0
+        if query in name:
+            score += 3
+        if any(query in t for t in tags):
+            score += 2
+        if query in desc:
+            score += 1
+        if score > 0:
+            scored.append((score, p.stem, rb.get('description', ''), rb.get('tags', [])))
+
+    if not scored:
+        print(f'{_c(f"No runbooks matching {query!r}", _DIM)}')
+        return
+
+    scored.sort(key=lambda x: -x[0])
+    print()
+    max_name = max(len(r[1]) for r in scored)
+    for score, name, desc, tags in scored:
+        tag_str = _c(' [' + ', '.join(str(t) for t in tags) + ']', _DIM) if tags else ''
+        sc_str  = _c(f'(score {score})', _DIM)
+        print(f'  {_c(name.ljust(max_name), _TEAL)}  {desc}{tag_str}  {sc_str}')
+    print()
+
+
+def cmd_share(args: argparse.Namespace) -> None:
+    path = _runbook_dir() / f'{args.name}.yaml'
+    if not path.exists():
+        print(f'{_c("Runbook not found:", _RED)} {args.name}', file=sys.stderr)
+        sys.exit(1)
+    uri = f'{_gcs_prefix()}/{args.name}.yaml'
+    print(f'\n  {_c("GCS URI:", _DIM)} {_c(uri, _TEAL)}\n')
+    print(f'  {_c("Share this URI — recipients run:", _DIM)}')
+    print(f'  {_c("  rb pull", _DIM)}')
+    print(f'  {_c(f"  rb run {args.name}", _DIM)}\n')
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+_DISPATCH = {
+    'list':   cmd_list,
+    'show':   cmd_show,
+    'run':    cmd_run,
+    'new':    cmd_new,
+    'push':   cmd_push,
+    'pull':   cmd_pull,
+    'search': cmd_search,
+    'share':  cmd_share,
+}
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog='turtle-runbook',
+        description='Cloud-shared runbook CLI — sovereign Warp Drive equivalent',
+    )
+    sub = p.add_subparsers(dest='command', required=True)
+
+    sub.add_parser('list',  help='List local runbooks')
+
+    ps = sub.add_parser('show',   help='Print runbook steps')
+    ps.add_argument('name')
+
+    pr = sub.add_parser('run',    help='Execute steps interactively')
+    pr.add_argument('name')
+    pr.add_argument('vars', nargs='*', metavar='KEY=VAL')
+
+    pn = sub.add_parser('new',    help='Create a runbook in $EDITOR')
+    pn.add_argument('name')
+
+    sub.add_parser('push',  help='Sync local runbooks → GCS')
+    sub.add_parser('pull',  help='Sync GCS → local (skip newer)')
+
+    pse = sub.add_parser('search', help='Search by name/description/tags')
+    pse.add_argument('query')
+
+    psh = sub.add_parser('share',  help='Print GCS URI for sharing')
+    psh.add_argument('name')
+
+    return p
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+    fn = _DISPATCH.get(args.command)
+    if fn is None:
+        parser.print_help()
+        sys.exit(1)
+    fn(args)
+
+
+if __name__ == '__main__':
+    main()

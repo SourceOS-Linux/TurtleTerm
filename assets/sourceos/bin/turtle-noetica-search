@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+# MIT License — https://sourceos.io
+# turtle-noetica-search — Perplexity-gap closure: web search + Noetica synthesis + inline citations
+# Usage:
+#   turtle-noetica-search "latest AI research on retrieval augmented generation"
+#   TURTLE_NOETICA=http://localhost:7700 TURTLE_PROMPT="query" python3 turtle-noetica-search
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _web_search_bin() -> str:
+    """Resolve the turtle-web-search binary path."""
+    sibling = Path(__file__).parent / "turtle-web-search"
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    found = shutil.which("turtle-web-search")
+    if found:
+        return found
+    return str(sibling)  # will fail with a clear message if missing
+
+
+def _stream_bin() -> str:
+    """Resolve the turtle-noetica-stream binary path."""
+    sibling = Path(__file__).parent / "turtle-noetica-stream"
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    found = shutil.which("turtle-noetica-stream")
+    if found:
+        return found
+    return str(sibling)
+
+
+def _fetch_results(query: str, count: int = 5) -> list[dict] | None:
+    """Run turtle-web-search and return parsed results, or None on failure."""
+    ws_bin = _web_search_bin()
+    try:
+        import json as _json
+        proc = subprocess.run(
+            [sys.executable, ws_bin, "--json", "--count", str(count), query],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if proc.returncode != 0:
+            return None
+        return _json.loads(proc.stdout)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _build_grounded_prompt(query: str, results: list[dict]) -> str:
+    lines = [
+        "Answer this question using the web search results below.",
+        "Include inline citations like [1] [2] referring to the sources.",
+        "At the end, print a 'Sources:' section listing each cited source with its URL.",
+        "",
+        f"Question: {query}",
+        "",
+        "Search results:",
+    ]
+    for r in results:
+        lines.append(f"[{r['rank']}] {r['title']} — {r['snippet']}")
+        lines.append(f"    URL: {r['url']}")
+    lines.append("")
+    lines.append("Answer (with inline citations):")
+    return "\n".join(lines)
+
+
+def main() -> None:
+    # Accept query as CLI arg or via TURTLE_PROMPT env var
+    if len(sys.argv) > 1:
+        query = " ".join(sys.argv[1:])
+    else:
+        query = os.environ.get("TURTLE_PROMPT", "").strip()
+
+    if not query:
+        print("Usage: turtle-noetica-search <query>", file=sys.stderr)
+        sys.exit(1)
+
+    noetica = os.environ.get("TURTLE_NOETICA", "http://localhost:7700")
+    stream_bin = _stream_bin()
+
+    # Step 1: web search
+    results = _fetch_results(query)
+    if not results:
+        print("(no web context — SearXNG unreachable)", file=sys.stderr)
+        # Fall back: send query directly to Noetica without search context
+        env = {**os.environ, "TURTLE_NOETICA": noetica, "TURTLE_PROMPT": query,
+               "TURTLE_MAX_TOKENS": "800"}
+        subprocess.run([sys.executable, stream_bin], env=env)
+        return
+
+    # Step 2: build grounded prompt
+    prompt = _build_grounded_prompt(query, results)
+
+    # Step 3: stream through Noetica with inherited stdout (tokens appear live)
+    env = {
+        **os.environ,
+        "TURTLE_NOETICA": noetica,
+        "TURTLE_PROMPT": prompt,
+        "TURTLE_MAX_TOKENS": "800",
+    }
+    subprocess.run([sys.executable, stream_bin], env=env)
+
+
+if __name__ == "__main__":
+    main()

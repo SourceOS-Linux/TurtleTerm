@@ -696,6 +696,65 @@ note_watch() {
     printf '\e[38;2;57;197;207m◆\e[0m backlinks daemon started (pid %s)\n' "$(cat "$_pid_file" 2>/dev/null)"
 }
 
+ngraph() {
+    # Open the notes graph view in BearBrowser
+    local _url="http://localhost:7788/graph"
+    if command -v bb >/dev/null 2>&1; then
+        bb "$_url"
+    else
+        open "$_url"
+    fi
+}
+
+# ============================================================
+# rb — runbook CLI shortcut (sovereign Warp Drive equivalent)
+# Usage: rb list
+#        rb show <name>
+#        rb run <name> [KEY=VAL…]
+#        rb new <name>
+#        rb push / rb pull
+#        rb search <query>
+#        rb share <name>
+# ============================================================
+rb() {
+    local _rb_bin
+    _rb_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-runbook"
+    [[ -x "$_rb_bin" ]] || _rb_bin="turtle-runbook"
+    python3 "$_rb_bin" "$@"
+}
+
+# rbr — quick run a runbook by name
+# Usage: rbr deploy-k8s SERVICE=myapp
+rbr() {
+    rb run "$@"
+}
+
+# ============================================================
+# ws — sovereign web search via SearXNG
+# Usage: ws "query"
+#        ws --json "query"
+#        ws --count 3 "query"
+# ============================================================
+ws() {
+    local _ws_bin
+    _ws_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-web-search"
+    [[ -x "$_ws_bin" ]] || _ws_bin="turtle-web-search"
+    python3 "$_ws_bin" "$@"
+}
+
+# ============================================================
+# noes — Noetica + web search with inline citations (Perplexity gap closure)
+# Usage: noes "what is the latest k8s release?"
+# ============================================================
+noes() {
+    local _ns_bin
+    _ns_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-noetica-search"
+    [[ -x "$_ns_bin" ]] || _ns_bin="turtle-noetica-search"
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    printf '\e[38;2;57;197;207m◆\e[0m \e[2msearching…\e[0m\n'
+    TURTLE_NOETICA="$_noetica" python3 "$_ns_bin" "$@"
+}
+
 # tsc — screen-region capture → Noetica query (ChatGPT Desktop gap closure)
 # Usage: tsc                        (interactive region select, ask what it shows)
 #        tsc "what is the error?"   (ask specific question about captured region)
