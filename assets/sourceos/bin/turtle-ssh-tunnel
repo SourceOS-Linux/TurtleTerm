@@ -1,0 +1,419 @@
+#!/usr/bin/env python3
+"""turtle-ssh-tunnel — cloudshell-fog SSH bastion + k3s twin tunnel manager.
+
+Manages SSH connections and tunnels to the cloudshell-fog bastion and the
+sovereign k3s edge twin cluster.
+
+Config: ~/.config/sourceos/cloudshell.yaml  (or env vars)
+
+Usage:
+  turtle-ssh-tunnel status                    # show all tunnel/connection state
+  turtle-ssh-tunnel connect                   # SSH into cloudshell-fog (interactive)
+  turtle-ssh-tunnel tunnel [start|stop|status]
+  turtle-ssh-tunnel proxy  [start|stop|status]
+  turtle-ssh-tunnel exec <cmd> [args…]        # run command non-interactively
+  turtle-ssh-tunnel copy <src> <dst>          # scp with cloudshell: host expansion
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+try:
+    import yaml as _yaml  # type: ignore
+    _HAS_YAML = True
+except ImportError:
+    _HAS_YAML = False
+
+# ── colour helpers ─────────────────────────────────────────────────────────────
+
+_RESET  = "\033[0m"
+_BOLD   = "\033[1m"
+_DIM    = "\033[2m"
+_GREEN  = "\033[38;2;63;185;80m"
+_RED    = "\033[38;2;248;81;73m"
+_YELLOW = "\033[38;2;210;153;34m"
+_TEAL   = "\033[38;2;57;197;207m"
+_BLUE   = "\033[38;2;88;166;255m"
+
+_NO_COLOUR = not sys.stdout.isatty()
+
+
+def c(colour: str, text: str) -> str:
+    if _NO_COLOUR:
+        return text
+    return colour + text + _RESET
+
+
+# ── config ─────────────────────────────────────────────────────────────────────
+
+_DEFAULT_CONFIG: dict = {
+    "cloudshell": {
+        "host":     "cloudshell.sourceos.io",
+        "user":     "sourceos",
+        "port":     22,
+        "identity": "~/.ssh/id_ed25519_sourceos",
+    },
+    "k3s_twin": {
+        "host":              "127.0.0.1",
+        "port":              6443,
+        "tunnel_local_port": 16443,
+        "kubeconfig":        "~/.kube/config-k3s-twin",
+    },
+}
+
+
+def _load_yaml_simple(path: Path) -> dict:
+    """Minimal YAML subset parser (key: value, nested via indent)."""
+    result: dict = {}
+    stack: list[tuple[int, dict]] = [(0, result)]
+    for line in path.read_text(errors="replace").splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(stripped)
+        if ":" not in stripped:
+            continue
+        key, _, val = stripped.partition(":")
+        key = key.strip()
+        val = val.strip()
+        # pop stack to current indent level
+        while len(stack) > 1 and stack[-1][0] >= indent:
+            stack.pop()
+        parent = stack[-1][1]
+        if val == "" or val.startswith("#"):
+            child: dict = {}
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            # strip inline comments
+            val = val.split(" #")[0].strip()
+            # bare type coercion
+            if val.isdigit():
+                parent[key] = int(val)
+            elif val.lower() in ("true", "yes"):
+                parent[key] = True
+            elif val.lower() in ("false", "no"):
+                parent[key] = False
+            else:
+                parent[key] = val
+    return result
+
+
+def load_config() -> dict:
+    cfg = {
+        "cloudshell": dict(_DEFAULT_CONFIG["cloudshell"]),
+        "k3s_twin":   dict(_DEFAULT_CONFIG["k3s_twin"]),
+    }
+    cfg_path = Path.home() / ".config" / "sourceos" / "cloudshell.yaml"
+    if cfg_path.exists():
+        try:
+            if _HAS_YAML:
+                raw = _yaml.safe_load(cfg_path.read_text()) or {}
+            else:
+                raw = _load_yaml_simple(cfg_path)
+            for section in ("cloudshell", "k3s_twin"):
+                if section in raw and isinstance(raw[section], dict):
+                    cfg[section].update(raw[section])
+        except Exception as exc:
+            print(c(_YELLOW, f"⚠  cloudshell.yaml parse error: {exc}"), file=sys.stderr)
+
+    # env-var overrides
+    cs = cfg["cloudshell"]
+    cs["host"]     = os.getenv("CLOUDSHELL_HOST",     str(cs["host"]))
+    cs["user"]     = os.getenv("CLOUDSHELL_USER",     str(cs["user"]))
+    cs["port"]     = int(os.getenv("CLOUDSHELL_PORT", str(cs["port"])))
+    cs["identity"] = os.getenv("CLOUDSHELL_KEY",      str(cs["identity"]))
+
+    # expand ~
+    cs["identity"] = str(Path(cs["identity"]).expanduser())
+    k3s = cfg["k3s_twin"]
+    k3s["kubeconfig"]        = str(Path(str(os.getenv("CLOUDSHELL_K3S_KUBECONFIG", k3s["kubeconfig"]))).expanduser())
+    k3s["tunnel_local_port"] = int(os.getenv("CLOUDSHELL_K3S_TUNNEL_PORT", str(k3s["tunnel_local_port"])))
+
+    return cfg
+
+
+# ── state paths ────────────────────────────────────────────────────────────────
+
+_STATE_DIR     = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos"
+_TUNNEL_PID    = _STATE_DIR / "k3s-tunnel.pid"
+_PROXY_PID     = _STATE_DIR / "cloudshell-proxy.pid"
+_MESH_CONTEXT  = _STATE_DIR / "memory-mesh" / "context.jsonl"
+
+
+def _pid_alive(pid_file: Path) -> tuple[bool, int]:
+    """Return (alive, pid). alive=False if file missing or process dead."""
+    if not pid_file.exists():
+        return False, 0
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)
+        return True, pid
+    except (ValueError, ProcessLookupError, PermissionError):
+        return False, 0
+
+
+def _write_pid(pid_file: Path, pid: int) -> None:
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(pid))
+
+
+def _kill_pid_file(pid_file: Path, label: str) -> None:
+    alive, pid = _pid_alive(pid_file)
+    if not alive:
+        print(c(_YELLOW, f"  {label} is not running"))
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+        pid_file.unlink(missing_ok=True)
+        print(c(_GREEN, f"  ✓ {label} stopped (pid {pid})"))
+    except Exception as exc:
+        print(c(_RED, f"  ✗ could not stop {label}: {exc}"), file=sys.stderr)
+
+
+def _emit_mesh_event(event_type: str, title: str, data: dict) -> None:
+    try:
+        _MESH_CONTEXT.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        ev = json.dumps({"ts": ts, "type": event_type, "title": title, "data": data})
+        with _MESH_CONTEXT.open("a") as f:
+            f.write(ev + "\n")
+    except Exception:
+        pass
+
+
+def _build_ssh_base(cfg: dict) -> list[str]:
+    cs = cfg["cloudshell"]
+    cmd = ["ssh"]
+    if cs["identity"] and Path(cs["identity"]).exists():
+        cmd += ["-i", cs["identity"]]
+    cmd += ["-p", str(cs["port"])]
+    return cmd
+
+
+# ── subcommands ────────────────────────────────────────────────────────────────
+
+def cmd_status(cfg: dict, _args: argparse.Namespace) -> int:
+    cs  = cfg["cloudshell"]
+    k3s = cfg["k3s_twin"]
+
+    print(c(_TEAL, "◆ cloudshell-fog / k3s twin — tunnel status") + "\n")
+
+    # Cloudshell config
+    print(c(_DIM, "  cloudshell host : ") + c(_BLUE, f"{cs['user']}@{cs['host']}:{cs['port']}"))
+    id_path = cs["identity"]
+    id_ok = Path(id_path).exists()
+    print(c(_DIM, "  identity key    : ") + (c(_GREEN, id_path) if id_ok else c(_RED, f"{id_path} (NOT FOUND)")))
+
+    # k3s tunnel
+    t_alive, t_pid = _pid_alive(_TUNNEL_PID)
+    lp = k3s["tunnel_local_port"]
+    t_label = (
+        c(_GREEN, f"UP   (pid {t_pid}) — localhost:{lp} → {k3s['host']}:{k3s['port']}")
+        if t_alive
+        else c(_RED, "DOWN")
+    )
+    print(c(_DIM, "  k3s tunnel      : ") + t_label)
+    if t_alive:
+        kc = k3s["kubeconfig"]
+        print(c(_DIM, "  kubeconfig hint : ") + c(_DIM, f"KUBECONFIG={kc} kubectl ..."))
+
+    # SOCKS5 proxy
+    p_alive, p_pid = _pid_alive(_PROXY_PID)
+    p_label = (
+        c(_GREEN, f"UP   (pid {p_pid}) — SOCKS5 localhost:1080")
+        if p_alive
+        else c(_RED, "DOWN")
+    )
+    print(c(_DIM, "  SOCKS5 proxy    : ") + p_label)
+    print()
+    return 0
+
+
+def cmd_connect(cfg: dict, args: argparse.Namespace) -> int:
+    cs = cfg["cloudshell"]
+    ssh_cmd = _build_ssh_base(cfg) + [f"{cs['user']}@{cs['host']}"]
+    _emit_mesh_event(
+        "cloudshell-connect",
+        "connected to cloudshell-fog",
+        {"host": cs["host"], "user": cs["user"]},
+    )
+    print(c(_TEAL, f"  → ssh {' '.join(ssh_cmd[1:])}"))
+    os.execvp("ssh", ssh_cmd)  # replaces current process
+
+
+def cmd_tunnel(cfg: dict, args: argparse.Namespace) -> int:
+    sub = getattr(args, "tunnel_sub", "status")
+    cs  = cfg["cloudshell"]
+    k3s = cfg["k3s_twin"]
+
+    if sub == "status" or sub is None:
+        alive, pid = _pid_alive(_TUNNEL_PID)
+        lp = k3s["tunnel_local_port"]
+        if alive:
+            print(c(_GREEN, f"  ✓ k3s tunnel UP (pid {pid}) — localhost:{lp} → {k3s['host']}:{k3s['port']}"))
+            print(c(_DIM, f"    KUBECONFIG={k3s['kubeconfig']} kubectl ..."))
+        else:
+            print(c(_RED, "  ✗ k3s tunnel DOWN — run: ktunnel start"))
+        return 0
+
+    if sub == "stop":
+        _kill_pid_file(_TUNNEL_PID, "k3s tunnel")
+        return 0
+
+    if sub == "start":
+        alive, pid = _pid_alive(_TUNNEL_PID)
+        if alive:
+            print(c(_YELLOW, f"  ⚠  k3s tunnel already running (pid {pid})"))
+            return 0
+        lp  = k3s["tunnel_local_port"]
+        ssh_cmd = _build_ssh_base(cfg) + [
+            "-N",
+            "-L", f"{lp}:{k3s['host']}:{k3s['port']}",
+            f"{cs['user']}@{cs['host']}",
+        ]
+        print(c(_TEAL, f"  → {' '.join(ssh_cmd)}"))
+        proc = subprocess.Popen(
+            ssh_cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _write_pid(_TUNNEL_PID, proc.pid)
+        _emit_mesh_event(
+            "cloudshell-connect",
+            "k3s tunnel started via cloudshell-fog",
+            {"host": cs["host"], "local_port": lp, "pid": proc.pid},
+        )
+        print(c(_GREEN, f"  ✓ k3s tunnel started (pid {proc.pid})"))
+        print(c(_DIM, f"    localhost:{lp} → {cs['host']} → {k3s['host']}:{k3s['port']}"))
+        print(c(_DIM, f"    KUBECONFIG={k3s['kubeconfig']} kubectl ..."))
+        return 0
+
+    print(c(_RED, f"unknown tunnel sub-command: {sub}"), file=sys.stderr)
+    return 1
+
+
+def cmd_proxy(cfg: dict, args: argparse.Namespace) -> int:
+    sub = getattr(args, "proxy_sub", "status")
+    cs  = cfg["cloudshell"]
+
+    if sub == "status" or sub is None:
+        alive, pid = _pid_alive(_PROXY_PID)
+        if alive:
+            print(c(_GREEN, f"  ✓ SOCKS5 proxy UP (pid {pid}) — localhost:1080"))
+        else:
+            print(c(_RED, "  ✗ SOCKS5 proxy DOWN — run: kproxy start"))
+        return 0
+
+    if sub == "stop":
+        _kill_pid_file(_PROXY_PID, "SOCKS5 proxy")
+        return 0
+
+    if sub == "start":
+        alive, pid = _pid_alive(_PROXY_PID)
+        if alive:
+            print(c(_YELLOW, f"  ⚠  SOCKS5 proxy already running (pid {pid})"))
+            return 0
+        ssh_cmd = _build_ssh_base(cfg) + [
+            "-N", "-D", "1080",
+            f"{cs['user']}@{cs['host']}",
+        ]
+        print(c(_TEAL, f"  → {' '.join(ssh_cmd)}"))
+        proc = subprocess.Popen(
+            ssh_cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _write_pid(_PROXY_PID, proc.pid)
+        print(c(_GREEN, f"  ✓ SOCKS5 proxy started (pid {proc.pid}) — localhost:1080"))
+        print(c(_DIM,   "    set HTTPS_PROXY=socks5://localhost:1080 to route traffic"))
+        return 0
+
+    print(c(_RED, f"unknown proxy sub-command: {sub}"), file=sys.stderr)
+    return 1
+
+
+def cmd_exec(cfg: dict, args: argparse.Namespace) -> int:
+    if not args.cmd:
+        print("Usage: turtle-ssh-tunnel exec <command> [args…]", file=sys.stderr)
+        return 1
+    cs = cfg["cloudshell"]
+    ssh_cmd = _build_ssh_base(cfg) + [f"{cs['user']}@{cs['host']}"] + args.cmd
+    result = subprocess.run(ssh_cmd)
+    return result.returncode
+
+
+def cmd_copy(cfg: dict, args: argparse.Namespace) -> int:
+    if len(args.paths) != 2:
+        print("Usage: turtle-ssh-tunnel copy <src> <dst>", file=sys.stderr)
+        return 1
+    cs = cfg["cloudshell"]
+    # Expand "cloudshell:" prefix → user@host:
+    remote = f"{cs['user']}@{cs['host']}"
+    paths = [p.replace("cloudshell:", remote + ":") for p in args.paths]
+    id_opt = []
+    if cs["identity"] and Path(cs["identity"]).exists():
+        id_opt = ["-i", cs["identity"]]
+    port_opt = ["-P", str(cs["port"])]
+    scp_cmd = ["scp"] + id_opt + port_opt + paths
+    print(c(_TEAL, f"  → {' '.join(scp_cmd)}"))
+    result = subprocess.run(scp_cmd)
+    return result.returncode
+
+
+# ── main ───────────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="turtle-ssh-tunnel",
+        description="cloudshell-fog SSH bastion + k3s twin tunnel manager",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("status", help="show tunnel/connection state")
+    sub.add_parser("connect", help="SSH into cloudshell-fog interactively")
+
+    p_tunnel = sub.add_parser("tunnel", help="manage k3s API tunnel")
+    p_tunnel.add_argument("tunnel_sub", nargs="?", choices=["start", "stop", "status"], default="status")
+
+    p_proxy = sub.add_parser("proxy", help="SOCKS5 proxy via cloudshell")
+    p_proxy.add_argument("proxy_sub", nargs="?", choices=["start", "stop", "status"], default="status")
+
+    p_exec = sub.add_parser("exec", help="run command on cloudshell non-interactively")
+    p_exec.add_argument("cmd", nargs=argparse.REMAINDER)
+
+    p_copy = sub.add_parser("copy", help="scp with cloudshell: host expansion")
+    p_copy.add_argument("paths", nargs=2)
+
+    args = parser.parse_args()
+    cfg  = load_config()
+
+    dispatch = {
+        "status":  cmd_status,
+        "connect": cmd_connect,
+        "tunnel":  cmd_tunnel,
+        "proxy":   cmd_proxy,
+        "exec":    cmd_exec,
+        "copy":    cmd_copy,
+    }
+
+    fn = dispatch.get(args.command or "status")
+    if fn is None:
+        parser.print_help()
+        return 1
+    return fn(cfg, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1450,6 +1450,10 @@ local PALETTE_COMMANDS = {
   { label = '⏱  Resource usage (last cmd)   —',             id = 'rss_info'          },
   { label = '📋  Runbook list (rb list)       —',             id = 'runbook_list'      },
   { label = '🔍  Runbook search (rb search)   —',             id = 'runbook_search'    },
+  -- cloudshell-fog + k3s twin
+  { label = '☁  CloudShell SSH (csh)          CMD+SHIFT+K',   id = 'cloudshell_ssh'    },
+  { label = '☁  k3s tunnel start (ktunnel)    —',             id = 'k3s_tunnel'        },
+  { label = '☁  CloudShell status (csh-status) —',            id = 'cloudshell_status' },
 }
 
 local function turtle_command_palette()
@@ -1551,6 +1555,9 @@ local function turtle_command_palette()
             noetica_search     = act.SendString('noes '),
             runbook_list       = act.SendString('rb list\n'),
             runbook_search     = act.SendString('rb search '),
+            cloudshell_ssh     = act.SendString('csh\n'),
+            k3s_tunnel         = act.SendString('ktunnel start\n'),
+            cloudshell_status  = act.SendString('csh-status\n'),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end
@@ -2157,6 +2164,7 @@ config.keys = {
   { key = 'l', mods = 'CMD|SHIFT',  action = turtle_recall() },             -- Memory mesh recall
   { key = 'u', mods = 'CMD|SHIFT',  action = turtle_mesh_push() },          -- Sync mesh to GCS
   { key = 'b', mods = 'CMD|SHIFT',  action = act.SendString('bb ') },       -- Open in BearBrowser
+  { key = 'k', mods = 'CMD|SHIFT', action = act.SendString('csh\n') },     -- CloudShell SSH
   -- Image gallery (lsi equivalent from WezTerm)
   { key = 'g', mods = 'CMD|SHIFT',  action = wezterm.action_callback(function(w, p)
       local cwd = ''
