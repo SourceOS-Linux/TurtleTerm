@@ -1464,6 +1464,13 @@ local PALETTE_COMMANDS = {
   { label = '💬  Matrix: recent log (mxlog)     —',                  id = 'matrix_log'      },
   { label = '💬  Matrix: post context (mxctx)   —',                  id = 'matrix_ctx'      },
   { label = '💬  Matrix: bridge status (mxstatus) —',                id = 'matrix_status'   },
+  -- Support tickets
+  { label = '🎫  Ticket: open (tko)              —',                  id = 'ticket_open'     },
+  { label = '🎫  Ticket: list (tkl)              —',                  id = 'ticket_list'     },
+  { label = '🎫  Ticket: search (tks)            —',                  id = 'ticket_search'   },
+  { label = '🎫  Ticket: close (tkc)             —',                  id = 'ticket_close'    },
+  { label = '🎫  Ticket: comment (tkn)           —',                  id = 'ticket_note'     },
+  { label = '🎫  Ticket: summary                 —',                  id = 'ticket_summary'  },
 }
 
 local function turtle_command_palette()
@@ -1577,6 +1584,12 @@ local function turtle_command_palette()
             matrix_log         = act.SendString('mxlog\n'),
             matrix_ctx         = act.SendString('mxctx\n'),
             matrix_status      = act.SendString('mxstatus\n'),
+            ticket_open        = act.SendString('tko '),
+            ticket_list        = act.SendString('tkl\n'),
+            ticket_search      = act.SendString('tks '),
+            ticket_close       = act.SendString('tkc '),
+            ticket_note        = act.SendString('tkn '),
+            ticket_summary     = act.SendString('ticket summary\n'),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end

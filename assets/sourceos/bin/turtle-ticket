@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+# MIT License
+# Copyright (c) 2026 @mdheller
+#
+# turtle-ticket — sovereign support ticket and case record system.
+#
+# Stores tickets as JSONL receipts under ~/.local/state/sourceos/tickets/
+# Tickets can be submitted from the terminal, from Matrix via !qes ticket,
+# or from any tool that can write to the JSONL store.
+#
+# Usage:
+#   turtle-ticket open <title> [--priority <p>] [--repo <repo>] [--body <text>]
+#   turtle-ticket list [--open | --closed | --all] [--repo <repo>] [--n <n>]
+#   turtle-ticket show <ticket_id>
+#   turtle-ticket comment <ticket_id> <text>
+#   turtle-ticket close <ticket_id> [--resolution <text>]
+#   turtle-ticket reopen <ticket_id>
+#   turtle-ticket tag <ticket_id> <tag>
+#   turtle-ticket search <query>
+#   turtle-ticket summary [--repo <repo>]   # counts by status/priority
+#   turtle-ticket status                    # store path + counts
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+
+TICKETS_DIR = Path.home() / ".local" / "state" / "sourceos" / "tickets"
+TICKETS_JSONL = TICKETS_DIR / "tickets.jsonl"
+EVENTS_JSONL  = TICKETS_DIR / "events.jsonl"
+
+PRIORITIES = {"p0", "p1", "p2", "p3", "low", "medium", "high", "critical"}
+STATUSES   = {"open", "closed", "in-progress", "blocked", "wont-fix"}
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _short_id() -> str:
+    return str(uuid.uuid4())[:8]
+
+
+def _ensure_dir() -> None:
+    TICKETS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_all() -> list[dict]:
+    """Read tickets.jsonl, return latest state per ticket (last write wins)."""
+    if not TICKETS_JSONL.exists():
+        return []
+    tickets: dict[str, dict] = {}
+    for line in TICKETS_JSONL.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            t = json.loads(line)
+            tickets[t["id"]] = t
+        except Exception:
+            continue
+    return list(tickets.values())
+
+
+def _write_ticket(ticket: dict) -> None:
+    _ensure_dir()
+    with open(TICKETS_JSONL, "a") as f:
+        f.write(json.dumps(ticket, ensure_ascii=False) + "\n")
+
+
+def _write_event(event: dict) -> None:
+    _ensure_dir()
+    with open(EVENTS_JSONL, "a") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _get(ticket_id: str) -> dict | None:
+    for t in _read_all():
+        if t["id"] == ticket_id or t["id"].startswith(ticket_id):
+            return t
+    return None
+
+
+def _fmt_ticket(t: dict, verbose: bool = False) -> str:
+    prio  = t.get("priority", "p2")
+    repo  = t.get("repo", "")
+    tags  = ", ".join(t.get("tags", []))
+    lines = [
+        f"[{t['id']}] {t['status'].upper():<11} {prio:<4} {t['title']}",
+        f"  opened: {t['created_at'][:16]}  repo: {repo or '—'}  tags: {tags or '—'}",
+    ]
+    if verbose:
+        if t.get("body"):
+            lines.append(f"  body: {t['body']}")
+        comments = t.get("comments", [])
+        for c in comments:
+            lines.append(f"  [{c['ts'][:16]}] {c['author']}: {c['text']}")
+        if t.get("resolution"):
+            lines.append(f"  resolution: {t['resolution']}")
+    return "\n".join(lines)
+
+
+def _parse_flags(argv: list[str]) -> tuple[list[str], dict[str, str]]:
+    flags: dict[str, str] = {}
+    pos: list[str] = []
+    i = 0
+    while i < len(argv):
+        if argv[i].startswith("--") and i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            key = argv[i][2:]
+            flags[key] = argv[i + 1]
+            i += 2
+        elif argv[i].startswith("--") and "=" in argv[i]:
+            k, _, v = argv[i][2:].partition("=")
+            flags[k] = v
+            i += 1
+        else:
+            pos.append(argv[i])
+            i += 1
+    return pos, flags
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+def cmd_open(pos: list[str], flags: dict[str, str]) -> None:
+    if not pos:
+        print("Usage: turtle-ticket open <title> [--priority p1] [--repo <repo>] [--body <text>]",
+              file=sys.stderr)
+        sys.exit(1)
+    title    = " ".join(pos)
+    priority = flags.get("priority", "p2")
+    repo     = flags.get("repo", os.environ.get("SOURCEOS_REPO", ""))
+    body     = flags.get("body", "")
+
+    ticket: dict[str, Any] = {
+        "id":         _short_id(),
+        "title":      title,
+        "status":     "open",
+        "priority":   priority,
+        "repo":       repo,
+        "body":       body,
+        "tags":       [],
+        "comments":   [],
+        "created_at": _now(),
+        "updated_at": _now(),
+        "resolution": "",
+    }
+    _write_ticket(ticket)
+    _write_event({"ts": _now(), "type": "ticket.opened", "ticket_id": ticket["id"],
+                  "title": title, "priority": priority, "repo": repo})
+    print(f"✅ Ticket opened: [{ticket['id']}] {title}")
+    print(f"   priority={priority}  repo={repo or '—'}")
+
+
+def cmd_list(pos: list[str], flags: dict[str, str]) -> None:
+    tickets = _read_all()
+    status_filter = None
+    if "--open" in sys.argv:
+        status_filter = "open"
+    elif "--closed" in sys.argv:
+        status_filter = "closed"
+    elif "status" in flags:
+        status_filter = flags["status"]
+
+    repo_filter = flags.get("repo", "")
+    n = int(flags.get("n", "20"))
+
+    if status_filter and status_filter != "all":
+        tickets = [t for t in tickets if t.get("status") == status_filter]
+    if repo_filter:
+        tickets = [t for t in tickets if t.get("repo") == repo_filter]
+
+    tickets.sort(key=lambda t: t.get("updated_at", ""), reverse=True)
+    tickets = tickets[:n]
+
+    if not tickets:
+        print("(no tickets)")
+        return
+    for t in tickets:
+        print(_fmt_ticket(t))
+
+
+def cmd_show(pos: list[str], flags: dict[str, str]) -> None:
+    if not pos:
+        print("Usage: turtle-ticket show <ticket_id>", file=sys.stderr)
+        sys.exit(1)
+    t = _get(pos[0])
+    if not t:
+        print(f"⚠ Ticket not found: {pos[0]}", file=sys.stderr)
+        sys.exit(1)
+    print(_fmt_ticket(t, verbose=True))
+
+
+def cmd_comment(pos: list[str], flags: dict[str, str]) -> None:
+    if len(pos) < 2:
+        print("Usage: turtle-ticket comment <ticket_id> <text>", file=sys.stderr)
+        sys.exit(1)
+    t = _get(pos[0])
+    if not t:
+        print(f"⚠ Ticket not found: {pos[0]}", file=sys.stderr)
+        sys.exit(1)
+    comment = {"ts": _now(), "author": os.environ.get("USER", "shell"), "text": " ".join(pos[1:])}
+    t.setdefault("comments", []).append(comment)
+    t["updated_at"] = _now()
+    _write_ticket(t)
+    _write_event({"ts": _now(), "type": "ticket.commented", "ticket_id": t["id"], "text": comment["text"]})
+    print(f"💬 Comment added to [{t['id']}]")
+
+
+def cmd_close(pos: list[str], flags: dict[str, str]) -> None:
+    if not pos:
+        print("Usage: turtle-ticket close <ticket_id> [--resolution <text>]", file=sys.stderr)
+        sys.exit(1)
+    t = _get(pos[0])
+    if not t:
+        print(f"⚠ Ticket not found: {pos[0]}", file=sys.stderr)
+        sys.exit(1)
+    t["status"]     = "closed"
+    t["resolution"] = flags.get("resolution", "")
+    t["updated_at"] = t["closed_at"] = _now()
+    _write_ticket(t)
+    _write_event({"ts": _now(), "type": "ticket.closed", "ticket_id": t["id"],
+                  "resolution": t["resolution"]})
+    print(f"✅ Ticket closed: [{t['id']}] {t['title']}")
+
+
+def cmd_reopen(pos: list[str], flags: dict[str, str]) -> None:
+    if not pos:
+        print("Usage: turtle-ticket reopen <ticket_id>", file=sys.stderr)
+        sys.exit(1)
+    t = _get(pos[0])
+    if not t:
+        print(f"⚠ Ticket not found: {pos[0]}", file=sys.stderr)
+        sys.exit(1)
+    t["status"]     = "open"
+    t["updated_at"] = _now()
+    _write_ticket(t)
+    _write_event({"ts": _now(), "type": "ticket.reopened", "ticket_id": t["id"]})
+    print(f"🔄 Ticket reopened: [{t['id']}]")
+
+
+def cmd_tag(pos: list[str], flags: dict[str, str]) -> None:
+    if len(pos) < 2:
+        print("Usage: turtle-ticket tag <ticket_id> <tag>", file=sys.stderr)
+        sys.exit(1)
+    t = _get(pos[0])
+    if not t:
+        print(f"⚠ Ticket not found: {pos[0]}", file=sys.stderr)
+        sys.exit(1)
+    tag = pos[1]
+    tags = t.setdefault("tags", [])
+    if tag not in tags:
+        tags.append(tag)
+    t["updated_at"] = _now()
+    _write_ticket(t)
+    print(f"🏷  Tagged [{t['id']}] with '{tag}'")
+
+
+def cmd_search(pos: list[str], flags: dict[str, str]) -> None:
+    if not pos:
+        print("Usage: turtle-ticket search <query>", file=sys.stderr)
+        sys.exit(1)
+    query = " ".join(pos).lower()
+    results = []
+    for t in _read_all():
+        score = 0
+        if query in t.get("title", "").lower():
+            score += 3
+        if query in t.get("body", "").lower():
+            score += 2
+        if any(query in tag.lower() for tag in t.get("tags", [])):
+            score += 2
+        if query in t.get("repo", "").lower():
+            score += 1
+        for c in t.get("comments", []):
+            if query in c.get("text", "").lower():
+                score += 1
+        if score > 0:
+            results.append((score, t))
+
+    results.sort(key=lambda x: (-x[0], x[1].get("updated_at", "")), reverse=False)
+    if not results:
+        print(f"(no tickets matching '{query}')")
+        return
+    for _, t in results:
+        print(_fmt_ticket(t))
+
+
+def cmd_summary(pos: list[str], flags: dict[str, str]) -> None:
+    tickets = _read_all()
+    repo_filter = flags.get("repo", "")
+    if repo_filter:
+        tickets = [t for t in tickets if t.get("repo") == repo_filter]
+
+    by_status: dict[str, int] = {}
+    by_priority: dict[str, int] = {}
+    for t in tickets:
+        s = t.get("status", "open")
+        p = t.get("priority", "p2")
+        by_status[s]    = by_status.get(s, 0) + 1
+        by_priority[p]  = by_priority.get(p, 0) + 1
+
+    print(f"Total tickets: {len(tickets)}")
+    print("By status:")
+    for s, n in sorted(by_status.items()):
+        print(f"  {s:<12} {n}")
+    print("By priority:")
+    for p, n in sorted(by_priority.items()):
+        print(f"  {p:<8} {n}")
+
+
+def cmd_status(pos: list[str], flags: dict[str, str]) -> None:
+    tickets = _read_all()
+    open_count   = sum(1 for t in tickets if t.get("status") == "open")
+    closed_count = sum(1 for t in tickets if t.get("status") == "closed")
+    print(f"tickets store : {TICKETS_JSONL}")
+    print(f"events store  : {EVENTS_JSONL}")
+    print(f"total tickets : {len(tickets)}")
+    print(f"open          : {open_count}")
+    print(f"closed        : {closed_count}")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+COMMANDS = {
+    "open":    cmd_open,
+    "list":    cmd_list,
+    "show":    cmd_show,
+    "comment": cmd_comment,
+    "close":   cmd_close,
+    "reopen":  cmd_reopen,
+    "tag":     cmd_tag,
+    "search":  cmd_search,
+    "summary": cmd_summary,
+    "status":  cmd_status,
+}
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0)
+
+    cmd = argv[0]
+    rest = argv[1:]
+    pos, flags = _parse_flags(rest)
+
+    fn = COMMANDS.get(cmd)
+    if not fn:
+        print(f"Unknown command: {cmd}. Run with --help for usage.", file=sys.stderr)
+        sys.exit(1)
+    fn(pos, flags)
+
+
+if __name__ == "__main__":
+    main()
