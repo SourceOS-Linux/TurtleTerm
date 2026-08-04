@@ -1,0 +1,52 @@
+name: TurtleTerm Preflight (real-artifact parity)
+
+# One authoritative gate that runs the full packaging verifier set the way a
+# developer's `make preflight` does — on a host with every packaging tool
+# present, so the verdict is "full CI parity". It also fails if CI has grown a
+# verifier the local preflight doesn't run (gate drift). This is the gate that
+# makes a green mean the real packages were built and checked, not that a static
+# file happened to match.
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'assets/sourceos/**'
+      - 'Makefile'
+      - '.github/workflows/turtle-term-preflight.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packaging/**'
+      - 'assets/sourceos/**'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Full-parity preflight
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install packaging tools (deb + rpm + zstd)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y dpkg-dev rpm zstd
+
+      - name: Run preflight
+        run: make preflight
+
+      - name: Assert full parity (no gate was skipped)
+        run: |
+          out="$(bash packaging/scripts/preflight.sh)"
+          echo "$out"
+          if echo "$out" | grep -q 'PREFLIGHT PARTIAL'; then
+            echo "::error::preflight reported PARTIAL on a fully-tooled runner — a real-build gate was skipped; investigate the skip reason above" >&2
+            exit 1
+          fi
+          echo "$out" | grep -q 'full CI parity'

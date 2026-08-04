@@ -1,4 +1,4 @@
-.PHONY: all fmt build check test docs servedocs turtle-build turtle-smoke turtle-package turtle-homebrew-test turtle-release-check
+.PHONY: all fmt build check test docs servedocs turtle-build turtle-smoke turtle-package turtle-homebrew-test turtle-release-check preflight
 
 all: build
 
@@ -53,3 +53,9 @@ turtle-release-check: turtle-smoke
 	git diff --quiet
 	git diff --cached --quiet
 	git rev-parse --verify HEAD
+
+# Run the SAME gates CI runs, locally, and report honestly which ran vs were
+# skipped. A green here means what a green in CI means (real package builds),
+# and it self-checks that the local gate set hasn't drifted from CI's.
+preflight:
+	bash packaging/scripts/preflight.sh
