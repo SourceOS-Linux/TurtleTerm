@@ -15,14 +15,46 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
-_DEFAULT_SEARXNG = "https://searx.be"
 _USER_AGENT = "TurtleTerm/1.0 (sovereign; +https://sourceos.io)"
+
+
+def _searxng_url() -> str:
+    """Resolve the SearXNG base URL with a four-level priority chain:
+
+    1. SEARXNG_URL environment variable (explicit override)
+    2. Persisted URL written by sourceos-searxng-setup.sh
+    3. Auto-probe localhost:8888 (Docker) then localhost:8080 (Homebrew)
+    4. Public fallback (https://searx.be)
+    """
+    # 1. Explicit env var wins
+    if url := os.environ.get("SEARXNG_URL", ""):
+        return url.rstrip("/")
+    # 2. Persisted local instance URL
+    state_file = (
+        Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+        / "sourceos"
+        / "searxng-url"
+    )
+    if state_file.exists():
+        url = state_file.read_text().strip()
+        if url:
+            return url.rstrip("/")
+    # 3. Try localhost:8888 (Docker), then 8080 (Homebrew)
+    for local_url in ("http://localhost:8888", "http://localhost:8080"):
+        try:
+            urllib.request.urlopen(f"{local_url}/healthz", timeout=1)
+            return local_url
+        except Exception:  # noqa: BLE001
+            pass
+    # 4. Public fallback
+    return "https://searx.be"
 
 
 def search(query: str, count: int = 5) -> list[dict]:
     """Query SearXNG and return a ranked list of results."""
-    base = os.environ.get("SEARXNG_URL", _DEFAULT_SEARXNG).rstrip("/")
+    base = _searxng_url()
     params = urllib.parse.urlencode({
         "q": query,
         "format": "json",

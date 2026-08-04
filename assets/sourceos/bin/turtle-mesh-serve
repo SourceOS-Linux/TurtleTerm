@@ -26,6 +26,7 @@ import queue
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -60,6 +61,23 @@ def load_jsonl_tail(path: Path, n: int = 50) -> list[dict]:
     return items[-n:]
 
 
+def _searxng_alive() -> bool:
+    state_file = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "searxng-url"
+    candidates = []
+    if state_file.exists():
+        url = state_file.read_text().strip().rstrip("/")
+        if url:
+            candidates.append(url)
+    candidates += ["http://localhost:8888", "http://localhost:8080"]
+    for url in candidates:
+        try:
+            urllib.request.urlopen(f"{url}/healthz", timeout=1)
+            return True
+        except Exception:
+            pass
+    return False
+
+
 def gather_state() -> dict:
     mesh   = load_jsonl_tail(MESH_DIR / "context.jsonl", 60)
     active = load_json(MESH_DIR / "active.json")
@@ -67,6 +85,7 @@ def gather_state() -> dict:
     pr     = load_json(STATUS_DIR / "pr.json")
     noetica= load_json(STATUS_DIR / "noetica.json")
     board  = load_json(STATUS_DIR / "board.json")
+    searxng_ok = _searxng_alive()
 
     bb_cands: list[dict] = []
     cand_path = BB_SUPPORT / "memory" / "candidates.jsonl"
@@ -84,15 +103,16 @@ def gather_state() -> dict:
             notes.append({"name": p.name, "mtime": p.stat().st_mtime})
 
     return {
-        "ts":       datetime.datetime.now().isoformat(),
-        "active":   active,
-        "mesh":     mesh,
-        "ci":       ci,
-        "pr":       pr,
-        "noetica":  noetica,
-        "board":    board,
-        "bb_cands": bb_cands,
-        "notes":    notes,
+        "ts":        datetime.datetime.now().isoformat(),
+        "active":    active,
+        "mesh":      mesh,
+        "ci":        ci,
+        "pr":        pr,
+        "noetica":   noetica,
+        "board":     board,
+        "bb_cands":  bb_cands,
+        "notes":     notes,
+        "searxng_ok": searxng_ok,
     }
 
 
@@ -227,6 +247,7 @@ h2{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em
 </div>
 <div id="status-bar">
   <span id="noe-badge"><span class="dot dot-yellow pulse"></span>Noetica …</span>
+  <span id="searxng-badge"><span class="dot dot-yellow pulse"></span>Search …</span>
   <span id="ci-badge">CI —</span>
   <span id="pr-badge">PRs —</span>
   <span id="board-badge">Board —</span>
@@ -272,6 +293,10 @@ function render(state) {
   document.getElementById('noe-badge').innerHTML = noe.ok
     ? `<span class="dot dot-green"></span>Noetica <span class="badge badge-green">up</span>`
     : `<span class="dot dot-red"></span>Noetica <span class="badge badge-red">down</span>`
+
+  document.getElementById('searxng-badge').innerHTML = state.searxng_ok
+    ? `<span class="dot dot-green"></span>Search <span class="badge badge-green">up</span>`
+    : `<span class="dot dot-red"></span>Search <span class="badge badge-red">down</span>`
 
   const ci = state.ci || {}
   const ciClass = ci.conclusion === 'success' ? 'badge-green' : ci.conclusion === 'failure' ? 'badge-red' : 'badge-yellow'

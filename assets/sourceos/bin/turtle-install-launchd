@@ -5,10 +5,14 @@
 #   com.sourceos.turtle-mesh-push  — GCS mesh sync every 5 minutes
 #   com.sourceos.turtle-mesh-serve — local mesh dashboard on :7788
 #
+# Optionally installs (requires --with-searxng):
+#   com.sourceos.searxng           — start sovereign SearXNG container at login
+#
 # Usage:
-#   turtle-install-launchd          # install both
-#   turtle-install-launchd --unload # stop + unload both
-#   turtle-install-launchd --status # show launchctl status
+#   turtle-install-launchd                    # install mesh agents
+#   turtle-install-launchd --with-searxng     # also install SearXNG agent
+#   turtle-install-launchd --unload           # stop + unload all loaded agents
+#   turtle-install-launchd --status           # show launchctl status
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,19 +22,25 @@ LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 LABELS=(com.sourceos.turtle-mesh-push com.sourceos.turtle-mesh-serve)
 
 usage() {
-  echo "Usage: turtle-install-launchd [--unload|--status]"
+  echo "Usage: turtle-install-launchd [--with-searxng] [--unload|--status]"
 }
 
 status_mode=false
 unload_mode=false
+with_searxng=false
 for arg in "$@"; do
   case "$arg" in
-    --status) status_mode=true ;;
-    --unload) unload_mode=true ;;
+    --status)       status_mode=true ;;
+    --unload)       unload_mode=true ;;
+    --with-searxng) with_searxng=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $arg" >&2; usage >&2; exit 1 ;;
   esac
 done
+
+if $with_searxng; then
+  LABELS+=(com.sourceos.searxng)
+fi
 
 if $status_mode; then
   for label in "${LABELS[@]}"; do
@@ -72,3 +82,6 @@ done
 echo ""
 echo "  Mesh dashboard → http://localhost:7788"
 echo "  GCS sync       → every 5 minutes (requires SOURCEOS_GCS_BUCKET env in ~/.zshrc)"
+if $with_searxng; then
+  echo "  SearXNG        → http://localhost:8888 (container must exist; run sourceos-searxng-setup.sh first)"
+fi
