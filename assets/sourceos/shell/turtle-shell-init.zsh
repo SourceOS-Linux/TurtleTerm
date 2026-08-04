@@ -690,20 +690,23 @@ bb() {
     local _url="${1:-}"
     local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
     local _bb_scripts="$HOME/dev/BearBrowser/scripts"
+    local _branch; _branch="$(git branch --show-current 2>/dev/null || echo '')"
 
-    # Emit mesh event
+    # Emit mesh event — pass values via env to avoid shell→Python injection
+    TURTLE_URL="$_url" TURTLE_MESH_DIR="$_mesh_dir" \
     python3 -c "
 import json, datetime, os, pathlib
-mesh = pathlib.Path('$_mesh_dir')
+url  = os.environ.get('TURTLE_URL', '')
+mesh = pathlib.Path(os.environ['TURTLE_MESH_DIR'])
 mesh.mkdir(parents=True, exist_ok=True)
 ctx = mesh / 'context.jsonl'
 ev = {
     'ts': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
     'kind': 'browse',
     'source': 'shell-bb',
-    'title': '$_url' or 'BearBrowser opened',
-    'content': 'User opened BearBrowser' + (' at $_url' if '$_url' else ''),
-    'url': '$_url',
+    'title': url or 'BearBrowser opened',
+    'content': ('User opened BearBrowser at ' + url) if url else 'User opened BearBrowser',
+    'url': url,
     'cwd': os.getcwd(),
 }
 with ctx.open('a') as f:
@@ -711,15 +714,17 @@ with ctx.open('a') as f:
 " 2>/dev/null &!
 
     # Update active context
-    local _branch; _branch="$(git branch --show-current 2>/dev/null || echo '')"
+    TURTLE_URL="$_url" TURTLE_BRANCH="$_branch" TURTLE_MESH_DIR="$_mesh_dir" \
     python3 -c "
 import json, datetime, os, pathlib, socket
-mesh = pathlib.Path('$_mesh_dir')
+url    = os.environ.get('TURTLE_URL', '')
+branch = os.environ.get('TURTLE_BRANCH', '')
+mesh   = pathlib.Path(os.environ['TURTLE_MESH_DIR'])
 mesh.mkdir(parents=True, exist_ok=True)
 (mesh / 'active.json').write_text(json.dumps({
     'cwd': os.getcwd(),
-    'branch': '$_branch',
-    'title': 'BearBrowser: $_url',
+    'branch': branch,
+    'title': ('BearBrowser: ' + url) if url else 'BearBrowser',
     'hostname': socket.gethostname(),
     'updated': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
 }, indent=2))
@@ -755,15 +760,17 @@ bbs() {
     local _noetica="${NOETICA_URL:-http://localhost:7700}"
     local _url
 
-    # Ask Noetica for the best URL to open for this query
-    _url="$(python3 -c "
-import json, sys
+    # Ask Noetica for the best URL — pass query via env to avoid injection
+    _url="$(TURTLE_QUERY="$_query" TURTLE_NOETICA="$_noetica" python3 -c "
+import json, os
 from urllib import request as urlreq
+query   = os.environ['TURTLE_QUERY']
+noetica = os.environ['TURTLE_NOETICA']
 try:
     payload = json.dumps({'messages': [{'role': 'user',
-        'content': 'Reply with ONLY a single search URL (no explanation) for: $_query'}],
+        'content': 'Reply with ONLY a single search URL (no explanation) for: ' + query}],
         'max_tokens': 80}).encode()
-    req = urlreq.Request('$_noetica/api/chat', data=payload,
+    req = urlreq.Request(noetica + '/api/chat', data=payload,
         headers={'Content-Type': 'application/json'})
     with urlreq.urlopen(req, timeout=4) as r:
         resp = json.load(r)
@@ -773,8 +780,10 @@ except Exception:
 " 2>/dev/null)"
 
     if [[ -z "$_url" ]] || [[ "$_url" != http* ]]; then
-        # Fallback: DuckDuckGo
-        local _encoded; _encoded="$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote_plus('$_query'))" 2>/dev/null || echo "$_query")"
+        # Fallback: DuckDuckGo — pass query via env
+        local _encoded; _encoded="$(TURTLE_QUERY="$_query" python3 -c "
+import urllib.parse, os; print(urllib.parse.quote_plus(os.environ['TURTLE_QUERY']))
+" 2>/dev/null || printf '%s' "$_query")"
         _url="https://duckduckgo.com/?q=${_encoded}&ia=web"
     fi
 
