@@ -99,27 +99,32 @@ EOF
 #        kubectl get pods | ? "which are not ready and why"
 # ============================================================
 
+_turtle_stream_bin() {
+    local _bin
+    _bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-noetica-stream"
+    [[ -x "$_bin" ]] && echo "$_bin" && return
+    echo "turtle-noetica-stream"
+}
+
+_turtle_memory_bin() {
+    local _bin
+    _bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-noetica-memory"
+    [[ -x "$_bin" ]] && echo "$_bin" && return
+    echo "turtle-noetica-memory"
+}
+
+_turtle_memory_context() {
+    local _mbin; _mbin="$(_turtle_memory_bin)"
+    python3 "$_mbin" context 2>/dev/null
+}
+
 _turtle_noetica_query() {
-    # Low-level: send a prompt to Noetica, print the response.
-    # Args: $1=noetica URL  $2=prompt string
-    local _noetica="$1" _prompt="$2"
-    python3 -c "
-import json, urllib.request, sys
-noetica, prompt = sys.argv[1], sys.argv[2]
-payload = json.dumps({'messages':[{'role':'user','content':prompt}],'stream':False}).encode()
-try:
-    req = urllib.request.Request(noetica+'/api/chat', data=payload,
-                                  headers={'Content-Type':'application/json'})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        d = json.load(r)
-        msg = (d.get('choices',[{}])[0].get('message',{}).get('content','')
-               or d.get('message',{}).get('content','')
-               or d.get('content',''))
-        print(msg.strip())
-except Exception as e:
-    print(f'(Noetica unreachable: {e})', file=sys.stderr)
-    sys.exit(1)
-" "$_noetica" "$_prompt" 2>&1
+    # Streaming Noetica query — real SSE if supported, word-by-word fallback.
+    # Args: $1=noetica URL  $2=prompt string  $3=max_tokens (optional)
+    local _noetica="$1" _prompt="$2" _max="${3:-400}"
+    local _sbin; _sbin="$(_turtle_stream_bin)"
+    TURTLE_NOETICA="$_noetica" TURTLE_PROMPT="$_prompt" TURTLE_MAX_TOKENS="$_max" \
+        python3 "$_sbin"
 }
 
 _turtle_active_context_snippet() {
@@ -163,15 +168,13 @@ Answer: ${_query}
 
 Be concise (1-4 lines)."
 
-    printf '\e[38;2;57;197;207m▍\e[0m '
-    local _result
-    _result="$(_turtle_noetica_query "$_noetica" "$_prompt" 2>/dev/null)"
+    # Inject persistent memory into pipe queries too
+    local _mem_ctx; _mem_ctx="$(_turtle_memory_context 2>/dev/null)"
+    [[ -n "$_mem_ctx" ]] && _prompt="${_mem_ctx}\n\n${_prompt}"
 
-    if [[ -n "$_result" ]]; then
-        printf '\e[38;2;230;237;243m%s\e[0m\n' "$_result"
-    else
-        printf '\e[2m(no response — is Noetica running on %s?)\e[0m\n' "$_noetica" >&2
-    fi
+    printf '\e[38;2;57;197;207m▍\e[0m \e[38;2;230;237;243m'
+    _turtle_noetica_query "$_noetica" "$_prompt" 150
+    printf '\e[0m'
 }
 
 # ============================================================
@@ -181,24 +184,41 @@ Be concise (1-4 lines)."
 #        noe cap "what was that kubectl command I ran?"
 # ============================================================
 noe() {
-    local _query="$*"
     local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    local _mbin; _mbin="$(_turtle_memory_bin)"
 
-    if [[ -z "$_query" ]]; then
+    if [[ -z "${1:-}" ]]; then
         echo "Usage: noe <question>" >&2
-        echo "       noe cap <question>  — ask about the last capture" >&2
+        echo "       noe cap <question>   — ask about the last capture" >&2
+        echo "       noe mem <fact>       — save a fact to persistent memory" >&2
+        echo "       noe mem list         — show saved memory" >&2
         return 1
     fi
 
-    # 'noe cap' — include last capture/note from mesh in context
+    # noe mem — persistent memory management
+    if [[ "${1:-}" == "mem" ]]; then
+        shift
+        if [[ "${1:-}" == "list" ]]; then
+            python3 "$_mbin" list
+        elif [[ -n "$*" ]]; then
+            python3 "$_mbin" add "$*"
+        else
+            python3 "$_mbin" list
+        fi
+        return
+    fi
+
+    local _query="$*"
+
+    # noe cap — include last mesh capture in context
     if [[ "${1:-}" == "cap" ]]; then
         shift
         _query="$*"
         local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
         local _last_cap
         _last_cap="$(python3 -c "
-import json, pathlib
-ctx = pathlib.Path('$_mesh_dir/context.jsonl')
+import json, os, pathlib
+ctx = pathlib.Path(os.environ.get('XDG_STATE_HOME', os.path.expanduser('~/.local/state'))) / 'sourceos' / 'memory-mesh' / 'context.jsonl'
 if ctx.exists():
     for line in reversed(ctx.read_text(errors='replace').splitlines()):
         try:
@@ -211,19 +231,25 @@ if ctx.exists():
         [[ -n "$_last_cap" ]] && _query="Context:\n${_last_cap}\n\nQuestion: ${_query}"
     fi
 
-    local _ctx; _ctx="$(_turtle_active_context_snippet)"
-    [[ -n "$_ctx" ]] && _query="${_query}
+    # Build full prompt: persistent memory + active context + query
+    local _mem_ctx; _mem_ctx="$(python3 "$_mbin" context 2>/dev/null)"
+    local _shell_ctx; _shell_ctx="$(_turtle_active_context_snippet)"
+    local _full_prompt=""
+    [[ -n "$_mem_ctx"   ]] && _full_prompt="${_mem_ctx}\n\n"
+    [[ -n "$_shell_ctx" ]] && _full_prompt="${_full_prompt}Shell context:\n${_shell_ctx}\n\n"
+    _full_prompt="${_full_prompt}${_query}"
 
-Shell context:
-${_ctx}"
+    printf '\e[38;2;57;197;207m▍ Noetica\e[0m  '
+    _turtle_noetica_query "$_noetica" "$_full_prompt"
+    printf '\n'
 
-    printf '\e[38;2;57;197;207m▍ Noetica\e[0m\n'
-    local _result
-    _result="$(_turtle_noetica_query "$_noetica" "$_query")"
-    if [[ -n "$_result" ]]; then
-        printf '\e[38;2;230;237;243m%s\e[0m\n\n' "$_result"
-    else
-        printf '\e[2m(no response from Noetica at %s)\e[0m\n' "$_noetica" >&2
+    # Auto-extract saveable facts from the query (background, non-blocking)
+    if python3 -c "
+import re, sys
+text = sys.argv[1]
+print('1' if re.search(r'(?:remember|note that|always|prefer|i use|i like|my |never )', text, re.I) else '0')
+" "$_query" 2>/dev/null | grep -q 1; then
+        TURTLE_NOETICA="$_noetica" python3 "$_mbin" extract "$_query" &! 2>/dev/null
     fi
 }
 
@@ -1295,6 +1321,8 @@ _turtle_preexec_timing() {
     _TURTLE_PERF_CMD="$1"
 }
 
+_TURTLE_TRIAGE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/last-error-triage.txt"
+
 _turtle_precmd_timing() {
     local rc=$?
     if [[ -n "$_TURTLE_PERF_START" && -n "$_TURTLE_PERF_CMD" ]]; then
@@ -1309,8 +1337,38 @@ _turtle_precmd_timing() {
             (osascript -e "display notification \"${cmd_short} (${elapsed_ms}ms)\" with title \"TurtleTerm: Command done\"" 2>/dev/null &)
         fi
         _TURTLE_LAST_ELAPSED=$elapsed_ms
+        _TURTLE_LAST_RC=$rc
+
+        # ── Auto error triage (Warp-equivalent) ───────────────────────────
+        # Non-zero exit on a real command (not Ctrl+C, not empty buffer) →
+        # async Noetica query, result printed at next prompt.
+        if [[ $rc -ne 0 && $rc -ne 130 && $rc -ne 146 && -n "$_TURTLE_PERF_CMD" ]] \
+           && [[ "${TURTLE_ERROR_TRIAGE:-1}" != "0" ]]; then
+            local _cmd="$_TURTLE_PERF_CMD"
+            local _sbin; _sbin="$(_turtle_stream_bin)"
+            local _noetica="${NOETICA_URL:-http://localhost:7700}"
+            local _tfile="$_TURTLE_TRIAGE_FILE"
+            TURTLE_NOETICA="$_noetica" \
+            TURTLE_PROMPT="Command failed (exit $rc): ${_cmd}
+In 1-2 lines: what likely went wrong and how to fix it. Be direct, no preamble." \
+            TURTLE_MAX_TOKENS=100 \
+            python3 "$_sbin" > "$_tfile" 2>/dev/null &!
+        fi
+
         _TURTLE_PERF_START=""
         _TURTLE_PERF_CMD=""
+    fi
+
+    # ── Display pending error triage from previous command ─────────────────
+    if [[ -f "$_TURTLE_TRIAGE_FILE" ]]; then
+        local _triage_age=$(( EPOCHSECONDS - $(stat -f %m "$_TURTLE_TRIAGE_FILE" 2>/dev/null || echo 0) ))
+        if (( _triage_age < 90 )); then
+            local _triage; _triage="$(< "$_TURTLE_TRIAGE_FILE")"
+            if [[ -n "$_triage" ]]; then
+                printf '\n\e[38;2;57;197;207m◆ Noetica:\e[0m \e[38;2;139;148;158m%s\e[0m\n' "$_triage"
+            fi
+        fi
+        rm -f "$_TURTLE_TRIAGE_FILE"
     fi
 }
 
