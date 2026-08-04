@@ -123,7 +123,10 @@ class TurtleTerm < Formula
 
   def caveats
     <<~EOS
-      TurtleTerm v0.2 installed.
+      TurtleTerm v0.2 installed — the shell rides on the turtle's back.
+
+      To launch TurtleTerm:
+        turtleterm
 
       Profile:      #{etc}/turtle-term/turtleterm.lua
       Shell inits:  #{pkgshare}/shell/

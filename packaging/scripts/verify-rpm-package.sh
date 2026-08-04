@@ -49,7 +49,7 @@ for command in ['turtle-agent-status', 'turtle-cloudfog', 'turtle-superconscious
     assert command in manifest['public_commands'], command
 PY
 
-rpm -qp --queryformat '%{NAME}\n' "$rpm" | grep -qx 'turtle-term'
+rpm -qp --queryformat '%{NAME}\n' "$rpm" | grep -qx 'turtleterm'
 rpm -qp --queryformat '%{VERSION}\n' "$rpm" | grep -qx '0.1.0'
 contents="$tmp/contents.txt"
 rpm -qpl "$rpm" > "$contents"

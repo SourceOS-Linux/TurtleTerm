@@ -53,7 +53,7 @@ jobs:
       - name: Validate Debian control shape
         run: |
           test -f packaging/linux/deb/control
-          grep -q '^Package: turtle-term$' packaging/linux/deb/control
+          grep -q '^Package: turtleterm$' packaging/linux/deb/control
           grep -q '^Architecture: amd64 arm64$' packaging/linux/deb/control
           grep -q '^Homepage: https://github.com/SourceOS-Linux/TurtleTerm$' packaging/linux/deb/control
 
@@ -76,7 +76,7 @@ jobs:
       - name: Validate RPM spec shape
         run: |
           test -f packaging/linux/rpm/turtle-term.spec
-          grep -q '^Name:           turtle-term$' packaging/linux/rpm/turtle-term.spec
+          grep -q '^Name:           turtleterm$' packaging/linux/rpm/turtle-term.spec
           grep -q '^ExclusiveArch:  x86_64 aarch64$' packaging/linux/rpm/turtle-term.spec
           grep -q 'TURTLE_TERM_STAGE_PREFIX=%{buildroot}%{_prefix}' packaging/linux/rpm/turtle-term.spec
           grep -q 'ai.sourceos.TurtleTerm.desktop' packaging/linux/rpm/turtle-term.spec

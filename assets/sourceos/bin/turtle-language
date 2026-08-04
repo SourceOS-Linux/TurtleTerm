@@ -191,17 +191,34 @@ def symbols(path: Path) -> dict[str, Any]:
     sha = sha256_text(text)
     base = {"file": str(path), "language": lang, "content_sha256": sha, "mutationAllowed": False}
 
+    # The local AST walk is complete (classes AND their methods); the SynapseIQ
+    # LSP may only surface top-level symbols. Compute local first, then let the
+    # LSP enrich it — never drop a symbol the local pass found.
+    local = python_symbols(path, text) if lang == "python" else generic_symbols(path, text)
+
     ensure_synapseiq()
     synapse = synapseiq_symbols(str(path), text, lang)
-    if synapse is not None:
+    if isinstance(synapse, dict):
         base["source"] = "synapseiq-lsp"
         base["synapseiq_url"] = synapseiq_url()
-        base["symbols"] = synapse.get("symbols", [])
+        # A flaky LSP may return a null "symbols", scalars, or non-dict entries —
+        # keep only well-formed symbol dicts so enrichment can never crash the
+        # command (this path has no CI coverage when the LSP is offline).
+        lsp_symbols = [s for s in (synapse.get("symbols") or []) if isinstance(s, dict)]
+
+        # Dedup on (name, line): a class method must NOT be dropped just because a
+        # top-level symbol shares its name — only a genuine duplicate is skipped.
+        def _key(sym: dict[str, Any]) -> tuple[Any, Any]:
+            return (sym.get("name"), sym.get("line"))
+
+        seen = {_key(s) for s in lsp_symbols}
+        merged = lsp_symbols + [s for s in local if _key(s) not in seen]
+        # A present-but-null "line" must not blow up the sort.
+        base["symbols"] = sorted(merged, key=lambda item: (item.get("line") or 0))
         return base
 
-    items = python_symbols(path, text) if lang == "python" else generic_symbols(path, text)
     base["source"] = "builtin-heuristic"
-    base["symbols"] = items
+    base["symbols"] = local
     return base
 
 

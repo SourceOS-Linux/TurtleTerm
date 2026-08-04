@@ -1,8 +1,8 @@
 Package: turtleterm
-Version: 1.4.0
+Version: 0.1.0
 Section: devel
 Priority: optional
-Architecture: amd64
+Architecture: amd64 arm64
 Maintainer: SourceOS Linux <maintainers@sourceos.ai>
 Depends: libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkbcommon0, zlib1g, python3 (>= 3.10)
 Recommends: git
@@ -17,3 +17,5 @@ Description: TurtleTerm — AI agent terminal fabric for SourceOS
  .
  Shell integration for zsh, bash, fish, and PowerShell. MCP server for
  Claude Code integration. SynapseIQ LSP support.
+ .
+ Runtime commands and helpers install under /usr/libexec/turtle-term.

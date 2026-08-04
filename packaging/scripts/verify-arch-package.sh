@@ -17,11 +17,13 @@ done
 pkg="$(TURTLE_TERM_OUT_DIR="$tmp" TURTLE_TERM_VERSION="0.1.0" TURTLE_TERM_ARCH_ARCH="$(uname -m)" \
   bash "$repo_root/packaging/scripts/build-arch-package.sh")"
 extract="$tmp/extract"
+contents="$tmp/arch-contents.txt"
 
 test -f "$pkg"
 test -f "$pkg.sha256"
 test -f "$pkg.manifest.json"
 sha256sum -c "$pkg.sha256" >/dev/null
+tar --zstd -tf "$pkg" > "$contents"
 python3 - <<PY
 import json
 from pathlib import Path

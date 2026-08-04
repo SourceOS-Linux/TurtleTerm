@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""turtle-mesh-push — sync local memory mesh to GCS + pull cloud events.
+
+Bidirectional sync:
+  push: ~/.local/state/sourceos/memory-mesh/* → GCS bucket
+  pull: GCS bucket → local merge (dedup by ts)
+
+Usage:
+  turtle-mesh-push             # push + pull
+  turtle-mesh-push --push-only # push only
+  turtle-mesh-push --pull-only # pull only
+  turtle-mesh-push --status    # show last sync timestamp
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+MESH_DIR = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
+GCS_BUCKET = os.getenv("SOURCEOS_MESH_BUCKET", "gs://sourceos-artifacts-socioprophet/memory-mesh")
+SYNC_STAMP = MESH_DIR / ".last-sync"
+
+
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def gsutil(*args: str, capture: bool = False) -> tuple[bool, str]:
+    cmd = ["gsutil"] + list(args)
+    try:
+        if capture:
+            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=30, text=True)
+            return True, out
+        else:
+            r = subprocess.run(cmd, timeout=30, capture_output=True, text=True)
+            return r.returncode == 0, r.stdout + r.stderr
+    except Exception as e:
+        return False, str(e)
+
+
+def merge_jsonl(local: Path, remote_lines: list[str]) -> int:
+    existing = set()
+    if local.exists():
+        for line in local.read_text(errors="replace").splitlines():
+            try:
+                ev = json.loads(line)
+                existing.add(ev.get("ts", "") + ev.get("title", ""))
+            except Exception:
+                pass
+
+    new_lines = []
+    for line in remote_lines:
+        try:
+            ev = json.loads(line)
+            key = ev.get("ts", "") + ev.get("title", "")
+            if key not in existing:
+                new_lines.append(line)
+                existing.add(key)
+        except Exception:
+            pass
+
+    if new_lines:
+        with local.open("a") as f:
+            for line in new_lines:
+                f.write(line + "\n")
+
+    return len(new_lines)
+
+
+def push_to_gcs() -> tuple[bool, str]:
+    MESH_DIR.mkdir(parents=True, exist_ok=True)
+    ok, msg = gsutil("-m", "rsync", "-r", str(MESH_DIR), f"{GCS_BUCKET}/local")
+    return ok, msg
+
+
+def pull_from_gcs() -> int:
+    ok, raw = gsutil("cat", f"{GCS_BUCKET}/context.jsonl", capture=True)
+    if not ok or not raw.strip():
+        return 0
+    remote_lines = raw.strip().splitlines()
+    local_ctx = MESH_DIR / "context.jsonl"
+    MESH_DIR.mkdir(parents=True, exist_ok=True)
+    merged = merge_jsonl(local_ctx, remote_lines)
+    return merged
+
+
+def get_status() -> dict:
+    if not SYNC_STAMP.exists():
+        return {"last_sync": None, "events": 0}
+    try:
+        d = json.loads(SYNC_STAMP.read_text())
+        return d
+    except Exception:
+        return {"last_sync": SYNC_STAMP.read_text().strip(), "events": 0}
+
+
+def save_status(pushed: bool, pulled: int) -> None:
+    ctx = MESH_DIR / "context.jsonl"
+    ev_count = 0
+    if ctx.exists():
+        try:
+            ev_count = len(ctx.read_text().splitlines())
+        except Exception:
+            pass
+    SYNC_STAMP.write_text(json.dumps({
+        "last_sync": now_iso(),
+        "pushed": pushed,
+        "pulled": pulled,
+        "local_events": ev_count,
+    }))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Sync memory mesh to/from GCS")
+    parser.add_argument("--push-only", action="store_true")
+    parser.add_argument("--pull-only", action="store_true")
+    parser.add_argument("--status",    action="store_true", help="Print last sync info and exit")
+    args = parser.parse_args()
+
+    if args.status:
+        s = get_status()
+        last = s.get("last_sync") or "never"
+        ev = s.get("local_events", "?")
+        print(f"last sync: {last}")
+        print(f"local events: {ev}")
+        ctx = MESH_DIR / "context.jsonl"
+        if ctx.exists():
+            n = len(ctx.read_text(errors="replace").splitlines())
+            print(f"current local events: {n}")
+        return
+
+    pushed = False
+    pulled_count = 0
+
+    if not args.pull_only:
+        ok, msg = push_to_gcs()
+        pushed = ok
+        if ok:
+            print(f"pushed: {GCS_BUCKET}/local")
+        else:
+            print(f"push failed: {msg[:200]}", file=sys.stderr)
+
+    if not args.push_only:
+        pulled_count = pull_from_gcs()
+        if pulled_count > 0:
+            print(f"pulled: {pulled_count} new events from cloud")
+        else:
+            print("pulled: no new cloud events")
+
+    save_status(pushed, pulled_count)
+
+
+if __name__ == "__main__":
+    main()

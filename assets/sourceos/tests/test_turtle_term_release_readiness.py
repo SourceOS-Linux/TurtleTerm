@@ -117,9 +117,9 @@ REQUIRED_RELEASE_WORKFLOW_SNIPPETS = [
 ]
 
 REQUIRED_NATIVE_WORKFLOW_SNIPPETS = [
-    "turtle-term_*.deb",
-    "turtle-term-*.rpm",
-    "turtle-term-*.pkg.tar.zst",
+    "turtleterm_*.deb",
+    "turtleterm-*.rpm",
+    "turtleterm-*.pkg.tar.zst",
     "turtle-term-native-packages.index.json",
     "actions/attest@v4",
 ]

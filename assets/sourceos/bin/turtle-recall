@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""turtle-recall — query the memory mesh for past context.
+
+Shell alias: ?? <query>
+
+Sources:
+  1. Local memory mesh JSONL (~/.local/state/sourceos/memory-mesh/context.jsonl)
+  2. ~/notes/ markdown files (Goose Notes pickup dir)
+  3. Noetica semantic search (if running)
+
+Output: formatted matches printed to stdout (pipeline-friendly).
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import glob
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from urllib import request as urlreq
+
+MESH_DIR = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
+NOTES_DIR = Path(os.getenv("GOOSE_NOTES_DIR", str(Path.home() / "notes")))
+NOETICA_URL = os.getenv("NOETICA_URL", "http://localhost:7700")
+
+# TurtleTerm Dark colors
+C_RESET  = "\033[0m"
+C_BLUE   = "\033[38;2;88;166;255m"
+C_TEAL   = "\033[38;2;63;185;80m"
+C_PURPLE = "\033[38;2;188;140;255m"
+C_WHITE  = "\033[38;2;230;237;243m"
+C_GREY   = "\033[38;2;139;148;158m"
+C_DIM    = "\033[2m"
+C_BOLD   = "\033[1m"
+
+
+def load_mesh_events(limit: int = 500) -> list[dict]:
+    ctx = MESH_DIR / "context.jsonl"
+    if not ctx.exists():
+        return []
+    events = []
+    try:
+        for line in ctx.read_text(errors="replace").splitlines()[-limit:]:
+            try:
+                events.append(json.loads(line))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return events
+
+
+def load_notes(limit: int = 100) -> list[dict]:
+    notes = []
+    if not NOTES_DIR.exists():
+        return notes
+    try:
+        paths = sorted(NOTES_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in paths[:limit]:
+            try:
+                text = p.read_text(errors="replace")
+                # Parse frontmatter title
+                m = re.search(r'^title:\s*"?([^"\n]+)"?', text, re.M)
+                title = m.group(1) if m else p.stem
+                notes.append({
+                    "kind": "note",
+                    "source": "goose-notes",
+                    "title": title,
+                    "content": text[:800],
+                    "path": str(p),
+                    "ts": "",
+                })
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return notes
+
+
+def score_entry(query: str, entry: dict) -> float:
+    q = query.lower()
+    keywords = q.split()
+    text = " ".join([
+        entry.get("title", ""),
+        entry.get("content", ""),
+        entry.get("kind", ""),
+        entry.get("source", ""),
+    ]).lower()
+
+    kw = sum(2.0 for kw in keywords if kw in text)
+    seq = difflib.SequenceMatcher(None, q, text[:200]).ratio()
+    return kw + seq
+
+
+def search_local(query: str, entries: list[dict]) -> list[dict]:
+    if not query:
+        return entries[-20:]
+    scored = [(score_entry(query, e), e) for e in entries]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [e for s, e in scored if s > 0.1][:15]
+
+
+def search_noetica(query: str, entries: list[dict]) -> list[dict]:
+    try:
+        texts = "\n".join(
+            f"{i}: [{e.get('kind','?')}] {e.get('title','')} — {e.get('content','')[:100]}"
+            for i, e in enumerate(entries[-100:])
+        )
+        payload = json.dumps({
+            "messages": [{
+                "role": "user",
+                "content": (
+                    f"Memory mesh entries (index: [kind] title — content):\n{texts}\n\n"
+                    f"Return the 8 most relevant entry indices for this query: {query!r}\n"
+                    f"Reply ONLY with a JSON array of integers."
+                ),
+            }],
+            "stream": False,
+        }).encode()
+        req = urlreq.Request(
+            f"{NOETICA_URL}/api/chat",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urlreq.urlopen(req, timeout=3) as resp:
+            data = json.load(resp)
+            content = data.get("message", {}).get("content", "") or data.get("content", "")
+            m = re.search(r"\[[\d,\s]+\]", content)
+            if m:
+                indices = json.loads(m.group())
+                base = entries[-100:]
+                return [base[i] for i in indices if 0 <= i < len(base)]
+    except Exception:
+        pass
+    return []
+
+
+def format_entry(e: dict, i: int) -> str:
+    ts = e.get("ts", "")[:16]
+    kind = e.get("kind", "?")
+    source = e.get("source", "?")
+    title = e.get("title", "")
+    content = e.get("content", "").strip()[:200]
+    path = e.get("path", "")
+
+    kind_c = {
+        "capture": C_TEAL,
+        "note": C_PURPLE,
+        "recall": C_BLUE,
+    }.get(kind, C_GREY)
+
+    lines = [
+        f"  {C_GREY}{i+1:>2}.{C_RESET}  {kind_c}{kind:<10}{C_RESET}  "
+        f"{C_GREY}{ts}  [{source}]{C_RESET}",
+        f"       {C_WHITE}{C_BOLD}{title}{C_RESET}",
+    ]
+    if content and content != title:
+        # Show first 2 lines of content
+        for cl in content.splitlines()[:2]:
+            cl = cl.strip()
+            if cl:
+                lines.append(f"       {C_DIM}{cl}{C_RESET}")
+    if path:
+        lines.append(f"       {C_GREY}{path}{C_RESET}")
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Query the SourceOS memory mesh")
+    parser.add_argument("query", nargs="*", help="Search query")
+    parser.add_argument("--json", action="store_true", help="Output as JSON array")
+    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--no-notes", action="store_true", help="Skip ~/notes/")
+    parser.add_argument("--no-noetica", action="store_true", help="Skip Noetica semantic search")
+    args = parser.parse_args()
+
+    query = " ".join(args.query).strip()
+
+    # Load all sources
+    mesh = load_mesh_events()
+    notes = load_notes() if not args.no_notes else []
+    all_entries = mesh + notes
+
+    if not all_entries:
+        print(f"{C_GREY}No memory mesh entries yet. Use: some-command | turtle-capture{C_RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    # Search
+    if query and not args.no_noetica:
+        results = search_noetica(query, all_entries)
+        if not results:
+            results = search_local(query, all_entries)
+    else:
+        results = search_local(query, all_entries)
+
+    results = results[:args.limit]
+
+    if not results:
+        print(f"{C_GREY}No matches for {query!r}{C_RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+        return
+
+    if sys.stdout.isatty():
+        print()
+        hdr = f"query: {query!r}" if query else "recent memory (no query)"
+        print(f"  {C_BLUE}{C_BOLD}◆ Memory Mesh Recall{C_RESET}  {C_GREY}{hdr}  ({len(results)} results){C_RESET}")
+        print(f"  {C_GREY}{'─' * 66}{C_RESET}")
+        for i, e in enumerate(results):
+            print(format_entry(e, i))
+            print()
+    else:
+        # Non-interactive: print titles and content for piping
+        for e in results:
+            print(f"# {e.get('title', '')}")
+            print(e.get("content", "").strip()[:400])
+            print()
+
+
+if __name__ == "__main__":
+    main()

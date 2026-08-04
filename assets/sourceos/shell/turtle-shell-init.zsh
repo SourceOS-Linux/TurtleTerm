@@ -60,6 +60,19 @@ _TURTLE_ZSH_STARTED_AT=""
 _TURTLE_ZSH_CMD_EPOCH=0
 _TURTLE_ZSH_EVT_ID=""
 
+# ── AI/shell boundary: print a teal left-gutter bar before AI-sourced output ─
+# Called by pending_command injection path (see turtleterm.lua) via a state flag.
+# The bar makes it immediately obvious: "this output came from an AI action, not
+# your shell." Warp's most-upvoted UX complaint is this ambiguity. We solve it.
+_turtle_ai_boundary_start() {
+    # OSC 8 hyperlink trick: a teal ▍ gutter with OSC 133 B for semantic zone
+    printf '\e]133;B\a'
+    printf '\e[38;2;57;197;207m▍\e[0m '  # teal ▍ = AI-sourced output
+}
+_turtle_ai_boundary_end() {
+    printf '\e]133;C\a'
+}
+
 preexec() {
     local cmd="$1"
     [[ -z "$cmd" ]] && return
@@ -114,6 +127,42 @@ precmd() {
         printf '%d' "$_elapsed" > "$state_dir/last_duration" 2>/dev/null || true
     fi
 
+    # ── inline failure explainer ───────────────────────────────────────────────
+    # On non-zero exit: ask Noetica reason-lane for a structured diagnosis and
+    # print it inline BELOW the error output — first-class UX, not a toast.
+    # Opt out: TURTLE_EXPLAIN_ERRORS=0
+    if [[ $exit_status -ne 0 && "${TURTLE_EXPLAIN_ERRORS:-1}" != "0" && -n "$_TURTLE_ZSH_CMD" ]]; then
+        local _last_cmd_for_explain="$_TURTLE_ZSH_CMD"
+        {
+            local _explanation
+            _explanation=$(python3 -c "
+import urllib.request, urllib.error, json, sys, os
+try:
+    payload = json.dumps({
+        'messages': [{'role':'user','content':
+            f'Shell command failed (exit {sys.argv[1]}): \`{sys.argv[2]}\`\n'
+            f'Give a 1-sentence cause and 2-3 concrete fix suggestions. No preamble. Be terse.'
+        }],
+        'stream': False
+    }).encode()
+    req = urllib.request.Request(
+        os.getenv('NOETICA_URL','http://localhost:7700') + '/api/chat',
+        data=payload, headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req, timeout=4) as r:
+        d = json.load(r)
+        content = d.get('message',{}).get('content','') or d.get('content','')
+        if content:
+            print(content.strip())
+except Exception:
+    pass
+" "$exit_status" "$_last_cmd_for_explain" 2>/dev/null)
+            if [[ -n "$_explanation" ]]; then
+                printf '\n\e[38;2;88;166;255m◆\e[0m \e[2mexit %d\e[0m  %s\n\n' \
+                    "$exit_status" "$_explanation" >&2
+            fi
+        } &!
+    fi
+
     # Long command notification (>10s, skipped if TURTLE_NOTIFY_THRESHOLD=0)
     if [[ -n "$_TURTLE_ZSH_CMD" && ${_TURTLE_ZSH_CMD_EPOCH:-0} -gt 0 ]]; then
         local elapsed=$(( ${EPOCHSECONDS:-0} - _TURTLE_ZSH_CMD_EPOCH ))
@@ -158,7 +207,105 @@ precmd() {
   }
 }
 EOF
+
+    # ── rich history index for turtle-history semantic search ─────────────────
+    # Append one JSONL line per completed command. Debounced to skip rapid-fire
+    # completions (like make steps) — only write if cmd is non-trivial.
+    if [[ ${#cmd} -gt 3 && "$cmd" != "ls" && "$cmd" != "cd"* ]]; then
+        local _hist_dir; _hist_dir="$(_turtle_state_dir)"
+        local _hist_file="$_hist_dir/history.jsonl"
+        local _dur=$(( ${EPOCHSECONDS:-0} - ${_TURTLE_ZSH_CMD_EPOCH:-0} ))
+        local _cwd; _cwd="$(pwd)"
+        local _ts; _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '')"
+        local _branch=""
+        _branch="$(git -C "$_cwd" branch --show-current 2>/dev/null || echo '')"
+        # fire-and-forget, never blocks the prompt
+        {
+            printf '{"cmd":%s,"exit":%d,"cwd":%s,"branch":%s,"ts":%s,"duration":%d}\n' \
+                "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$cmd" 2>/dev/null || echo '""')" \
+                "$exit_status" \
+                "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$_cwd" 2>/dev/null || echo '""')" \
+                "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$_branch" 2>/dev/null || echo '""')" \
+                "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$_ts" 2>/dev/null || echo '""')" \
+                "$_dur" >> "$_hist_file" 2>/dev/null
+            # cap at 5000 lines (trim oldest)
+            if [[ $(wc -l < "$_hist_file" 2>/dev/null || echo 0) -gt 5000 ]]; then
+                tail -4000 "$_hist_file" > "$_hist_file.tmp" && mv "$_hist_file.tmp" "$_hist_file"
+            fi
+        } &!
+    fi
 }
+
+# ── turtle-history: semantic ^R replacement ────────────────────────────────────
+# ^R      → fzf history with exit codes, cwd context, duration
+# ^R ?    → type a NL query, backed by Noetica when available
+_turtle_history_widget() {
+    local query="${BUFFER}"
+    local selected
+    # Run turtle-history in widget mode; it handles fzf/plain fallback internally
+    selected="$(turtle-history --widget ${query:+"$query"} 2>/dev/tty </dev/tty)"
+    local ret=$?
+    if [[ $ret -eq 0 && -n "$selected" ]]; then
+        BUFFER="$selected"
+        CURSOR=${#BUFFER}
+        zle reset-prompt
+    fi
+}
+zle -N _turtle_history_widget
+# Override ^R with our widget; keep ESC-r as fallback to built-in reverse search
+bindkey '^R' _turtle_history_widget
+bindkey '\er' history-incremental-search-backward
+
+# ============================================================
+# Memory mesh: ?? recall, tc capture, mission control
+# ============================================================
+
+# ?? <query> — quick memory recall from any prompt
+# Example: ?? postgres replica setup
+??() {
+    local _turtle_recall_bin
+    _turtle_recall_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-recall"
+    [[ -x "$_turtle_recall_bin" ]] || _turtle_recall_bin="turtle-recall"
+    "$_turtle_recall_bin" "$@"
+}
+
+# tc — pipe alias to capture terminal output to Goose Notes + mesh
+# Example: docker logs myapp | tc "app crash log"
+tc() {
+    local _turtle_capture_bin
+    _turtle_capture_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-capture"
+    [[ -x "$_turtle_capture_bin" ]] || _turtle_capture_bin="turtle-capture"
+    "$_turtle_capture_bin" "$@"
+}
+
+# mc — toggle mission control panel (TurtleTerm only; graceful no-op elsewhere)
+_turtle_mc() {
+    local _mc_bin
+    _mc_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-mission-control"
+    [[ -x "$_mc_bin" ]] || _mc_bin="turtle-mission-control"
+    if [[ -n "${WEZTERM_PANE:-}" ]]; then
+        # In WezTerm: prefer the CMD+SHIFT+M binding; fallback to running in pane
+        "$_mc_bin" --once
+    else
+        "$_mc_bin" --once
+    fi
+}
+
+# Auto-write memory mesh active context on each directory change
+_turtle_mesh_cd() {
+    local _state="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _branch=""
+    _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    mkdir -p "$_state"
+    printf '{"updated":"%s","cwd":"%s","branch":"%s","focus":"cd %s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PWD" "$_branch" "$PWD" \
+        > "$_state/active.json"
+}
+
+# Hook into chpwd for passive context tracking
+if (( ${chpwd_functions[(I)_turtle_mesh_cd]} == 0 )); then
+    chpwd_functions+=(_turtle_mesh_cd)
+fi
 
 # ============================================================
 # AI ghost-text — two modes:
@@ -202,7 +349,8 @@ _turtle_ai_complete() {
     if [[ -n "$result" && "$result" != "$current_buffer" ]]; then
         _TURTLE_GHOST_SUGGESTION="$result"
         _TURTLE_GHOST_BUF="$current_buffer"
-        zle -M "  AI▸ $result  [ALT+/ to accept]"
+        # AI/shell boundary: blue ◆ prefix makes AI suggestions visually distinct from shell history
+        zle -M $'\e[38;2;88;166;255m◆ AI\e[0m  '"$result"$'  \e[2m[ALT+/ to accept]\e[0m'
     fi
 }
 zle -N _turtle_ai_complete

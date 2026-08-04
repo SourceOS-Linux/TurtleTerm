@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""turtle-history — semantic NL shell history search.
+
+The thing nobody else has: 'what was the command I used to set up the Postgres replica?'
+- ^R → fzf-backed history with exit codes, duration, cwd context
+- ^R then '?' prefix → Noetica NL semantic search over history
+- turtle-history "query" → pipe-friendly NL search
+- turtle-history --widget → raw fzf mode for zle binding
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib import error as urlerr
+from urllib import request as urlreq
+
+HISTORY_FILE = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "terminal" / "history.jsonl"
+AGENTD_SOCKET = Path(os.getenv("XDG_RUNTIME_DIR", "/tmp")) / f"turtle-agentd-{os.getuid()}.sock"
+NOETICA_URL = os.getenv("NOETICA_URL", "http://localhost:7700")
+
+
+# ── history loading ────────────────────────────────────────────────────────────
+
+def load_history(limit: int = 2000) -> list[dict]:
+    entries = []
+    if not HISTORY_FILE.exists():
+        # Fall back to plain zsh/bash history if our rich index doesn't exist yet
+        for hf in [Path.home() / ".zsh_history", Path.home() / ".bash_history"]:
+            if hf.exists():
+                try:
+                    for line in hf.read_text(errors="replace").splitlines()[-limit:]:
+                        line = re.sub(r"^: \d+:\d+;", "", line).strip()
+                        if line:
+                            entries.append({"cmd": line, "exit": 0, "cwd": "", "ts": "", "duration": 0})
+                except Exception:
+                    pass
+        return entries[-limit:]
+
+    try:
+        lines = HISTORY_FILE.read_text(errors="replace").splitlines()
+        for line in lines[-limit:]:
+            try:
+                entries.append(json.loads(line))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Deduplicate: keep last occurrence of each unique command
+    seen: dict[str, dict] = {}
+    for e in entries:
+        seen[e.get("cmd", "")] = e
+    return list(seen.values())
+
+
+# ── search backends ────────────────────────────────────────────────────────────
+
+def search_noetica(query: str, entries: list[dict]) -> list[dict]:
+    """Ask Noetica to rank history entries by semantic relevance to the query."""
+    try:
+        history_text = "\n".join(
+            f"{i}: {e.get('cmd', '')}  [{e.get('cwd', '')}]"
+            for i, e in enumerate(entries[-200:])
+        )
+        payload = json.dumps({
+            "messages": [{
+                "role": "user",
+                "content": (
+                    f"Shell history (index: command [cwd]):\n{history_text}\n\n"
+                    f"Return the 10 most relevant command indices for this query: {query!r}\n"
+                    f"Reply ONLY with a JSON array of integers, e.g. [42, 7, 13, ...]"
+                ),
+            }],
+            "stream": False,
+        }).encode()
+        req = urlreq.Request(
+            f"{NOETICA_URL}/api/chat",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urlreq.urlopen(req, timeout=3) as resp:
+            data = json.load(resp)
+            content = data.get("message", {}).get("content", "") or data.get("content", "")
+            # extract JSON array from response
+            m = re.search(r"\[[\d,\s]+\]", content)
+            if m:
+                indices = json.loads(m.group())
+                base = entries[-200:]
+                return [base[i] for i in indices if 0 <= i < len(base)]
+    except Exception:
+        pass
+    return []
+
+
+def search_fuzzy(query: str, entries: list[dict]) -> list[dict]:
+    """Fast fuzzy match using difflib sequence matching + keyword scoring."""
+    q = query.lower()
+    keywords = q.split()
+
+    def score(e: dict) -> float:
+        cmd = e.get("cmd", "").lower()
+        cwd = e.get("cwd", "").lower()
+        # Keyword hit score
+        kw_score = sum(1.0 for kw in keywords if kw in cmd or kw in cwd)
+        # Sequence match
+        seq = difflib.SequenceMatcher(None, q, cmd[:80]).ratio()
+        # Recency bonus (index-based, higher = more recent)
+        return kw_score * 2 + seq
+
+    scored = sorted(entries, key=score, reverse=True)
+    return [e for e in scored[:20] if score(e) > 0.05]
+
+
+def search(query: str, entries: list[dict]) -> list[dict]:
+    if not query:
+        return list(reversed(entries[-50:]))
+
+    # NL mode: try Noetica first, fall back to fuzzy
+    results = search_noetica(query, entries)
+    if not results:
+        results = search_fuzzy(query, entries)
+    return results[:20]
+
+
+# ── fzf presentation ──────────────────────────────────────────────────────────
+
+def format_entry(e: dict) -> str:
+    cmd = e.get("cmd", "")
+    exit_code = e.get("exit", 0)
+    cwd = e.get("cwd", "")
+    duration = e.get("duration", 0)
+    ts = e.get("ts", "")[:16]  # YYYY-MM-DDTHH:MM
+
+    status = "✓" if exit_code == 0 else f"✗{exit_code}"
+    dur_str = f"{duration:.0f}s" if duration and duration > 1 else ""
+    meta = "  ".join(filter(None, [ts, cwd.split("/")[-1] if cwd else "", dur_str]))
+
+    return f"{status}  {cmd:<80}  {meta}"
+
+
+def run_fzf(entries: list[dict], query: str = "") -> str | None:
+    lines = [format_entry(e) for e in entries]
+    fzf_input = "\n".join(lines)
+
+    fzf_args = [
+        "fzf",
+        "--ansi",
+        "--no-sort",
+        "--height=40%",
+        "--min-height=10",
+        "--border=rounded",
+        "--prompt=history> ",
+        "--header=^R:reload  ?query:semantic  Enter:select",
+        "--color=bg:#0d1117,bg+:#161b22,fg:#e6edf3,fg+:#58a6ff,border:#30363d,prompt:#58a6ff,header:#8b949e,hl:#3fb950,hl+:#56d364",
+        "--bind=ctrl-r:reload(echo '{q}' | turtle-history --fzf-reload)",
+    ]
+    if query:
+        fzf_args += ["--query", query]
+
+    try:
+        result = subprocess.run(
+            fzf_args,
+            input=fzf_input,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Extract just the command part (after the status indicator)
+            line = result.stdout.strip()
+            m = re.match(r"[✓✗\d]+\s+(.+?)\s{2,}", line)
+            if m:
+                return m.group(1).strip()
+            return line
+    except FileNotFoundError:
+        pass  # fzf not installed
+    return None
+
+
+def run_plain(entries: list[dict]) -> str | None:
+    for i, e in enumerate(entries[:20]):
+        print(f"  {i+1:>2}  {format_entry(e)}", file=sys.stderr)
+    try:
+        sys.stderr.write("Select [1-20]: ")
+        sys.stderr.flush()
+        choice = input().strip()
+        idx = int(choice) - 1
+        if 0 <= idx < len(entries):
+            return entries[idx].get("cmd", "")
+    except (ValueError, EOFError, KeyboardInterrupt):
+        pass
+    return None
+
+
+# ── main ───────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="TurtleTerm semantic history search")
+    parser.add_argument("query", nargs="?", default="", help="NL query (prefix with ? for semantic mode)")
+    parser.add_argument("--widget", action="store_true", help="zle widget mode: output selected command to stdout")
+    parser.add_argument("--fzf-reload", action="store_true", help="internal: reload fzf results for query on stdin")
+    parser.add_argument("--index", action="store_true", help="print history index and exit")
+    parser.add_argument("--limit", type=int, default=2000)
+    args = parser.parse_args()
+
+    entries = load_history(limit=args.limit)
+
+    if args.index:
+        for e in reversed(entries[-100:]):
+            print(format_entry(e))
+        return
+
+    if args.fzf_reload:
+        # Read query from stdin, print formatted results
+        q = sys.stdin.read().strip().lstrip("?")
+        results = search(q, entries)
+        for e in results:
+            print(format_entry(e))
+        return
+
+    query = args.query.lstrip("?").strip()
+
+    if args.widget:
+        # Widget mode: show fzf (or plain) and print selected command
+        results = search(query, entries)
+        selected = run_fzf(results, query=query)
+        if selected is None:
+            selected = run_plain(results)
+        if selected:
+            print(selected)
+        return
+
+    # Pipe / CLI mode
+    results = search(query, entries)
+    if not results:
+        print("No matching history entries.", file=sys.stderr)
+        sys.exit(1)
+
+    if sys.stdout.isatty():
+        selected = run_fzf(results, query=query)
+        if selected is None:
+            selected = run_plain(results)
+        if selected:
+            print(selected)
+    else:
+        # Non-interactive: print all results
+        for e in results:
+            print(e.get("cmd", ""))
+
+
+if __name__ == "__main__":
+    main()

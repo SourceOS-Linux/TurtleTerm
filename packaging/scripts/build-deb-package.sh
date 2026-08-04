@@ -10,7 +10,7 @@ prefix="$package_root/usr"
 etc_dir="$package_root/etc"
 debian_dir="$package_root/DEBIAN"
 deb_build="$out_dir/deb-build"
-deb="$out_dir/turtle-term_${version}_${arch}.deb"
+deb="$out_dir/turtleterm_${version}_${arch}.deb"
 
 case "$arch" in
   amd64|arm64) ;;
@@ -31,13 +31,13 @@ TURTLE_TERM_RUNTIME_ETC_DIR="/etc" \
   bash "$repo_root/packaging/scripts/stage-linux-package.sh" >/dev/null
 
 cat > "$debian_dir/control" <<EOF
-Package: turtle-term
+Package: turtleterm
 Version: $version
 Section: devel
 Priority: optional
 Architecture: $arch
 Maintainer: SourceOS Linux <maintainers@sourceos.local>
-Depends: libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkbcommon0, zlib1g
+Depends: libc6, libfontconfig1, libfreetype6, libssl3, libx11-6, libxcb1, libxkbcommon0, zlib1g, python3 (>= 3.10)
 Homepage: https://github.com/SourceOS-Linux/TurtleTerm
 Description: TurtleTerm trusted terminal and agent workbench
  TurtleTerm is the SourceOS policy-aware, agent-addressable terminal workbench

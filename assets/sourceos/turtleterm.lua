@@ -40,22 +40,42 @@ config.default_prog = nil
 config.automatically_reload_config = true
 config.check_for_updates = false
 
--- iTerm2 default color palette
-local iterm2_colors = {
-  foreground = '#c7c7c7',
-  background = '#000000',
-  cursor_bg = '#ffffff',
-  cursor_fg = '#000000',
-  cursor_border = '#ffffff',
-  selection_bg = '#4d4d4d',
-  selection_fg = '#ffffff',
+-- TurtleTerm Dark — designed color palette (GitHub Dark-spectrum, terminal-tuned)
+local turtleterm_dark = {
+  foreground    = '#e6edf3',
+  background    = '#0d1117',
+  cursor_bg     = '#58a6ff',
+  cursor_fg     = '#0d1117',
+  cursor_border = '#58a6ff',
+  selection_bg  = '#1f3044',
+  selection_fg  = '#e6edf3',
   ansi = {
-    '#000000', '#c91b00', '#00c200', '#c7c400',
-    '#0225c7', '#ca30c7', '#00c5c7', '#c7c7c7',
+    '#21262d',  -- black
+    '#f85149',  -- red
+    '#3fb950',  -- green
+    '#d29922',  -- yellow
+    '#388bfd',  -- blue
+    '#bc8cff',  -- magenta
+    '#39c5cf',  -- cyan
+    '#b1bac4',  -- white
   },
   brights = {
-    '#686868', '#ff6e67', '#5ffa68', '#fffc67',
-    '#6871ff', '#ff77ff', '#60fdff', '#ffffff',
+    '#30363d',  -- bright black
+    '#ff7b72',  -- bright red
+    '#56d364',  -- bright green
+    '#e3b341',  -- bright yellow
+    '#79c0ff',  -- bright blue
+    '#d2a8ff',  -- bright magenta
+    '#56d4dd',  -- bright cyan
+    '#cdd9e5',  -- bright white
+  },
+  tab_bar = {
+    background   = '#010409',
+    active_tab   = { bg_color = '#0d1117', fg_color = '#58a6ff', intensity = 'Bold' },
+    inactive_tab = { bg_color = '#010409', fg_color = '#8b949e' },
+    inactive_tab_hover = { bg_color = '#161b22', fg_color = '#e6edf3' },
+    new_tab      = { bg_color = '#010409', fg_color = '#8b949e' },
+    new_tab_hover = { bg_color = '#161b22', fg_color = '#58a6ff' },
   },
 }
 
@@ -64,7 +84,7 @@ if env('TURTLETERM_COLOR_SCHEME', '') ~= '' then
 elseif env('SOURCEOS_TERMINAL_COLOR_SCHEME', '') ~= '' then
   config.color_scheme = env('SOURCEOS_TERMINAL_COLOR_SCHEME', '')
 else
-  config.colors = iterm2_colors
+  config.colors = turtleterm_dark
 end
 -- Load persisted theme choice (written by theme picker on confirm)
 do
@@ -76,20 +96,22 @@ do
   end
 end
 
+-- JetBrains Mono is vendored in assets/fonts/ — use it as the default.
+-- Ligatures disabled by default (some users hate them; enable via TURTLETERM_LIGATURES=1).
+local _ligatures = env('TURTLETERM_LIGATURES', '0') == '1'
 config.font = wezterm.font_with_fallback({
-  'Menlo',
-  'Monaco',
-  'Courier New',
-  'Symbols Nerd Font Mono',
+  {
+    family   = 'JetBrains Mono',
+    weight   = 'Regular',
+    harfbuzz_features = _ligatures and { 'calt=1', 'liga=1' } or { 'calt=0', 'liga=0' },
+  },
+  { family = 'Menlo' },
+  { family = 'Symbols Nerd Font Mono', scale = 0.85 },
 })
-config.font_size = tonumber(env('TURTLETERM_FONT_SIZE', env('SOURCEOS_TERMINAL_FONT_SIZE', '13.0')))
+config.font_size = tonumber(env('TURTLETERM_FONT_SIZE', env('SOURCEOS_TERMINAL_FONT_SIZE', '13.5')))
+config.line_height = 1.15
 
-config.window_padding = {
-  left = 5,
-  right = 5,
-  top = 5,
-  bottom = 5,
-}
+config.window_padding = { left = 16, right = 16, top = 12, bottom = 10 }
 
 config.use_fancy_tab_bar = true
 config.hide_tab_bar_if_only_one_tab = true
@@ -97,15 +119,35 @@ config.tab_bar_at_bottom = false
 config.window_decorations = 'TITLE | RESIZE'
 config.audible_bell = 'Disabled'
 config.enable_scroll_bar = false
-config.scrollback_lines = 20000
+config.scrollback_lines = 50000
 
-config.default_cursor_style = 'BlinkingBlock'
-config.cursor_blink_rate = 600
-config.cursor_blink_ease_in = 'Constant'
-config.cursor_blink_ease_out = 'Constant'
+config.default_cursor_style = 'BlinkingBar'
+config.cursor_blink_rate = 500
+config.cursor_blink_ease_in = 'EaseIn'
+config.cursor_blink_ease_out = 'EaseOut'
 
-config.window_background_opacity = 1.0
-config.macos_window_background_blur = 0
+-- macOS: subtle transparency + blur — feels native without being distracting
+config.window_background_opacity = tonumber(env('TURTLETERM_OPACITY', '0.97'))
+config.macos_window_background_blur = 24
+config.text_background_opacity = 1.0
+
+-- Titlebar chrome that matches the dark theme
+config.window_frame = {
+  font           = wezterm.font('JetBrains Mono', { weight = 'Medium' }),
+  font_size      = 11.5,
+  active_titlebar_bg   = '#161b22',
+  inactive_titlebar_bg = '#0d1117',
+  active_titlebar_fg   = '#e6edf3',
+  inactive_titlebar_fg = '#8b949e',
+  border_left_color    = '#21262d',
+  border_right_color   = '#21262d',
+  border_top_color     = '#21262d',
+  border_bottom_color  = '#21262d',
+  border_left_width    = '0.5cell',
+  border_right_width   = '0.5cell',
+  border_bottom_height = '0cell',
+  border_top_height    = '0cell',
+}
 
 config.unix_domains = {
   {
@@ -998,6 +1040,133 @@ local function turtle_atlas_context()
 end
 
 -- ============================================================
+-- Mission Control (CMD+SHIFT+M) — multi-agent status panel
+-- Opens turtle-mission-control in a bottom split (25% height).
+-- ============================================================
+
+local function turtle_mission_control()
+  return wezterm.action_callback(function(window, pane)
+    -- Toggle: close if already open
+    local mc_id = wezterm.GLOBAL.mission_control_pane_id
+    if mc_id then
+      local found = false
+      for _, p in ipairs(window:mux_window():panes()) do
+        if p:pane_id() == mc_id then found = true; break end
+      end
+      if found then
+        wezterm.GLOBAL.mission_control_pane_id = nil
+        window:toast_notification('TurtleTerm', 'Mission Control closed', nil, 1500)
+        return
+      end
+    end
+    local new_pane = pane:split {
+      direction = 'Bottom',
+      size = 0.28,
+      command = {
+        args = {
+          'python3', turtle_bin('turtle-mission-control'),
+        },
+      },
+    }
+    if new_pane then
+      wezterm.GLOBAL.mission_control_pane_id = new_pane:pane_id()
+    end
+  end)
+end
+
+-- ============================================================
+-- Capture (CMD+SHIFT+C) — save selection/last-output to Goose Notes + mesh
+-- ============================================================
+
+local function turtle_capture_selection()
+  return wezterm.action_callback(function(window, pane)
+    local sel = window:get_selection_text_for_pane(pane)
+    -- Fall back to last output zone
+    if not sel or sel == '' then
+      pcall(function()
+        local zones = pane:get_semantic_zones()
+        for _, z in ipairs(zones) do
+          if z.semantic_type == 'Output' then
+            sel = pane:get_text_from_semantic_zone(z) or ''
+          end
+        end
+      end)
+    end
+    if not sel or sel == '' then
+      window:toast_notification('TurtleTerm', 'Select output first, then CMD+SHIFT+C to capture', nil, 3000)
+      return
+    end
+    local tmp = '/tmp/turtle-capture-sel.txt'
+    local f = io.open(tmp, 'w')
+    if f then f:write(sel); f:close() end
+    window:perform_action(
+      act.SpawnCommandInNewPane {
+        direction = 'Bottom',
+        size = { Percent = 20 },
+        command = { args = {
+          'sh', '-c',
+          'python3 "' .. turtle_bin('turtle-capture') .. '" < /tmp/turtle-capture-sel.txt'
+          .. ' && printf "\\n  captured ✓ — press Enter to close\\n" && read -r _'
+          .. ' || (printf "\\ncapture failed\\n"; read -r _)',
+        }},
+      }, pane
+    )
+    window:toast_notification('TurtleTerm', 'Capturing to Goose Notes…', nil, 2000)
+  end)
+end
+
+-- ============================================================
+-- Recall (CMD+SHIFT+L) — query memory mesh in a split pane
+-- ============================================================
+
+local function turtle_recall()
+  return wezterm.action_callback(function(window, pane)
+    window:perform_action(
+      act.PromptInputLine {
+        description = '◆ Memory Recall — describe what you\'re looking for',
+        action = wezterm.action_callback(function(w, p, query)
+          if not query or query == '' then return end
+          w:perform_action(
+            act.SpawnCommandInNewPane {
+              direction = 'Right',
+              size = { Percent = 42 },
+              command = { args = {
+                'sh', '-c',
+                'python3 "' .. turtle_bin('turtle-recall') .. '" ' .. wezterm.shell_quote_arg(query)
+                .. '; echo; printf "  press Enter to close... "; read -r _',
+              }},
+            }, p
+          )
+          w:toast_notification('TurtleTerm Recall', 'Searching: ' .. query, nil, 2000)
+        end),
+      }, pane
+    )
+  end)
+end
+
+-- ============================================================
+-- Mesh push (CMD+SHIFT+U) — sync memory mesh to/from GCS
+-- ============================================================
+
+local function turtle_mesh_push()
+  return wezterm.action_callback(function(window, pane)
+    window:perform_action(
+      act.SpawnCommandInNewPane {
+        direction = 'Bottom',
+        size = { Percent = 15 },
+        command = { args = {
+          'sh', '-c',
+          'python3 "' .. turtle_bin('turtle-mesh-push') .. '"'
+          .. ' && printf "\\n  sync complete ✓ — press Enter\\n" && read -r _'
+          .. ' || (printf "\\nsync failed (gsutil required)\\n"; read -r _)',
+        }},
+      }, pane
+    )
+    window:toast_notification('TurtleTerm', 'Syncing memory mesh…', nil, 2000)
+  end)
+end
+
+-- ============================================================
 -- AI Sidebar (CTRL+SHIFT+X)
 -- ============================================================
 
@@ -1248,6 +1417,11 @@ local PALETTE_COMMANDS = {
   -- Workspace
   { label = '💾  Save workspace              CMD+SHIFT+S',   id = 'workspace_save'    },
   { label = '📂  Restore workspace           CMD+SHIFT+O',   id = 'workspace_restore' },
+  -- Memory mesh / cross-app integration
+  { label = '◆  Mission Control (agents)    CMD+SHIFT+M',   id = 'mission_control'   },
+  { label = '◆  Capture to Goose Notes      CMD+SHIFT+C',   id = 'capture'           },
+  { label = '◆  Memory Mesh Recall          CMD+SHIFT+L',   id = 'recall'            },
+  { label = '◆  Sync mesh to GCS           CMD+SHIFT+U',   id = 'mesh_push'         },
 }
 
 local function turtle_command_palette()
@@ -1334,6 +1508,10 @@ local function turtle_command_palette()
             theme_picker       = turtle_theme_picker(),
             workspace_save     = turtle_workspace_save(),
             workspace_restore  = turtle_workspace_restore(),
+            mission_control    = turtle_mission_control(),
+            capture            = turtle_capture_selection(),
+            recall             = turtle_recall(),
+            mesh_push          = turtle_mesh_push(),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end
@@ -1931,6 +2109,11 @@ config.keys = {
   { key = 'h', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_ssh_picker(w, p) end) },
   { key = 's', mods = 'CMD|SHIFT',  action = turtle_workspace_save()    },  -- Save workspace
   { key = 'o', mods = 'CMD|SHIFT',  action = turtle_workspace_restore() },  -- Restore workspace
+  -- Memory mesh integration
+  { key = 'm', mods = 'CMD|SHIFT',  action = turtle_mission_control() },    -- Mission Control panel
+  { key = 'c', mods = 'CMD|SHIFT',  action = turtle_capture_selection() },  -- Capture to Goose Notes
+  { key = 'l', mods = 'CMD|SHIFT',  action = turtle_recall() },             -- Memory mesh recall
+  { key = 'u', mods = 'CMD|SHIFT',  action = turtle_mesh_push() },          -- Sync mesh to GCS
   {
     key = 's',
     mods = 'CTRL|SHIFT',
@@ -2386,6 +2569,20 @@ wezterm.on('format-tab-title', function(tab, tabs, panes, config_, hover, max_wi
   return string.format(' %d  %s ', idx, label)
 end)
 
+-- Count running AI agents (Claude Code, Goose, Noetica agentd, turtle-autonomous)
+local function count_agents()
+  local ok, out, _ = wezterm.run_child_process({
+    'sh', '-c',
+    "ps aux 2>/dev/null | grep -cE '(claude|goose|autonomous|noetica.*agent)' | tr -d ' \n' || echo 0"
+  })
+  if ok and out then
+    local n = tonumber(out:match('%d+')) or 0
+    -- subtract the grep itself
+    return math.max(0, n - 1)
+  end
+  return 0
+end
+
 wezterm.on('update-right-status', function(window, pane)
   local domain = turtle_domain()
   local proc = ''
@@ -2394,7 +2591,7 @@ wezterm.on('update-right-status', function(window, pane)
   pcall(function() cwd_uri = tostring(pane.current_working_dir) or '' end)
   local is_ssh = proc:find('ssh') ~= nil or cwd_uri:find('^ssh://') ~= nil
 
-  -- Plan step indicator: show ⚡ goal [step/total] when a plan is active
+  -- Plan step badge
   local plan_badge = ''
   do
     local home = os.getenv('HOME') or ''
@@ -2406,38 +2603,53 @@ wezterm.on('update-right-status', function(window, pane)
       if ok2 and plan and plan.steps then
         local step = (plan.current_step or 0) + 1
         local total = #plan.steps
-        local goal = (plan.goal or ''):sub(1, 30)
+        local goal = (plan.goal or ''):sub(1, 24)
         if step <= total then
-          plan_badge = string.format('  \xe2\x9a\xa1 %s [%d/%d]  ', goal, step, total)
+          plan_badge = string.format('\xe2\x9a\xa1 %s [%d/%d]  ', goal, step, total)
         end
       end
     end
   end
 
+  -- Agent count
+  local agent_part = ''
+  local n_agents = count_agents()
+  if n_agents > 0 then
+    agent_part = string.format('\xf0\x9f\xa4\x96 %d  ', n_agents)  -- 🤖 N
+  end
+
+  -- Clock
+  local time_part = wezterm.time.now():format('%H:%M')
+
+  -- Build right status
+  local parts = {}
+  if plan_badge ~= '' then table.insert(parts, plan_badge) end
+  if agent_part ~= '' then table.insert(parts, agent_part) end
+
   if is_ssh then
-    window:set_right_status(plan_badge .. '  \xe2\x87\x84 ssh  ')  -- ⇄ ssh
-    -- Red title bar tint while inside SSH session
+    table.insert(parts, '\xe2\x87\x84 ssh  ')
     local overrides = window:get_config_overrides() or {}
     if not overrides._ssh_frame then
       overrides._ssh_frame = true
       overrides.window_frame = {
-        active_titlebar_bg   = '#3a0000',
-        inactive_titlebar_bg = '#290000',
-        active_titlebar_fg   = '#ffaaaa',
-        inactive_titlebar_fg = '#cc7777',
+        font = wezterm.font('JetBrains Mono', { weight = 'Medium' }),
+        font_size = 11.5,
+        active_titlebar_bg   = '#2d1215',
+        inactive_titlebar_bg = '#1a0a0b',
+        active_titlebar_fg   = '#ff7b72',
+        inactive_titlebar_fg = '#cc5555',
+        border_left_color    = '#4a1a1a',
+        border_right_color   = '#4a1a1a',
+        border_top_color     = '#4a1a1a',
+        border_bottom_color  = '#4a1a1a',
         border_left_width    = '0.5cell',
         border_right_width   = '0.5cell',
-        border_bottom_height = '0.25cell',
-        border_top_height    = '0.25cell',
-        border_left_color    = '#5a0000',
-        border_right_color   = '#5a0000',
-        border_bottom_color  = '#5a0000',
-        border_top_color     = '#5a0000',
+        border_bottom_height = '0cell',
+        border_top_height    = '0cell',
       }
       window:set_config_overrides(overrides)
     end
   else
-    -- Clear SSH frame override when we leave SSH
     local overrides = window:get_config_overrides() or {}
     if overrides._ssh_frame then
       overrides._ssh_frame = nil
@@ -2445,11 +2657,12 @@ wezterm.on('update-right-status', function(window, pane)
       window:set_config_overrides(overrides)
     end
     if domain ~= 'host' then
-      window:set_right_status(plan_badge .. string.format('  %s  ', domain))
-    else
-      window:set_right_status(plan_badge)
+      table.insert(parts, string.format('%s  ', domain))
     end
   end
+
+  table.insert(parts, time_part .. '  ')
+  window:set_right_status(table.concat(parts, ''))
 end)
 
 wezterm.on('update-left-status', function(window, pane)

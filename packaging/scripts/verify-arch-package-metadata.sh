@@ -7,7 +7,7 @@ pkgbuild="$repo_root/packaging/linux/arch/PKGBUILD"
 test -f "$pkgbuild"
 bash -n "$pkgbuild"
 
-grep -q '^pkgname=turtle-term$' "$pkgbuild"
+grep -q '^pkgname=turtleterm$' "$pkgbuild"
 grep -q '^pkgver=0.1.0$' "$pkgbuild"
 grep -q "arch=('x86_64' 'aarch64')" "$pkgbuild"
 grep -q "license=('MIT')" "$pkgbuild"
