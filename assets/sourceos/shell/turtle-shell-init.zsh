@@ -1909,3 +1909,49 @@ PYEOF
 
     printf '\n\e[38;2;63;185;80m✓\e[0m  session restored: \e[1m%s\e[0m\n' "$name"
 }
+
+# ============================================================
+# cloudshell-fog + k3s twin admin surface
+# ============================================================
+_turtle_ssh_tunnel_bin() {
+    local _bin
+    _bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-ssh-tunnel"
+    [[ -x "$_bin" ]] && echo "$_bin" && return
+    echo "turtle-ssh-tunnel"
+}
+
+# csh — SSH into cloudshell-fog bastion
+csh() { python3 "$(_turtle_ssh_tunnel_bin)" connect "$@" }
+
+# ktunnel — manage k3s API tunnel through cloudshell bastion
+ktunnel() { python3 "$(_turtle_ssh_tunnel_bin)" tunnel "${1:-status}" }
+
+# kproxy — SOCKS5 proxy through cloudshell for sovereign browsing
+kproxy() { python3 "$(_turtle_ssh_tunnel_bin)" proxy "${1:-status}" }
+
+# k3s — kubectl pointed at the k3s twin (via tunnel)
+# Usage: k3s get pods -n kube-system
+k3s() {
+    local _cfg="${CLOUDSHELL_K3S_KUBECONFIG:-$HOME/.kube/config-k3s-twin}"
+    local _tunnel_port="${CLOUDSHELL_K3S_TUNNEL_PORT:-16443}"
+    # Warn if tunnel is not up
+    local _tpid_file="${HOME}/.local/state/sourceos/k3s-tunnel.pid"
+    if [[ -f "$_tpid_file" ]]; then
+        local _tpid; _tpid="$(cat "$_tpid_file" 2>/dev/null)"
+        if ! kill -0 "$_tpid" 2>/dev/null; then
+            printf '\e[33m⚠  k3s tunnel not running — start with: ktunnel start\e[0m\n' >&2
+        fi
+    else
+        printf '\e[33m⚠  k3s tunnel not running — start with: ktunnel start\e[0m\n' >&2
+    fi
+    KUBECONFIG="$_cfg" kubectl "$@"
+}
+
+# csh-exec — run a command on cloudshell non-interactively
+csh-exec() { python3 "$(_turtle_ssh_tunnel_bin)" exec "$@" }
+
+# csh-copy — scp via cloudshell
+csh-copy() { python3 "$(_turtle_ssh_tunnel_bin)" copy "$@" }
+
+# csh-status — show all cloudshell/tunnel status at a glance
+csh-status() { python3 "$(_turtle_ssh_tunnel_bin)" status }
