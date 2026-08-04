@@ -1439,8 +1439,11 @@ local PALETTE_COMMANDS = {
   { label = '◆  Memory Mesh Recall          CMD+SHIFT+L',   id = 'recall'            },
   { label = '◆  Sync mesh to GCS           CMD+SHIFT+U',   id = 'mesh_push'         },
   { label = '🌐  Open in BearBrowser         CMD+SHIFT+B',   id = 'bb_open'           },
+  { label = '◆  Mesh dashboard (browser)    —',             id = 'mesh_dashboard'    },
   -- Shell utilities
   { label = '🖼  Image gallery (current dir) CMD+SHIFT+G',   id = 'gallery'           },
+  { label = '⎇  Semantic git log (glog)     —',             id = 'glog'              },
+  { label = '⎇  Git diff highlight (td)     —',             id = 'tdiff'             },
   { label = '⏱  Resource usage (last cmd)   —',             id = 'rss_info'          },
 }
 
@@ -1535,6 +1538,9 @@ local function turtle_command_palette()
             recall             = turtle_recall(),
             mesh_push          = turtle_mesh_push(),
             bb_open            = act.SendString('bb \n'),
+            mesh_dashboard     = act.SendString('mesh\n'),
+            glog               = act.SendString('glog\n'),
+            tdiff              = act.SendString('td\n'),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end

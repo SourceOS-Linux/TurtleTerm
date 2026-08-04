@@ -677,6 +677,119 @@ vv() {
 }
 
 # ============================================================
+# mesh — open local mesh dashboard in BearBrowser (or default browser)
+#         starts turtle-mesh-serve if not running
+# Usage: mesh
+# ============================================================
+mesh() {
+    local _port="${TURTLE_MESH_PORT:-7788}"
+    local _bin
+    _bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-mesh-serve"
+    [[ -x "$_bin" ]] || _bin="turtle-mesh-serve"
+
+    if ! curl -s --max-time 1 "http://localhost:${_port}/api/state" >/dev/null 2>&1; then
+        echo "  ◆ Starting mesh dashboard on :${_port}…"
+        python3 "$_bin" --port "$_port" &! 2>/dev/null
+        sleep 1
+    fi
+    bb "http://localhost:${_port}" 2>/dev/null || open "http://localhost:${_port}"
+}
+
+# ============================================================
+# glog — semantic git log with Noetica-generated one-liners
+#         Falls back to a pretty git log if Noetica unreachable.
+# Usage: glog        # last 20 commits
+#        glog -n 5   # last 5
+# ============================================================
+glog() {
+    local _n=20
+    [[ "${1:-}" == "-n" ]] && { _n="${2:-20}"; shift 2 2>/dev/null ||: ; }
+
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    local _log
+    _log="$(git log --oneline --no-decorate -"$_n" 2>/dev/null)" || {
+        echo "Not a git repo." >&2; return 1
+    }
+
+    if [[ -z "$_log" ]]; then
+        echo "(no commits)"
+        return
+    fi
+
+    # Try Noetica summary
+    local _summary
+    _summary="$(TURTLE_LOG="$_log" TURTLE_NOETICA="$_noetica" python3 -c "
+import json, os
+from urllib import request as urlreq
+log     = os.environ['TURTLE_LOG']
+noetica = os.environ['TURTLE_NOETICA']
+try:
+    payload = json.dumps({'messages': [{'role': 'user',
+        'content': 'For each git commit below, add a 4-6 word plain-English annotation on the same line after \" — \". Output ONLY the annotated lines, one per input line, no extra text.\n\n' + log}],
+        'max_tokens': 800}).encode()
+    req = urlreq.Request(noetica + '/api/chat', data=payload,
+        headers={'Content-Type': 'application/json'})
+    with urlreq.urlopen(req, timeout=8) as r:
+        resp = json.load(r)
+        msg = (resp.get('choices',[{}])[0].get('message',{}).get('content','')
+               or resp.get('content',''))
+        print(msg.strip())
+except Exception:
+    print('')
+" 2>/dev/null)"
+
+    if [[ -n "$_summary" ]]; then
+        # Color: hash teal, rest white, annotation dim
+        printf '%s\n' "$_summary" | while IFS= read -r line; do
+            local hash="${line:0:7}"
+            local rest="${line:8}"
+            local msg="${rest%% — *}"
+            local ann=""
+            [[ "$rest" == *" — "* ]] && ann="${rest#* — }"
+            printf '\e[38;2;63;185;80m%s\e[0m \e[38;2;230;237;243m%-50s\e[0m \e[2m%s\e[0m\n' \
+                "$hash" "${msg:0:50}" "$ann"
+        done
+    else
+        # Plain pretty fallback
+        git log --oneline --color -"$_n"
+    fi
+}
+
+# ============================================================
+# td / turtle-diff — render git diff with syntax highlighting
+#         In WezTerm: renders in a right split panel.
+#         Falls back to delta/diff-so-fancy/bat if available.
+# Usage: td              # diff HEAD
+#        td HEAD~3       # diff from 3 commits ago
+#        td --cached     # diff staged changes
+#        td file.py      # diff a single file
+# ============================================================
+td() {
+    local _args=("$@")
+    local _diff
+
+    # Check for delta (best) / diff-so-fancy / bat
+    if command -v delta >/dev/null 2>&1; then
+        GIT_PAGER="delta" git diff "${_args[@]}"
+        return
+    fi
+
+    if command -v diff-so-fancy >/dev/null 2>&1; then
+        git diff --color "${_args[@]}" | diff-so-fancy | less -RFX
+        return
+    fi
+
+    # bat with diff syntax
+    if command -v bat >/dev/null 2>&1; then
+        git diff --color=always "${_args[@]}" | bat --language=diff --style=plain --color=always --paging=never
+        return
+    fi
+
+    # Plain fallback with color
+    git diff --color=always "${_args[@]}"
+}
+
+# ============================================================
 # bb  — open BearBrowser (optionally with a URL or file path)
 #        emits a mesh event so TurtleTerm knows what you're browsing
 # bbs — BearBrowser search: summarize query via Noetica, then open BB
