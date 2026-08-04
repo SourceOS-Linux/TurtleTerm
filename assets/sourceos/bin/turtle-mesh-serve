@@ -30,11 +30,12 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-MESH_DIR   = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
-STATUS_DIR = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "status"
-NOTES_DIR  = Path(os.getenv("GOOSE_NOTES_DIR", str(Path.home() / "notes")))
-BB_SUPPORT       = Path.home() / "Library" / "Application Support" / "BearBrowser"
-BACKLINKS_PATH   = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "notes-backlinks.json"
+MESH_DIR      = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
+STATUS_DIR    = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "status"
+NOTES_DIR     = Path(os.getenv("GOOSE_NOTES_DIR", str(Path.home() / "notes")))
+BB_SUPPORT    = Path.home() / "Library" / "Application Support" / "BearBrowser"
+BACKLINKS_PATH = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "notes-backlinks.json"
+RUNBOOKS_DIR  = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "runbooks"
 
 DEFAULT_PORT = int(os.getenv("TURTLE_MESH_PORT", "7788"))
 
@@ -102,17 +103,35 @@ def gather_state() -> dict:
         for p in sorted(NOTES_DIR.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)[:8]:
             notes.append({"name": p.name, "mtime": p.stat().st_mtime})
 
+    import re as _re
+    runbooks: list[dict] = []
+    if RUNBOOKS_DIR.exists():
+        for p in sorted(RUNBOOKS_DIR.glob("*.yaml"), key=lambda f: f.stat().st_mtime, reverse=True)[:12]:
+            try:
+                text = p.read_text(errors="replace")
+                name_m = _re.search(r"^name:\s*(.+)$", text, _re.MULTILINE)
+                desc_m = _re.search(r"^description:\s*(.+)$", text, _re.MULTILINE)
+                tags_m = _re.search(r"^tags:\s*\[(.+)\]", text, _re.MULTILINE)
+                runbooks.append({
+                    "name": name_m.group(1).strip() if name_m else p.stem,
+                    "description": desc_m.group(1).strip() if desc_m else "",
+                    "tags": [t.strip() for t in tags_m.group(1).split(",")] if tags_m else [],
+                })
+            except Exception:
+                pass
+
     return {
-        "ts":        datetime.datetime.now().isoformat(),
-        "active":    active,
-        "mesh":      mesh,
-        "ci":        ci,
-        "pr":        pr,
-        "noetica":   noetica,
-        "board":     board,
-        "bb_cands":  bb_cands,
-        "notes":     notes,
+        "ts":         datetime.datetime.now().isoformat(),
+        "active":     active,
+        "mesh":       mesh,
+        "ci":         ci,
+        "pr":         pr,
+        "noetica":    noetica,
+        "board":      board,
+        "bb_cands":   bb_cands,
+        "notes":      notes,
         "searxng_ok": searxng_ok,
+        "runbooks":   runbooks,
     }
 
 
@@ -273,6 +292,10 @@ h2{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em
       <h2>Recent Notes</h2>
       <div id="notes"></div>
     </div>
+    <div class="card">
+      <h2>Runbooks</h2>
+      <div id="runbooks-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div>
+    </div>
   </div>
 </div>
 
@@ -349,6 +372,12 @@ function render(state) {
   document.getElementById('notes').innerHTML = (state.notes || []).map(n =>
     `<div class="note-item">📝 ${esc(n.name)}</div>`
   ).join('') || '<span style="color:var(--dim)">— no notes</span>'
+
+  // Runbooks
+  const rbs = state.runbooks || []
+  document.getElementById('runbooks-list').innerHTML = rbs.length
+    ? rbs.map(r => `<span class="badge badge-green" title="${esc(r.description)}" style="cursor:pointer" onclick="navigator.clipboard?.writeText('rb run ${esc(r.name)}')">${esc(r.name)}</span>`).join('')
+    : '<span style="color:var(--dim)">none yet — try: rb new deploy</span>'
 }
 
 // SSE connection with auto-reconnect
