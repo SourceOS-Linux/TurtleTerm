@@ -1436,6 +1436,9 @@ local PALETTE_COMMANDS = {
   { label = '◆  Capture to Goose Notes      CMD+SHIFT+C',   id = 'capture'           },
   { label = '◆  Memory Mesh Recall          CMD+SHIFT+L',   id = 'recall'            },
   { label = '◆  Sync mesh to GCS           CMD+SHIFT+U',   id = 'mesh_push'         },
+  -- Shell utilities
+  { label = '🖼  Image gallery (current dir) CMD+SHIFT+G',   id = 'gallery'           },
+  { label = '⏱  Resource usage (last cmd)   —',             id = 'rss_info'          },
 }
 
 local function turtle_command_palette()
@@ -2128,6 +2131,21 @@ config.keys = {
   { key = 'c', mods = 'CMD|SHIFT',  action = turtle_capture_selection() },  -- Capture to Goose Notes
   { key = 'l', mods = 'CMD|SHIFT',  action = turtle_recall() },             -- Memory mesh recall
   { key = 'u', mods = 'CMD|SHIFT',  action = turtle_mesh_push() },          -- Sync mesh to GCS
+  -- Image gallery (lsi equivalent from WezTerm)
+  { key = 'g', mods = 'CMD|SHIFT',  action = wezterm.action_callback(function(w, p)
+      local cwd = ''
+      pcall(function() cwd = tostring(p.current_working_dir):gsub('file://[^/]*','') end)
+      if cwd == '' then cwd = os.getenv('HOME') or '.' end
+      w:perform_action(act.SpawnCommandInNewPane {
+        direction = 'Right', size = { Percent = 55 },
+        command = { args = { 'sh', '-c',
+          'python3 ' .. wezterm.shell_quote_arg(turtle_bin('turtle-render'))
+          .. ' --width 22 ' .. wezterm.shell_quote_arg(cwd) .. '/*.{png,jpg,jpeg,gif,webp,bmp,svg} 2>/dev/null'
+          .. ' || echo "no images in this directory"; echo; printf "press Enter..."; read -r _'
+        }},
+      }, p)
+      w:toast_notification('TurtleTerm Gallery', cwd, nil, 2000)
+    end) },
   {
     key = 's',
     mods = 'CTRL|SHIFT',
@@ -2745,21 +2763,45 @@ wezterm.on('update-right-status', function(window, pane)
   window:set_right_status(table.concat(parts, ''))
 end)
 
+-- left-status git cache: re-read every 4s max (avoid hammering git on every tick)
+local _git_status_cache = { branch='', stat='', at=0, cwd='' }
+
+local function refresh_git_status(cwd)
+  local now = os.time()
+  if cwd == _git_status_cache.cwd and now - _git_status_cache.at < 4 then
+    return _git_status_cache
+  end
+  local branch, stat = '', ''
+  local ok1, out1, _ = wezterm.run_child_process({ 'git', '-C', cwd, 'branch', '--show-current' })
+  if ok1 and out1 then branch = out1:match('([^\n]+)') or '' end
+  -- shortstat: " 3 files changed, 12 insertions(+), 4 deletions(-)"
+  local ok2, out2, _ = wezterm.run_child_process({ 'git', '-C', cwd, 'diff', '--shortstat' })
+  if ok2 and out2 and out2:match('%S') then
+    local added   = out2:match('(%d+) insertion') or ''
+    local removed = out2:match('(%d+) deletion')  or ''
+    if added   ~= '' then stat = stat .. '+' .. added   end
+    if removed ~= '' then
+      stat = stat .. (stat ~= '' and ' ' or '') .. '\xe2\x88\x92' .. removed  -- −
+    end
+  end
+  _git_status_cache = { branch=branch, stat=stat, at=now, cwd=cwd }
+  return _git_status_cache
+end
+
 wezterm.on('update-left-status', function(window, pane)
   local parts = {}
 
-  -- Git branch from pane cwd
+  -- Git branch + diff stats from pane cwd
   if pane and pane.current_working_dir then
     local cwd = tostring(pane.current_working_dir):gsub('file://[^/]*', '')
     if cwd ~= '' then
-      local ok, stdout, _ = wezterm.run_child_process({
-        'git', '-C', cwd, 'branch', '--show-current',
-      })
-      if ok and stdout and stdout:match('%S') then
-        local branch = stdout:match('([^\n]+)')
-        if branch then
-          table.insert(parts, ' \xe2\x8e\x87 ' .. branch)  -- ⎇ UTF-8
+      local gs = refresh_git_status(cwd)
+      if gs.branch ~= '' then
+        local branch_part = ' \xe2\x8e\x87 ' .. gs.branch  -- ⎇
+        if gs.stat ~= '' then
+          branch_part = branch_part .. '  \xe2\x80\x8b' .. gs.stat  -- zero-width + stat
         end
+        table.insert(parts, branch_part)
       end
     end
   end

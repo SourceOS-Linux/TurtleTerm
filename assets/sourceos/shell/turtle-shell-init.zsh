@@ -968,37 +968,362 @@ if (( ${precmd_functions[(I)_turtle_precmd_timing]} == 0 )); then
 fi
 
 # ============================================================
-# Right-side prompt (RPROMPT) showing plan step + perf
+# Rich RPROMPT — duration · git diff · peak RSS · exit code
 # ============================================================
 
-# Right-side prompt: active plan step + last command time
+_TURTLE_RUSAGE_BEFORE=0
+_TURTLE_LAST_RSS=0
+
+# Read resource.RUSAGE_CHILDREN (peak RSS of last waited child) from Python.
+# Called in precmd — reads accumulated RSS since last call, so we delta it.
+_turtle_read_rss() {
+    python3 -c "
+import resource
+r = resource.getrusage(resource.RUSAGE_CHILDREN)
+# On macOS ru_maxrss is bytes; on Linux it's KB
+import sys, platform
+rss = r.ru_maxrss
+if platform.system() == 'Darwin':
+    rss = rss // 1024  # → KB
+print(rss)
+" 2>/dev/null || echo 0
+}
+
+# Compact git diff stat: "+12 -3" or "" if clean
+_turtle_git_diffstat() {
+    local stat
+    stat="$(git diff --shortstat 2>/dev/null)"
+    [[ -z "$stat" ]] && return
+    local added removed
+    added="$(echo "$stat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+')"
+    removed="$(echo "$stat" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+')"
+    local out=""
+    [[ -n "$added" ]]   && out="+${added}"
+    [[ -n "$removed" ]] && out="${out:+$out }−${removed}"
+    [[ -n "$out" ]] && printf '%s' "$out"
+}
+
 _turtle_rprompt() {
     local rp=""
-    # Show active plan step if any (cached, don't call agentd every prompt)
+    setopt localoptions nopromptsubst
+
+    # Plan step
     if [[ -n "$_TURTLE_PLAN_STEP" ]]; then
         rp="%F{yellow}⟳ step ${_TURTLE_PLAN_STEP}%f "
     fi
-    # Show last command time if > 1s
+
+    # Duration (> 1s)
     if [[ -n "$_TURTLE_LAST_ELAPSED" ]] && (( _TURTLE_LAST_ELAPSED > 1000 )); then
         local secs=$(( _TURTLE_LAST_ELAPSED / 1000 ))
-        rp="${rp}%F{240}${secs}s%f"
+        if (( secs >= 3600 )); then
+            rp="${rp}%F{240}$(( secs/3600 ))h$(( (secs%3600)/60 ))m%f "
+        elif (( secs >= 60 )); then
+            rp="${rp}%F{240}$(( secs/60 ))m$(( secs%60 ))s%f "
+        else
+            rp="${rp}%F{240}${secs}s%f "
+        fi
     fi
-    echo -n "$rp"
+
+    # Git diff stats (green/red) — only shown when there are uncommitted changes
+    local _diffstat
+    _diffstat="$(_turtle_git_diffstat 2>/dev/null)"
+    if [[ -n "$_diffstat" ]]; then
+        # colour each part
+        local _added _removed
+        _added="$(echo "$_diffstat" | grep -oE '\+[0-9]+')"
+        _removed="$(echo "$_diffstat" | grep -oE '−[0-9]+')"
+        [[ -n "$_added" ]]   && rp="${rp}%F{2}${_added}%f "
+        [[ -n "$_removed" ]] && rp="${rp}%F{1}${_removed}%f "
+    fi
+
+    # Peak RSS of last command (shown when >50MB)
+    if (( _TURTLE_LAST_RSS > 51200 )); then
+        local mb=$(( _TURTLE_LAST_RSS / 1024 ))
+        rp="${rp}%F{240}${mb}MB%f "
+    fi
+
+    # Trailing space trim
+    echo -n "${rp% }"
 }
 
-# Track elapsed for RPROMPT
 _turtle_precmd_rprompt() {
+    # Capture elapsed
     if [[ -n "$_TURTLE_PERF_START" ]]; then
         _TURTLE_LAST_ELAPSED=$(( int(($EPOCHREALTIME - $_TURTLE_PERF_START) * 1000) ))
     fi
+    # Capture peak RSS delta (async — don't block the prompt)
+    {
+        local _rss_now; _rss_now="$(_turtle_read_rss)"
+        local _delta=$(( _rss_now - _TURTLE_RUSAGE_BEFORE ))
+        (( _delta > 0 )) && _TURTLE_LAST_RSS=$_delta || _TURTLE_LAST_RSS=0
+        _TURTLE_RUSAGE_BEFORE=$_rss_now
+    } &!
 }
 
 if (( ${precmd_functions[(I)_turtle_precmd_rprompt]} == 0 )); then
     precmd_functions+=(_turtle_precmd_rprompt)
 fi
 
-# Set RPROMPT if user hasn't set it
 if [[ -z "$RPROMPT" ]]; then
     RPROMPT='$(_turtle_rprompt)'
     setopt PROMPT_SUBST 2>/dev/null
 fi
+
+# ============================================================
+# wasi — cross-machine "where was I"
+# Reads memory mesh events from other hostnames (via local mesh
+# or GCS if available). Shows last cwd, branch, commands, agents.
+# ============================================================
+wasi() {
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _ctx_file="$_mesh_dir/context.jsonl"
+    local _this_host; _this_host="$(hostname -s 2>/dev/null || hostname)"
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    local _gcs="${SOURCEOS_MESH_BUCKET:-gs://sourceos-artifacts-socioprophet/memory-mesh}"
+
+    printf '\e[38;2;88;166;255m◆ wasi — where was I\e[0m\n'
+    printf '\e[2m  this machine: %s\e[0m\n\n' "$_this_host"
+
+    # Try to pull from GCS first (gets other machines' context)
+    if command -v gsutil >/dev/null 2>&1; then
+        local _remote_ctx
+        _remote_ctx="$(gsutil cat "$_gcs/context.jsonl" 2>/dev/null | tail -200)"
+        if [[ -n "$_remote_ctx" ]]; then
+            echo "$_remote_ctx" | python3 -c "
+import json, sys, os
+this_host = os.uname().nodename.split('.')[0]
+events = []
+for line in sys.stdin:
+    try:
+        e = json.loads(line)
+        h = e.get('hostname','')
+        if h and h != this_host:
+            events.append(e)
+    except: pass
+if not events:
+    print('  \033[2mno events from other machines\033[0m')
+    sys.exit(0)
+# Group by hostname
+from collections import defaultdict
+by_host = defaultdict(list)
+for e in events:
+    by_host[e['hostname']].append(e)
+for host, evs in sorted(by_host.items()):
+    print(f'\n  \033[38;2;188;140;255m{host}\033[0m')
+    for ev in evs[-5:]:
+        ts = ev.get('ts','')[:16]
+        kind = ev.get('kind','?')
+        title = ev.get('title','')[:60]
+        cwd = ev.get('cwd','')
+        branch = ev.get('branch','')
+        loc = f'{cwd}' + (f'  ({branch})' if branch else '')
+        print(f'    \033[2m{ts}\033[0m  \033[38;2;63;185;80m{kind:<10}\033[0m  {title}')
+        if loc:
+            print(f'               \033[2m{loc}\033[0m')
+"
+            return
+        fi
+    fi
+
+    # Fallback: local mesh (same machine, recent context for continuity)
+    if [[ -f "$_ctx_file" ]]; then
+        tail -30 "$_ctx_file" | python3 -c "
+import json, sys
+events = []
+for line in sys.stdin:
+    try: events.append(json.loads(line))
+    except: pass
+if not events:
+    print('  \033[2mno mesh events yet — run: some-command | tc\033[0m')
+    sys.exit(0)
+print('  \033[2m(local mesh — no GCS credentials for cross-machine)\033[0m')
+for ev in reversed(events[-8:]):
+    ts = ev.get('ts','')[:16]
+    kind = ev.get('kind','?')
+    title = ev.get('title','')[:60]
+    print(f'  \033[2m{ts}\033[0m  \033[38;2;63;185;80m{kind:<10}\033[0m  {title}')
+"
+    else
+        printf '  \e[2mno memory mesh yet — source turtle-shell-init.zsh and run: tc "first capture"\e[0m\n'
+    fi
+}
+
+# ============================================================
+# Auto project env injection on cd
+# Infers venv/nvm/kube-context/poetry from project files.
+# Each activation is silent unless it changes something.
+# Disable entirely: TURTLE_ENV_INJECT=0
+# ============================================================
+_TURTLE_LAST_VENV=""
+_TURTLE_LAST_NODE=""
+_TURTLE_LAST_KUBE=""
+
+_turtle_env_inject() {
+    [[ "${TURTLE_ENV_INJECT:-1}" == "0" ]] && return
+
+    # ── Python venv ────────────────────────────────────────────
+    local _venv=""
+    if [[ -d ".venv" ]]; then
+        _venv=".venv"
+    elif [[ -d "venv" ]]; then
+        _venv="venv"
+    elif [[ -f "pyproject.toml" ]] || [[ -f "setup.py" ]]; then
+        # poetry-managed — try `poetry env info -p`
+        if command -v poetry >/dev/null 2>&1; then
+            local _pe; _pe="$(poetry env info -p 2>/dev/null)"
+            [[ -n "$_pe" && -d "$_pe" ]] && _venv="$_pe"
+        fi
+    fi
+    if [[ -n "$_venv" && "$_venv" != "$_TURTLE_LAST_VENV" ]]; then
+        source "$_venv/bin/activate" 2>/dev/null && \
+            printf '\e[2m  ⚡ venv: %s\e[0m\n' "$_venv"
+        _TURTLE_LAST_VENV="$_venv"
+    elif [[ -z "$_venv" && -n "$_TURTLE_LAST_VENV" && -n "$VIRTUAL_ENV" ]]; then
+        deactivate 2>/dev/null || true
+        _TURTLE_LAST_VENV=""
+    fi
+
+    # ── Node version (.nvmrc / .node-version) ─────────────────
+    if command -v nvm >/dev/null 2>&1; then
+        local _nvmrc=""
+        [[ -f ".nvmrc" ]]        && _nvmrc="$(cat .nvmrc | tr -d '[:space:]')"
+        [[ -f ".node-version" ]] && _nvmrc="$(cat .node-version | tr -d '[:space:]')"
+        if [[ -n "$_nvmrc" && "$_nvmrc" != "$_TURTLE_LAST_NODE" ]]; then
+            nvm use "$_nvmrc" --silent 2>/dev/null && \
+                printf '\e[2m  ⚡ node: %s\e[0m\n' "$_nvmrc"
+            _TURTLE_LAST_NODE="$_nvmrc"
+        fi
+    fi
+
+    # ── Kubernetes context (from .kube-context file) ───────────
+    if command -v kubectl >/dev/null 2>&1 && [[ -f ".kube-context" ]]; then
+        local _kctx; _kctx="$(cat .kube-context | tr -d '[:space:]')"
+        if [[ -n "$_kctx" && "$_kctx" != "$_TURTLE_LAST_KUBE" ]]; then
+            kubectl config use-context "$_kctx" >/dev/null 2>&1 && \
+                printf '\e[2m  ⚡ kube: %s\e[0m\n' "$_kctx"
+            _TURTLE_LAST_KUBE="$_kctx"
+        fi
+    fi
+
+    # ── direnv fallback ────────────────────────────────────────
+    if command -v direnv >/dev/null 2>&1 && [[ -f ".envrc" ]]; then
+        direnv export zsh 2>/dev/null | source /dev/stdin 2>/dev/null || true
+    fi
+}
+
+# Hook env injection after _turtle_mesh_cd
+if (( ${chpwd_functions[(I)_turtle_env_inject]} == 0 )); then
+    chpwd_functions+=(_turtle_env_inject)
+fi
+
+# ============================================================
+# session-save / session-restore — named workspace snapshots
+# Persists: cwd, last 20 commands, env vars, git branch, agents
+# Stored in memory mesh so cross-machine restore works via wasi.
+# ============================================================
+session-save() {
+    local name="${1:-$(basename "$PWD")}"
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _sessions_dir="$_mesh_dir/sessions"
+    mkdir -p "$_sessions_dir"
+
+    local _branch; _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+    local _cmds=()
+    local _state_dir; _state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/terminal"
+    local _hist_file="$_state_dir/history.jsonl"
+
+    # Collect last 20 commands from JSONL history
+    if [[ -f "$_hist_file" ]]; then
+        maparray -t _cmds < <(tail -20 "$_hist_file" | python3 -c "
+import json,sys
+for line in sys.stdin:
+    try: print(json.loads(line).get('cmd',''))
+    except: pass
+" 2>/dev/null)
+    fi
+
+    # Env snapshot (filter out secrets)
+    local _env_json
+    _env_json="$(python3 -c "
+import os, json
+skip = {'HISTFILE','HISTSIZE','LS_COLORS','TERM_SESSION_ID','TMPDIR','LOGNAME'}
+env = {k:v for k,v in os.environ.items()
+       if not any(s in k for s in ('SECRET','TOKEN','KEY','PASS','CRED'))
+       and k not in skip and len(v) < 200}
+print(json.dumps(env))
+" 2>/dev/null || echo '{}')"
+
+    local _session
+    _session="$(python3 -c "
+import json, datetime, os, socket
+data = {
+    'name': '$name',
+    'ts': datetime.datetime.utcnow().isoformat()+'Z',
+    'hostname': socket.gethostname(),
+    'cwd': os.getcwd(),
+    'branch': '$_branch',
+    'commands': $(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "${_cmds[@]}" 2>/dev/null || echo '[]'),
+    'env': $(_env_json),
+}
+print(json.dumps(data, indent=2))
+" 2>/dev/null)"
+
+    printf '%s\n' "$_session" > "$_sessions_dir/${name}.json"
+
+    # Also write to mesh context
+    local _ts; _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '{"ts":"%s","kind":"session-save","source":"terminal","title":"%s","cwd":"%s","branch":"%s"}\n' \
+        "$_ts" "$name" "$PWD" "$_branch" >> "$_mesh_dir/context.jsonl"
+
+    printf '\e[38;2;63;185;80m✓\e[0m  session saved: \e[1m%s\e[0m\n' "$name"
+    printf '  \e[2m%s\e[0m\n' "$_sessions_dir/${name}.json"
+}
+
+session-restore() {
+    local name="${1}"
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _sessions_dir="$_mesh_dir/sessions"
+
+    if [[ -z "$name" ]]; then
+        # List available sessions
+        printf '\e[38;2;88;166;255m◆ Saved sessions:\e[0m\n'
+        for f in "$_sessions_dir"/*.json(N); do
+            local _n; _n="$(basename "$f" .json)"
+            local _ts; _ts="$(python3 -c "import json; d=json.load(open('$f')); print(d.get('ts','?')[:16])" 2>/dev/null)"
+            local _cwd; _cwd="$(python3 -c "import json; d=json.load(open('$f')); print(d.get('cwd','?'))" 2>/dev/null)"
+            printf '  \e[1m%-20s\e[0m  \e[2m%s  %s\e[0m\n' "$_n" "$_ts" "$_cwd"
+        done
+        return
+    fi
+
+    local _file="$_sessions_dir/${name}.json"
+    if [[ ! -f "$_file" ]]; then
+        printf '\e[38;2;255;123;114m✗\e[0m  no session: %s\n' "$name" >&2
+        return 1
+    fi
+
+    python3 - "$_file" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"\033[38;2;88;166;255m◆ Restoring: {d.get('name','?')}\033[0m")
+print(f"  cwd:     {d.get('cwd','?')}")
+print(f"  branch:  {d.get('branch','?')}")
+print(f"  saved:   {d.get('ts','?')[:16]}  on {d.get('hostname','?')}")
+cwd = d.get('cwd','')
+branch = d.get('branch','')
+print(f"\n  \033[2mcd {cwd}\033[0m")
+if branch:
+    print(f"  \033[2mgit checkout {branch}  (if available)\033[0m")
+PYEOF
+
+    local _cwd; _cwd="$(python3 -c "import json; print(json.load(open('$_file')).get('cwd',''))" 2>/dev/null)"
+    local _branch; _branch="$(python3 -c "import json; print(json.load(open('$_file')).get('branch',''))" 2>/dev/null)"
+
+    [[ -n "$_cwd" && -d "$_cwd" ]] && cd "$_cwd" || printf '  \e[2m(cwd no longer exists)\e[0m\n'
+    if [[ -n "$_branch" ]]; then
+        git checkout "$_branch" 2>/dev/null && \
+            printf '  \e[38;2;63;185;80m✓\e[0m branch: %s\n' "$_branch" || true
+    fi
+
+    printf '\n\e[38;2;63;185;80m✓\e[0m  session restored: \e[1m%s\e[0m\n' "$name"
+}
