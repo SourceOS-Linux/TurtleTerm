@@ -2329,6 +2329,57 @@ def _handle_request_inner(request: dict[str, Any]) -> dict[str, Any]:  # noqa: C
             ),
         })
 
+    if action == "acquire":
+        url = (request.get("url") or "").strip()
+        if not url:
+            return response("error", {"message": "acquire requires 'url' field"}, status="error")
+        base = agent_machine_url()
+        session_id = env("SOURCEOS_TERMINAL_SESSION_ID") or str(uuid.uuid4())
+        # Governed acquisition request body for Agent Machine POST /api/acquire.
+        payload: dict[str, Any] = {
+            "url": url,
+            "accountClass": request.get("account_class", "") or "",
+            "tier": request.get("tier", "") or "",
+        }
+        seeds = request.get("seeds")
+        if seeds:
+            payload["seeds"] = seeds
+        if request.get("enrich"):
+            payload["enrich"] = True
+        result = _http_post(base.rstrip("/") + "/api/acquire", payload, timeout=15)
+        # Fail closed: if Agent Machine is unreachable, the acquisition is NOT admitted.
+        reachable = result is not None
+        status_label = "dispatched" if reachable else "blocked_offline"
+        receipt = write_receipt({
+            "schema": "sourceos.terminal.event.v0",
+            "event_type": "agent-machine.acquire",
+            "session_id": session_id,
+            "url": url,
+            "account_class": payload["accountClass"],
+            "tier": payload["tier"],
+            "agent_machine_url": base,
+            "reachable": reachable,
+            "status": status_label,
+            "capturedAt": utc_now(),
+        })
+        return response("acquisition_result", {
+            "url": url,
+            "account_class": payload["accountClass"],
+            "tier": payload["tier"],
+            "seeds": payload.get("seeds", []),
+            "enrich": bool(payload.get("enrich", False)),
+            "agent_machine_url": base,
+            "reachable": reachable,
+            "status": status_label,
+            "acquisition_response": result,
+            "receipt": receipt,
+            "decision": decision_stub(
+                "agent-machine.acquire",
+                f"Governed web acquisition {'dispatched to' if reachable else 'blocked (Agent Machine unreachable) at'} {base}/api/acquire.",
+                "allow" if reachable else "deny",
+            ),
+        }, status="ok" if reachable else "error")
+
     # ------------------------------------------------------------------
     # CloudFog
     # ------------------------------------------------------------------

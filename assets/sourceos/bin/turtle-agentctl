@@ -5,6 +5,7 @@ New verbs (Track A + B):
   ingest-event <json>   Feed a raw terminal event (shell hooks use this)
   noetica-status        Check Noetica reachability and version
   noetica-query <text>  Send a free-text query to Noetica /api/chat
+  acquire --url <URL>   Governed web acquisition via Agent Machine /api/acquire
 """
 
 from __future__ import annotations
@@ -142,6 +143,14 @@ def main(argv: list[str]) -> int:
     sub.add_parser("noetica-status", help="check Noetica reachability")
     noetica_query_p = sub.add_parser("noetica-query", help="send a query to Noetica /api/chat")
     noetica_query_p.add_argument("text", nargs=argparse.REMAINDER)
+
+    # Governed web acquisition via Agent Machine POST /api/acquire (fail-closed).
+    acquire_p = sub.add_parser("acquire", help="governed web acquisition via Agent Machine /api/acquire")
+    acquire_p.add_argument("--url", required=True, help="URL to acquire (required)")
+    acquire_p.add_argument("--account", dest="account", default="", help="account class for the governed run")
+    acquire_p.add_argument("--tier", dest="tier", default="", help="acquisition tier")
+    acquire_p.add_argument("--seeds", dest="seeds", action="append", default=[], help="seed URL/term (repeatable, or comma-separated)")
+    acquire_p.add_argument("--enrich", dest="enrich", action="store_true", help="request downstream enrichment")
 
     # Track D: Policy Fabric
     sub.add_parser("policy-status", help="check Policy Fabric reachability and mode")
@@ -516,6 +525,28 @@ def main(argv: list[str]) -> int:
         request = {"action": "noetica_status"}
     elif args.command == "noetica-query":
         request = {"action": "noetica_query", "text": join_remainder(args.text)}
+    elif args.command == "acquire":
+        url = (getattr(args, "url", "") or "").strip()
+        if not url:
+            print(json.dumps({"status": "error", "message": "acquire requires --url"}))
+            return 2
+        # Seeds may be repeated (--seeds a --seeds b) and/or comma-separated (--seeds a,b).
+        seeds: list[str] = []
+        for chunk in getattr(args, "seeds", []) or []:
+            for part in str(chunk).split(","):
+                part = part.strip()
+                if part:
+                    seeds.append(part)
+        request = {
+            "action": "acquire",
+            "url": url,
+            "account_class": getattr(args, "account", "") or "",
+            "tier": getattr(args, "tier", "") or "",
+        }
+        if seeds:
+            request["seeds"] = seeds
+        if getattr(args, "enrich", False):
+            request["enrich"] = True
     elif args.command == "policy-status":
         request = {"action": "policy_status"}
     elif args.command == "bearbrowser-handoff":

@@ -75,6 +75,28 @@ def main() -> int:
         assert summary["kind"] == "summary"
         assert summary["data"]["event_count"] == 0
 
+        # Governed web acquisition: turtle-agentctl builds the request dict and
+        # turtle-agentd routes it to Agent Machine /api/acquire, failing closed
+        # when Agent Machine is unreachable.
+        acq_env = dict(env)
+        acq_env["SOURCEOS_AGENT_MACHINE_URL"] = "http://127.0.0.1:9"  # discard/refused -> offline
+        acquire = run_agentctl(
+            ["acquire", "--url", "https://example.com/data",
+             "--account", "research", "--tier", "gold",
+             "--seeds", "https://a.example,https://b.example", "--enrich"],
+            acq_env,
+        )
+        assert acquire["kind"] == "acquisition_result"
+        assert acquire["status"] == "error"  # fail-closed when unreachable
+        assert acquire["data"]["url"] == "https://example.com/data"
+        assert acquire["data"]["account_class"] == "research"
+        assert acquire["data"]["tier"] == "gold"
+        assert acquire["data"]["seeds"] == ["https://a.example", "https://b.example"]
+        assert acquire["data"]["enrich"] is True
+        assert acquire["data"]["reachable"] is False
+        assert acquire["data"]["status"] == "blocked_offline"
+        assert acquire["data"]["decision"]["decision"] == "deny"
+
     return 0
 
 
@@ -132,3 +154,71 @@ def test_policy_evaluate_denies_agent_egress():
                             execution_domain="host", actor_id="agent:autonomous")
     assert r["decision"]["outcome"] == "deny"
     assert r["source"] == "consent-plane"
+
+
+# --------------------------------------------------------------------- acquire
+def test_acquire_action_posts_to_api_acquire(tmp_path, monkeypatch):
+    """The `acquire` action POSTs the governed body to Agent Machine /api/acquire."""
+    monkeypatch.setenv("SOURCEOS_TERMINAL_RECEIPTS", str(tmp_path / "receipts"))
+    monkeypatch.setenv("SOURCEOS_AGENT_MACHINE_URL", "http://agent-machine.local:9000")
+
+    captured: dict = {}
+
+    def fake_post(url, payload, timeout=5):
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout"] = timeout
+        return {"runId": "urn:srcos:acquire:run:test", "admitted": True}
+
+    monkeypatch.setattr(_ad, "_http_post", fake_post)
+
+    resp = _ad.handle_request({
+        "action": "acquire",
+        "url": "https://example.com/report",
+        "account_class": "research",
+        "tier": "gold",
+        "seeds": ["https://seed.example"],
+        "enrich": True,
+    })
+
+    # Routed to the correct Agent Machine endpoint with the governed body shape.
+    assert captured["url"] == "http://agent-machine.local:9000/api/acquire"
+    assert captured["payload"] == {
+        "url": "https://example.com/report",
+        "accountClass": "research",
+        "tier": "gold",
+        "seeds": ["https://seed.example"],
+        "enrich": True,
+    }
+    assert resp["status"] == "ok"
+    assert resp["kind"] == "acquisition_result"
+    assert resp["data"]["reachable"] is True
+    assert resp["data"]["status"] == "dispatched"
+    assert resp["data"]["acquisition_response"] == {"runId": "urn:srcos:acquire:run:test", "admitted": True}
+    assert resp["data"]["decision"]["decision"] == "allow"
+    assert resp["data"]["decision"]["action"] == "agent-machine.acquire"
+
+
+def test_acquire_fails_closed_when_agent_machine_unreachable(tmp_path, monkeypatch):
+    """Fail-closed: unreachable Agent Machine yields deny + error, no admission."""
+    monkeypatch.setenv("SOURCEOS_TERMINAL_RECEIPTS", str(tmp_path / "receipts"))
+    monkeypatch.setattr(_ad, "_http_post", lambda url, payload, timeout=5: None)
+
+    resp = _ad.handle_request({
+        "action": "acquire",
+        "url": "https://example.com/report",
+        "account_class": "research",
+        "tier": "gold",
+    })
+    assert resp["status"] == "error"
+    assert resp["data"]["reachable"] is False
+    assert resp["data"]["status"] == "blocked_offline"
+    assert resp["data"]["acquisition_response"] is None
+    assert resp["data"]["decision"]["decision"] == "deny"
+
+
+def test_acquire_requires_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOURCEOS_TERMINAL_RECEIPTS", str(tmp_path / "receipts"))
+    resp = _ad.handle_request({"action": "acquire", "url": ""})
+    assert resp["status"] == "error"
+    assert "url" in resp["data"]["message"]
