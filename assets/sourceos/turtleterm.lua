@@ -1471,6 +1471,10 @@ local PALETTE_COMMANDS = {
   { label = '🎫  Ticket: close (tkc)             —',                  id = 'ticket_close'    },
   { label = '🎫  Ticket: comment (tkn)           —',                  id = 'ticket_note'     },
   { label = '🎫  Ticket: summary                 —',                  id = 'ticket_summary'  },
+  -- Doc feedback
+  { label = '📖  Doc feedback: submit (docfb)   —',                  id = 'doc_feedback'    },
+  { label = '📖  Doc FAQ: show stubs (docfaq)   —',                  id = 'doc_faq'         },
+  { label = '📖  Doc FAQ: distill (docdistill)  —',                  id = 'doc_distill'     },
 }
 
 local function turtle_command_palette()
@@ -1590,6 +1594,9 @@ local function turtle_command_palette()
             ticket_close       = act.SendString('tkc '),
             ticket_note        = act.SendString('tkn '),
             ticket_summary     = act.SendString('ticket summary\n'),
+            doc_feedback       = act.SendString('docfb '),
+            doc_faq            = act.SendString('docfaq\n'),
+            doc_distill        = act.SendString('docdistill\n'),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end
