@@ -1968,43 +1968,85 @@ _turtle_matrix_bridge_bin() {
     printf '%s' "$(dirname "${(%):-%x}")/turtle-matrix-bridge"
 }
 
-# mx <message> [room_id]  — post a plain text message to the default Matrix room
+# mx [-r <room>] [<message>]
+#   Post text to Matrix room. Reads stdin when piped: cmd | mx
+#   Examples: mx "deploy done"   •   k3s get pods | mx   •   mx -r !ops:srv hi
 mx() {
-    if [[ -z "$1" ]]; then
-        printf 'Usage: mx <message> [room_id]\n' >&2
+    local _bin; _bin="$(_turtle_matrix_bridge_bin)"
+    if [[ ! -t 0 ]]; then
+        python3 "$_bin" send "$@"
+    elif [[ -n "$1" ]]; then
+        python3 "$_bin" send "$@"
+    else
+        printf 'Usage: mx [-r <room>] <message>  |  cmd | mx\n' >&2
         return 1
     fi
-    python3 "$(_turtle_matrix_bridge_bin)" send "$@"
 }
 
-# mxf <file> [room_id]    — post a file as a code block to the Matrix room
+# mxf [-r <room>] [--lang <lang>] <file>
+#   Post a file as a syntax-highlighted code block
 mxf() {
-    if [[ -z "$1" ]]; then
-        printf 'Usage: mxf <file> [room_id]\n' >&2
-        return 1
-    fi
+    [[ -z "$1" ]] && { printf 'Usage: mxf [-r <room>] <file>\n' >&2; return 1; }
     python3 "$(_turtle_matrix_bridge_bin)" send-file "$@"
 }
 
-# mxw <file> [room_id]    — wormhole-send a file and post the code to the Matrix room
+# mxpipe [-r <room>] [--lang <lang>]
+#   Pipe stdin as a code block: k3s get pods | mxpipe --lang yaml
+mxpipe() { python3 "$(_turtle_matrix_bridge_bin)" pipe "$@" }
+
+# mxw [-r <room>] <file>
+#   Wormhole-send a file; posts the wormhole receive code to the Matrix room
+#   Also works with stdin: k3s logs mypod | mxw   (no file arg = stdin mode)
 mxw() {
-    if [[ -z "$1" ]]; then
-        printf 'Usage: mxw <file> [room_id]\n' >&2
+    local _bin; _bin="$(_turtle_matrix_bridge_bin)"
+    if [[ ! -t 0 ]] && [[ -z "$1" || "$1" == -* ]]; then
+        python3 "$_bin" wormhole-pipe "$@"
+    elif [[ -n "$1" ]]; then
+        python3 "$_bin" wormhole-send "$@"
+    else
+        printf 'Usage: mxw [-r <room>] <file>  |  cmd | mxw\n' >&2
         return 1
     fi
-    python3 "$(_turtle_matrix_bridge_bin)" wormhole-send "$@"
 }
 
-# mxr <code> [room_id]    — wormhole-receive by code, post result to Matrix room
+# mxr [-r <room>] <wormhole-code>
+#   Receive a wormhole transfer and post the saved path to the room
 mxr() {
-    if [[ -z "$1" ]]; then
-        printf 'Usage: mxr <wormhole-code> [room_id]\n' >&2
-        return 1
-    fi
+    [[ -z "$1" ]] && { printf 'Usage: mxr [-r <room>] <code>\n' >&2; return 1; }
     python3 "$(_turtle_matrix_bridge_bin)" wormhole-recv "$@"
 }
 
-# mxstatus               — show Matrix bridge config + connectivity
+# mxreply [-r <room>] <event_id> <text>
+#   Send a threaded reply to a specific Matrix event
+mxreply() {
+    [[ $# -lt 2 ]] && { printf 'Usage: mxreply [-r <room>] <event_id> <text>\n' >&2; return 1; }
+    python3 "$(_turtle_matrix_bridge_bin)" reply "$@"
+}
+
+# mxreact [-r <room>] <event_id> <emoji>
+#   Send an emoji reaction to a Matrix event
+mxreact() {
+    [[ $# -lt 2 ]] && { printf 'Usage: mxreact [-r <room>] <event_id> <emoji>\n' >&2; return 1; }
+    python3 "$(_turtle_matrix_bridge_bin)" react "$@"
+}
+
+# mxedit [-r <room>] <event_id> <new_text>
+#   Edit (replace) a Matrix message you sent
+mxedit() {
+    [[ $# -lt 2 ]] && { printf 'Usage: mxedit [-r <room>] <event_id> <text>\n' >&2; return 1; }
+    python3 "$(_turtle_matrix_bridge_bin)" edit "$@"
+}
+
+# mxrooms   — list joined Matrix rooms with names
+mxrooms() { python3 "$(_turtle_matrix_bridge_bin)" rooms }
+
+# mxlog [-r <room>] [<n>]   — print last n Matrix messages from the room (default 20)
+mxlog() { python3 "$(_turtle_matrix_bridge_bin)" messages "$@" }
+
+# mxctx [-r <room>]   — post current active context + mesh tail to Matrix room
+mxctx() { python3 "$(_turtle_matrix_bridge_bin)" ctx "$@" }
+
+# mxstatus   — show Matrix bridge config + connectivity
 mxstatus() { python3 "$(_turtle_matrix_bridge_bin)" status }
 
 # Auto-start Matrix bridge daemon at shell init if config is present
