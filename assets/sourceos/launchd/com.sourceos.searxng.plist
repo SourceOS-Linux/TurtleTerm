@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.sourceos.searxng.plist
+  Ensures the sourceos-searxng Docker container starts at login.
+  Pre-requisite: run sourceos-searxng-setup.sh at least once to create the container.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sourceos.searxng</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/docker</string>
+    <string>start</string>
+    <string>sourceos-searxng</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/sourceos-searxng.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/sourceos-searxng.err</string>
+</dict>
+</plist>
