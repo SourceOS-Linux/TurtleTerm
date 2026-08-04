@@ -1,0 +1,27 @@
+name: k3s-incident-triage
+description: "k3s twin incident triage — rapid diagnosis for pod failures, OOM, crashloops, storage"
+tags: [k3s, devsecops, incident, triage, cloudshell]
+vars:
+  NAMESPACE: "default"
+  POD: ""
+steps:
+  - cmd: ktunnel start
+    desc: "Ensure k3s API tunnel is open. Safe to re-run."
+  - cmd: k3s get pods -A --field-selector='status.phase!=Running' -o wide
+    desc: "All non-running pods across every namespace — the incident blast radius at a glance."
+  - cmd: k3s get events -A --field-selector='type=Warning' --sort-by='.metadata.creationTimestamp' | tail -40
+    desc: "Warning events cluster-wide, newest last."
+  - cmd: k3s describe pod ${POD} -n ${NAMESPACE}
+    desc: "Full pod description for the affected pod. Set POD var to the pod name."
+  - cmd: k3s logs ${POD} -n ${NAMESPACE} --previous --tail=100
+    desc: "Logs from the previous (crashed) container instance — the real error trace."
+  - cmd: k3s logs ${POD} -n ${NAMESPACE} --tail=100
+    desc: "Logs from the current container instance."
+  - cmd: k3s get pvc -n ${NAMESPACE}
+    desc: "PVC status in the affected namespace — catch Pending volumes blocking pod scheduling."
+  - cmd: k3s describe node $(k3s get pods ${POD} -n ${NAMESPACE} -o jsonpath='{.spec.nodeName}')
+    desc: "Node conditions and allocatable resources for the pod's assigned node."
+  - cmd: csh-exec "journalctl -u k3s --since '30 minutes ago' | tail -60"
+    desc: "k3s systemd service journal on the cloudshell-fog host — catches API server and etcd panics."
+  - cmd: k3s rollout restart deployment/${POD%-*} -n ${NAMESPACE}
+    desc: "Controlled rollout restart of the affected deployment. Only run after diagnosing root cause."
