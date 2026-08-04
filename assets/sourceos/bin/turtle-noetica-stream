@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Stream Noetica API response to stdout with real SSE or word-by-word fallback.
+
+Usage (called by shell functions, not directly):
+  TURTLE_NOETICA=http://localhost:7700 TURTLE_PROMPT="..." turtle-noetica-stream
+  TURTLE_NOETICA=... TURTLE_PROMPT="..." turtle-noetica-stream --max-tokens 200
+"""
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import sys
+import time
+import urllib.parse
+
+NOETICA_URL = os.environ.get("TURTLE_NOETICA", os.environ.get("NOETICA_URL", "http://localhost:7700"))
+PROMPT      = os.environ.get("TURTLE_PROMPT", "")
+MAX_TOKENS  = int(os.environ.get("TURTLE_MAX_TOKENS", "400"))
+
+
+def _stream_sse(resp: http.client.HTTPResponse) -> int:
+    buf = b""
+    printed = False
+    while True:
+        try:
+            chunk = resp.read(256)
+        except Exception:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            line = line.strip()
+            if not line or line == b":" or line.startswith(b": "):
+                continue
+            if line.startswith(b"data: "):
+                data = line[6:]
+                if data in (b"[DONE]", b""):
+                    if printed:
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                    return 0
+                try:
+                    d = json.loads(data)
+                    delta = (d.get("choices", [{}])[0]
+                               .get("delta", {}).get("content", ""))
+                    if delta:
+                        sys.stdout.write(delta)
+                        sys.stdout.flush()
+                        printed = True
+                except Exception:
+                    pass
+    if printed:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+    return 0 if printed else 1
+
+
+def _word_stream(text: str) -> int:
+    """Print word-by-word at ~120 wpm to simulate streaming."""
+    if not text:
+        return 1
+    words = text.split()
+    for i, word in enumerate(words):
+        sys.stdout.write(word)
+        if i < len(words) - 1:
+            sys.stdout.write(" ")
+        sys.stdout.flush()
+        time.sleep(0.007)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return 0
+
+
+def run(prompt: str, max_tokens: int = 400) -> int:
+    if not prompt:
+        return 1
+
+    parsed  = urllib.parse.urlparse(NOETICA_URL)
+    host    = parsed.hostname or "localhost"
+    port    = parsed.port or 7700
+    api_path = (parsed.path or "").rstrip("/") + "/api/chat"
+
+    payload = json.dumps({
+        "messages":   [{"role": "user", "content": prompt}],
+        "stream":     True,
+        "max_tokens": max_tokens,
+    }).encode()
+
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=15)
+        conn.request("POST", api_path, payload, {"Content-Type": "application/json"})
+        resp = conn.getresponse()
+
+        if resp.status != 200:
+            raise ValueError(f"HTTP {resp.status}")
+
+        ctype = resp.getheader("Content-Type", "")
+        if "text/event-stream" in ctype:
+            return _stream_sse(resp)
+
+        # Non-streaming response — read all, then word-stream
+        raw = resp.read()
+        try:
+            d = json.loads(raw)
+        except json.JSONDecodeError:
+            sys.stderr.write("(Noetica: bad JSON response)\n")
+            return 1
+
+        msg = (d.get("choices", [{}])[0].get("message", {}).get("content", "")
+               or d.get("message", {}).get("content", "")
+               or d.get("content", "")
+               or d.get("text", ""))
+        return _word_stream(msg.strip())
+
+    except OSError:
+        sys.stderr.write(f"(Noetica unreachable at {NOETICA_URL})\n")
+        return 1
+    except Exception as exc:
+        sys.stderr.write(f"(Noetica error: {exc})\n")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(run(PROMPT, MAX_TOKENS))

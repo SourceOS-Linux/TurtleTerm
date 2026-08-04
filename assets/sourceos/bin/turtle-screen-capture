@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""Capture a screen region and inject it as context into a Noetica query.
+
+Closes the ChatGPT Desktop gap: "capture screen → ask AI about it."
+
+Usage:
+  turtle-screen-capture                     # interactive region select, then prompts for question
+  turtle-screen-capture "what does this say?"   # ask specific question about selected region
+  turtle-screen-capture --ocr               # OCR only, print text (no Noetica query)
+  turtle-screen-capture --full              # full screen instead of interactive region
+
+Env vars:
+  NOETICA_URL           default: http://localhost:7700
+  TURTLE_MAX_TOKENS     default: 600
+"""
+from __future__ import annotations
+
+import base64
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+NOETICA_URL = os.environ.get("NOETICA_URL", "http://localhost:7700")
+MAX_TOKENS  = int(os.environ.get("TURTLE_MAX_TOKENS", "600"))
+MESH_DIR    = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
+
+
+def _screencapture(out_path: str, interactive: bool = True, full: bool = False) -> bool:
+    """Run macOS screencapture. Returns True on success."""
+    cmd = ["screencapture", "-f", out_path]
+    if interactive and not full:
+        cmd.append("-i")    # interactive region select
+    elif full:
+        pass                # capture entire screen
+    # -x: no sound; -t png
+    cmd += ["-x", "-t", "png"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=60)
+        return r.returncode == 0 and Path(out_path).stat().st_size > 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def _ocr(image_path: str) -> str:
+    """Try to extract text from image. Returns empty string on failure."""
+    # Try tesseract first
+    try:
+        r = subprocess.run(
+            ["tesseract", image_path, "stdout", "-l", "eng"],
+            capture_output=True, text=True, timeout=15
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Try mlx_lm / ocrmac on macOS
+    try:
+        r = subprocess.run(
+            ["ocrmac", image_path],
+            capture_output=True, text=True, timeout=15
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    return ""
+
+
+def _b64_image(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+
+def _query_noetica_vision(image_b64: str, question: str) -> str | None:
+    """Try OpenAI-compatible vision endpoint. Returns None if not supported."""
+    payload = json.dumps({
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+                {"type": "text", "text": question},
+            ],
+        }],
+        "max_tokens": MAX_TOKENS,
+        "stream": False,
+    }).encode()
+
+    parsed = urllib.parse.urlparse(NOETICA_URL)
+    api_path = (parsed.path or "").rstrip("/") + "/api/chat"
+
+    try:
+        req = urllib.request.Request(
+            f"{NOETICA_URL}{api_path.replace('/api/chat', '')}/api/chat"
+            if api_path.count("/api/chat") > 1 else f"{NOETICA_URL}/api/chat",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.load(r)
+            return (d.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    or d.get("content", "") or "").strip()
+    except Exception:
+        return None
+
+
+def _query_noetica_text(ocr_text: str, question: str) -> str | None:
+    """Fall back to text-only query with OCR content."""
+    prompt = f"""Screen content (OCR extracted):
+---
+{ocr_text[:2000]}
+---
+
+Question: {question}
+
+Answer concisely."""
+
+    payload = json.dumps({
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": MAX_TOKENS,
+        "stream": False,
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            f"{NOETICA_URL}/api/chat",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            d = json.load(r)
+            return (d.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    or d.get("content", "") or "").strip()
+    except Exception:
+        return None
+
+
+def _push_to_mesh(question: str, answer: str, ocr_text: str) -> None:
+    if not MESH_DIR.is_dir():
+        return
+    entry = json.dumps({
+        "ts":    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "type":  "screen-capture",
+        "title": question[:80],
+        "data":  {"question": question, "answer": answer[:400], "ocr_preview": ocr_text[:200]},
+    })
+    try:
+        (MESH_DIR / "context.jsonl").open("a").write(entry + "\n")
+    except OSError:
+        pass
+
+
+def _word_stream(text: str) -> None:
+    words = text.split()
+    for i, w in enumerate(words):
+        sys.stdout.write(w)
+        if i < len(words) - 1:
+            sys.stdout.write(" ")
+        sys.stdout.flush()
+        time.sleep(0.007)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def main() -> int:
+    args = sys.argv[1:]
+
+    ocr_only = "--ocr" in args
+    full_screen = "--full" in args
+    question_parts = [a for a in args if not a.startswith("--")]
+    question = " ".join(question_parts).strip() or "What does this screen show? Describe concisely."
+
+    print("\033[38;2;57;197;207m◆\033[0m \033[2mSelect a screen region…\033[0m", file=sys.stderr)
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        tmp_path = tf.name
+
+    try:
+        ok = _screencapture(tmp_path, interactive=not full_screen, full=full_screen)
+        if not ok:
+            print("\033[2m(no region selected or capture failed)\033[0m", file=sys.stderr)
+            return 1
+
+        ocr_text = _ocr(tmp_path)
+
+        if ocr_only:
+            print(ocr_text if ocr_text else "(no text detected)")
+            return 0
+
+        print(f"\033[38;2;57;197;207m▍\033[0m \033[38;2;230;237;243m", end="", flush=True)
+
+        # Try vision endpoint first
+        image_b64 = _b64_image(tmp_path)
+        answer = _query_noetica_vision(image_b64, question)
+
+        # Fall back to OCR + text query
+        if not answer:
+            if ocr_text:
+                answer = _query_noetica_text(ocr_text, question)
+            else:
+                answer = None
+
+        if not answer:
+            print("\033[0m\033[2m(Noetica unreachable or vision not supported)\033[0m", file=sys.stderr)
+            if ocr_text:
+                print(f"\033[2mOCR text:\033[0m {ocr_text[:500]}")
+            return 1
+
+        _word_stream(answer)
+        print("\033[0m", end="", flush=True)
+
+        _push_to_mesh(question, answer, ocr_text)
+
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

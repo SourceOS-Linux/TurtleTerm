@@ -32,7 +32,8 @@ from pathlib import Path
 MESH_DIR   = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
 STATUS_DIR = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "status"
 NOTES_DIR  = Path(os.getenv("GOOSE_NOTES_DIR", str(Path.home() / "notes")))
-BB_SUPPORT = Path.home() / "Library" / "Application Support" / "BearBrowser"
+BB_SUPPORT       = Path.home() / "Library" / "Application Support" / "BearBrowser"
+BACKLINKS_PATH   = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "notes-backlinks.json"
 
 DEFAULT_PORT = int(os.getenv("TURTLE_MESH_PORT", "7788"))
 
@@ -93,6 +94,52 @@ def gather_state() -> dict:
         "bb_cands": bb_cands,
         "notes":    notes,
     }
+
+
+def build_graph() -> dict:
+    """Read backlinks JSON and return nodes+edges for the graph view."""
+    data    = load_json(BACKLINKS_PATH)
+    forward: dict = data.get("forward", {})
+    reverse: dict = data.get("reverse", {})
+
+    # Collect all slug names from both indexes
+    slugs: set[str] = set()
+    for slug, targets in forward.items():
+        slugs.add(slug)
+        for t in targets:
+            slugs.add(t)
+    for slug, linkers in reverse.items():
+        slugs.add(slug)
+        for lnk in linkers:
+            slugs.add(lnk)
+
+    # Also pick up any *.md filenames from NOTES_DIR even if not yet indexed
+    if NOTES_DIR.exists():
+        for p in NOTES_DIR.glob("*.md"):
+            slugs.add(p.stem)
+
+    def to_label(slug: str) -> str:
+        return slug.replace("-", " ").title()
+
+    nodes = [
+        {
+            "id":    slug,
+            "label": to_label(slug),
+            "size":  len(reverse.get(slug, [])) + 1,
+        }
+        for slug in sorted(slugs)
+    ]
+
+    edges: list[dict] = []
+    seen: set[tuple] = set()
+    for source, targets in forward.items():
+        for target in targets:
+            key = (source, target)
+            if key not in seen:
+                seen.add(key)
+                edges.append({"source": source, "target": target})
+
+    return {"nodes": nodes, "edges": edges}
 
 
 # ── SSE broadcast ─────────────────────────────────────────────────────────────
@@ -174,7 +221,10 @@ h2{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em
 </style>
 </head>
 <body>
-<h1>◆ SourceOS Memory Mesh</h1>
+<div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
+  <h1 style="margin:0">◆ SourceOS Memory Mesh</h1>
+  <a href="/graph" target="_blank" style="color:var(--cyan);text-decoration:none;font-size:11px;border:1px solid var(--cyan);padding:2px 9px;border-radius:3px;white-space:nowrap">◆ Graph view</a>
+</div>
 <div id="status-bar">
   <span id="noe-badge"><span class="dot dot-yellow pulse"></span>Noetica …</span>
   <span id="ci-badge">CI —</span>
@@ -291,6 +341,267 @@ fetch('/api/state').then(r => r.json()).then(render).catch(() => {})
 </html>"""
 
 
+GRAPH_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Notes Graph · SourceOS</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font:13px/1.5 'SF Mono','Fira Code',monospace;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+#hdr{padding:10px 16px;display:flex;align-items:center;gap:14px;background:#161b22;border-bottom:1px solid #30363d;flex-shrink:0}
+#hdr h1{font-size:14px;color:#39C5CF;margin:0}
+#hdr a{color:#8b949e;font-size:12px;text-decoration:none}
+#hdr a:hover{color:#e6edf3}
+#hdr #nc{color:#8b949e;font-size:11px;margin-left:auto}
+#main{display:flex;flex:1;overflow:hidden}
+#cwrap{flex:1;position:relative;overflow:hidden}
+canvas{display:block}
+#panel{width:260px;background:#161b22;border-left:1px solid #30363d;padding:14px;overflow-y:auto;flex-shrink:0}
+#panel h2{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
+.pslug{color:#39C5CF;font-size:13px;margin-bottom:4px;word-break:break-all}
+.psub{color:#8b949e;font-size:10px;margin-bottom:10px}
+.lsec{margin-bottom:12px}
+.lsec h3{font-size:11px;color:#8b949e;margin-bottom:4px}
+.li{font-size:11px;color:#e6edf3;padding:2px 0;cursor:pointer}
+.li:hover{color:#39C5CF}
+.empty{color:#8b949e;font-size:11px}
+#st{position:absolute;bottom:8px;left:10px;font-size:10px;color:#8b949e;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="hdr">
+  <a href="http://localhost:7788/">&#8592; Dashboard</a>
+  <h1>&#9670; Notes Graph</h1>
+  <span id="nc"></span>
+</div>
+<div id="main">
+  <div id="cwrap">
+    <canvas id="c"></canvas>
+    <div id="st">loading&hellip;</div>
+  </div>
+  <div id="panel">
+    <h2>Node</h2>
+    <div id="pb"><div class="empty">Click a node to inspect</div></div>
+  </div>
+</div>
+<script>
+(function(){
+'use strict';
+const BG='#0d1117',EDGE='#30363d',TEAL='#39C5CF',DARK='#1c2128',
+      LBL='#e6edf3',ORANGE='#ff9200',DIM='#2d333b',DLBL='#4d5566',
+      MIN_R=8,MAX_R=28,DAMP=0.82,K_REP=5000,K_SPR=0.04,REST=120;
+
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const wrap=document.getElementById('cwrap');
+let nodes=[],edges=[],adjFwd={},adjRev={},adjAll={};
+let selected=null,lastFetch=0;
+
+// ── resize ──────────────────────────────────────────────────────────────
+function resize(){
+  const dpr=window.devicePixelRatio||1;
+  const W=wrap.clientWidth,H=wrap.clientHeight;
+  canvas.width=W*dpr; canvas.height=H*dpr;
+  canvas.style.width=W+'px'; canvas.style.height=H+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize',resize);
+resize();
+
+// ── data fetch ──────────────────────────────────────────────────────────
+function fetchGraph(){
+  fetch('/api/graph').then(r=>r.json()).then(data=>{
+    initGraph(data);
+    lastFetch=Date.now();
+    document.getElementById('st').textContent='';
+    document.getElementById('nc').textContent=
+      data.nodes.length+' nodes · '+data.edges.length+' edges';
+  }).catch(()=>{
+    document.getElementById('st').textContent='could not load /api/graph';
+  });
+}
+
+function initGraph(data){
+  const W=wrap.clientWidth,H=wrap.clientHeight;
+  const prev={};
+  nodes.forEach(n=>{prev[n.id]={x:n.x,y:n.y,vx:n.vx,vy:n.vy}});
+  const maxSz=Math.max(...data.nodes.map(n=>n.size),1);
+  nodes=data.nodes.map(n=>{
+    const p=prev[n.id];
+    const r=MIN_R+(n.size-1)/Math.max(maxSz-1,1)*(MAX_R-MIN_R);
+    return{id:n.id,label:n.label,size:n.size,r,
+      x:p?p.x:W/2+(Math.random()-.5)*300,
+      y:p?p.y:H/2+(Math.random()-.5)*300,
+      vx:p?p.vx:0,vy:p?p.vy:0,pinned:false};
+  });
+  edges=data.edges;
+  // build adjacency
+  adjFwd={}; adjRev={}; adjAll={};
+  nodes.forEach(n=>{adjFwd[n.id]=new Set();adjRev[n.id]=new Set();adjAll[n.id]=new Set()});
+  edges.forEach(e=>{
+    if(adjFwd[e.source]) adjFwd[e.source].add(e.target);
+    if(adjRev[e.target]) adjRev[e.target].add(e.source);
+    if(adjAll[e.source]) adjAll[e.source].add(e.target);
+    if(adjAll[e.target]) adjAll[e.target].add(e.source);
+  });
+  // 200 warm-up iterations
+  for(let i=0;i<200;i++) tick();
+}
+
+// ── force simulation ─────────────────────────────────────────────────────
+function tick(){
+  const W=wrap.clientWidth,H=wrap.clientHeight;
+  const byId={};
+  nodes.forEach(n=>{byId[n.id]=n});
+  // Coulomb repulsion
+  for(let i=0;i<nodes.length;i++){
+    for(let j=i+1;j<nodes.length;j++){
+      const a=nodes[i],b=nodes[j];
+      const dx=b.x-a.x,dy=b.y-a.y;
+      const d2=dx*dx+dy*dy+1;
+      const d=Math.sqrt(d2);
+      const f=K_REP/d2;
+      const fx=f*dx/d,fy=f*dy/d;
+      a.vx-=fx; a.vy-=fy;
+      b.vx+=fx; b.vy+=fy;
+    }
+  }
+  // Hooke attraction on edges
+  edges.forEach(e=>{
+    const a=byId[e.source],b=byId[e.target];
+    if(!a||!b) return;
+    const dx=b.x-a.x,dy=b.y-a.y;
+    const d=Math.sqrt(dx*dx+dy*dy)+0.01;
+    const stretch=d-REST;
+    const f=K_SPR*stretch;
+    const fx=f*dx/d,fy=f*dy/d;
+    a.vx+=fx; a.vy+=fy;
+    b.vx-=fx; b.vy-=fy;
+  });
+  // Weak center gravity
+  nodes.forEach(n=>{
+    n.vx+=(W/2-n.x)*0.003;
+    n.vy+=(H/2-n.y)*0.003;
+  });
+  // Integrate
+  nodes.forEach(n=>{
+    if(n.pinned){n.vx=0;n.vy=0;return}
+    n.vx*=DAMP; n.vy*=DAMP;
+    n.x+=n.vx; n.y+=n.vy;
+    n.x=Math.max(n.r+4,Math.min(W-n.r-4,n.x));
+    n.y=Math.max(n.r+4,Math.min(H-n.r-4,n.y));
+  });
+}
+
+// ── render loop (30 fps) ──────────────────────────────────────────────────
+let lastFrame=0;
+function draw(ts){
+  if(ts-lastFrame<33){requestAnimationFrame(draw);return}
+  lastFrame=ts;
+  tick();
+  const W=wrap.clientWidth,H=wrap.clientHeight;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
+  const byId={};
+  nodes.forEach(n=>{byId[n.id]=n});
+  const selNbr=selected?(adjAll[selected]||new Set()):null;
+  // edges
+  ctx.strokeStyle=EDGE; ctx.lineWidth=1;
+  edges.forEach(e=>{
+    const a=byId[e.source],b=byId[e.target];
+    if(!a||!b) return;
+    ctx.beginPath();
+    ctx.moveTo(a.x,a.y);
+    ctx.lineTo(b.x,b.y);
+    ctx.stroke();
+  });
+  // nodes + labels
+  nodes.forEach(n=>{
+    let fill=n.size>1?TEAL:DARK;
+    let lblClr=LBL;
+    if(selected){
+      if(n.id===selected) fill=TEAL;
+      else if(selNbr.has(n.id)) fill=ORANGE;
+      else{fill=DIM;lblClr=DLBL}
+    }
+    ctx.beginPath();
+    ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+    ctx.fillStyle=fill; ctx.fill();
+    ctx.fillStyle=lblClr;
+    ctx.font='10px SF Mono,Fira Code,monospace';
+    ctx.textAlign='center';
+    ctx.fillText(n.label,n.x,n.y+n.r+11);
+  });
+  if(Date.now()-lastFetch>10000) fetchGraph();
+  requestAnimationFrame(draw);
+}
+
+// ── click + drag ──────────────────────────────────────────────────────────
+function hitNode(mx,my){
+  for(const n of nodes){
+    const dx=n.x-mx,dy=n.y-my;
+    if(dx*dx+dy*dy<=(n.r+4)*(n.r+4)) return n;
+  }
+  return null;
+}
+canvas.addEventListener('click',e=>{
+  const r=canvas.getBoundingClientRect();
+  const n=hitNode(e.clientX-r.left,e.clientY-r.top);
+  if(n){selected=n.id===selected?null:n.id;updatePanel(n)}
+  else{selected=null;document.getElementById('pb').innerHTML='<div class="empty">Click a node to inspect</div>'}
+});
+let drag=null,dox=0,doy=0;
+canvas.addEventListener('mousedown',e=>{
+  const r=canvas.getBoundingClientRect();
+  const mx=e.clientX-r.left,my=e.clientY-r.top;
+  const n=hitNode(mx,my);
+  if(n){drag=n;n.pinned=true;dox=mx-n.x;doy=my-n.y}
+});
+canvas.addEventListener('mousemove',e=>{
+  if(!drag) return;
+  const r=canvas.getBoundingClientRect();
+  drag.x=e.clientX-r.left-dox;
+  drag.y=e.clientY-r.top-doy;
+});
+function stopDrag(){if(drag){drag.pinned=false;drag=null}}
+canvas.addEventListener('mouseup',stopDrag);
+canvas.addEventListener('mouseleave',stopDrag);
+
+// ── info panel ────────────────────────────────────────────────────────────
+function updatePanel(node){
+  if(!node){document.getElementById('pb').innerHTML='<div class="empty">Click a node to inspect</div>';return}
+  const byId={};
+  nodes.forEach(n=>{byId[n.id]=n});
+  const fwd=[...( adjFwd[node.id]||[])];
+  const rev=[...(adjRev[node.id]||[])];
+  const mkLinks=ids=>ids.length
+    ? ids.map(id=>`<div class="li" data-id="${id}">${byId[id]?byId[id].label:id}</div>`).join('')
+    : '<div class="empty">none</div>';
+  document.getElementById('pb').innerHTML=`
+    <div class="pslug">${esc(node.label)}</div>
+    <div class="psub">${esc(node.id)}</div>
+    <div class="lsec"><h3>Backlinks (${rev.length})</h3>${mkLinks(rev)}</div>
+    <div class="lsec"><h3>Forward links (${fwd.length})</h3>${mkLinks(fwd)}</div>`;
+  document.querySelectorAll('#pb .li').forEach(el=>{
+    el.addEventListener('click',()=>{
+      const n2=nodes.find(n=>n.id===el.dataset.id);
+      if(n2){selected=n2.id;updatePanel(n2)}
+    });
+  });
+}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+// ── boot ──────────────────────────────────────────────────────────────────
+fetchGraph();
+requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>"""
+
+
 class DashHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # quiet
@@ -300,6 +611,24 @@ class DashHandler(BaseHTTPRequestHandler):
             body = DASHBOARD_HTML.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/graph":
+            body = GRAPH_HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/api/graph":
+            graph = build_graph()
+            body  = json.dumps(graph, default=str).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

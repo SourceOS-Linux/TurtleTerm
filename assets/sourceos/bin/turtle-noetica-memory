@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Persistent Noetica memory — user facts survive across sessions.
+
+Stores facts in SQLite at ~/.local/state/sourceos/noetica-memory.db.
+Injected as system context into every Noetica query.
+
+Usage:
+  turtle-noetica-memory add "I prefer Go over Python for CLI tools"
+  turtle-noetica-memory list
+  turtle-noetica-memory remove 3          # by ID
+  turtle-noetica-memory context           # print top facts as system prompt block
+  turtle-noetica-memory extract "..."     # parse a user utterance for saveable facts
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import re
+import sqlite3
+import sys
+from pathlib import Path
+from urllib import request as urlreq
+
+STATE_DIR   = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos"
+DB_PATH     = STATE_DIR / "noetica-memory.db"
+NOETICA_URL = os.getenv("NOETICA_URL", "http://localhost:7700")
+MAX_CONTEXT = int(os.getenv("TURTLE_MEMORY_MAX", "8"))
+
+# Patterns that signal a "remember this" intent
+REMEMBER_RE = re.compile(
+    r"(?:remember (?:that )?|note (?:that )?|always |i (?:prefer|use|like|want|need)|my |don't |never )",
+    re.I,
+)
+
+
+def _db() -> sqlite3.Connection:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""CREATE TABLE IF NOT EXISTS facts (
+        id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        content TEXT NOT NULL,
+        source  TEXT DEFAULT 'manual',
+        ts      TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.commit()
+    return conn
+
+
+def add_fact(content: str, source: str = "manual") -> int:
+    content = content.strip()
+    if not content:
+        return -1
+    with _db() as conn:
+        cur = conn.execute("INSERT INTO facts(content,source) VALUES(?,?)", (content, source))
+        conn.commit()
+        return cur.lastrowid or -1
+
+
+def list_facts() -> list[dict]:
+    with _db() as conn:
+        rows = conn.execute("SELECT id,content,source,ts FROM facts ORDER BY id DESC").fetchall()
+    return [{"id": r[0], "content": r[1], "source": r[2], "ts": r[3]} for r in rows]
+
+
+def remove_fact(fact_id: int) -> bool:
+    with _db() as conn:
+        n = conn.execute("DELETE FROM facts WHERE id=?", (fact_id,)).rowcount
+        conn.commit()
+    return n > 0
+
+
+def context_block(limit: int = MAX_CONTEXT) -> str:
+    """Return a formatted block of top facts for injection into prompts."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT content FROM facts ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    if not rows:
+        return ""
+    facts = "\n".join(f"- {r[0]}" for r in reversed(rows))
+    return f"User context (persistent memory):\n{facts}"
+
+
+def extract_from_utterance(text: str) -> list[str]:
+    """Ask Noetica to extract saveable facts from a user utterance."""
+    try:
+        payload = json.dumps({
+            "messages": [{"role": "user",
+                          "content": (
+                              "Extract any personal preferences, constraints, or facts "
+                              "worth remembering from this text. Reply with a JSON array of "
+                              "strings (each a concise fact), or [] if nothing is worth saving.\n\n"
+                              f"Text: {text[:600]}"
+                          )}],
+            "max_tokens": 120,
+        }).encode()
+        req = urlreq.Request(f"{NOETICA_URL}/api/chat", data=payload,
+                             headers={"Content-Type": "application/json"})
+        with urlreq.urlopen(req, timeout=5) as r:
+            d = json.load(r)
+            msg = (d.get("choices", [{}])[0].get("message", {}).get("content", "")
+                   or d.get("content", ""))
+            # Parse JSON array from response
+            m = re.search(r"\[.*\]", msg, re.DOTALL)
+            if m:
+                return json.loads(m.group())
+    except Exception:
+        pass
+    return []
+
+
+def should_remember(text: str) -> bool:
+    return bool(REMEMBER_RE.search(text))
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        return
+
+    cmd = args[0]
+
+    if cmd == "add":
+        content = " ".join(args[1:])
+        fid = add_fact(content)
+        print(f"  saved fact #{fid}: {content}")
+
+    elif cmd == "list":
+        facts = list_facts()
+        if not facts:
+            print("  (no facts saved)")
+        for f in facts:
+            print(f"  [{f['id']}] {f['content']}  \033[2m({f['source']} · {f['ts'][:10]})\033[0m")
+
+    elif cmd == "remove":
+        if len(args) < 2:
+            print("Usage: turtle-noetica-memory remove <id>", file=sys.stderr)
+            sys.exit(1)
+        ok = remove_fact(int(args[1]))
+        print(f"  {'removed' if ok else 'not found'} fact #{args[1]}")
+
+    elif cmd == "context":
+        block = context_block()
+        print(block if block else "(no memory)")
+
+    elif cmd == "extract":
+        text = " ".join(args[1:])
+        facts = extract_from_utterance(text)
+        if not facts:
+            print("  (nothing extractable)")
+        for f in facts:
+            fid = add_fact(f, source="auto-extract")
+            print(f"  saved fact #{fid}: {f}")
+
+    else:
+        print(f"Unknown command: {cmd}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+# turtle-notes-backlinks — Obsidian-style backlinks indexer for ~/notes/*.md
+# MIT License
+# Usage:
+#   turtle-notes-backlinks                   rebuild index
+#   turtle-notes-backlinks --watch           rebuild on change (poll every 2s)
+#   turtle-notes-backlinks --backlinks <slug> print backlinks for a note
+#   turtle-notes-backlinks --json            dump full index as JSON to stdout
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import sys
+import time
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
+
+# ── constants ────────────────────────────────────────────────────────────────
+
+NOTES_DIR = pathlib.Path.home() / "notes"
+STATE_DIR = pathlib.Path(
+    os.environ.get("XDG_STATE_HOME", str(pathlib.Path.home() / ".local" / "state"))
+) / "sourceos"
+INDEX_FILE = STATE_DIR / "notes-backlinks.json"
+
+_DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]")
+
+
+# ── slug helpers ─────────────────────────────────────────────────────────────
+
+def file_to_slug(path: pathlib.Path) -> str:
+    """Convert a note file path to a slug.
+
+    ~/notes/2026-08-03-my-idea.md  →  my-idea
+    ~/notes/hello-world.md         →  hello-world
+    """
+    stem = path.stem  # filename without extension
+    stem = _DATE_PREFIX_RE.sub("", stem)
+    return stem
+
+
+def wikilink_to_slug(link_text: str) -> str:
+    """Normalise a wikilink target to a slug.
+
+    '[[My Idea]]'      →  'my-idea'
+    '[[My Idea|alias]]' →  'my-idea'  (caller strips the alias before calling)
+    """
+    return re.sub(r"[^a-z0-9-]", "-",
+                  link_text.strip().lower().replace(" ", "-")).strip("-")
+
+
+# ── index building ────────────────────────────────────────────────────────────
+
+def build_index() -> Dict:
+    """Scan ~/notes/*.md and return forward + reverse link index."""
+    if not NOTES_DIR.exists():
+        return {"forward": {}, "reverse": {}}
+
+    files = sorted(NOTES_DIR.glob("*.md"))
+
+    # forward[slug] = [slug, ...]  — links this note contains
+    forward: Dict[str, List[str]] = {}
+    # reverse[slug] = [slug, ...]  — notes that link to this slug
+    reverse: Dict[str, List[str]] = {}
+
+    for f in files:
+        slug = file_to_slug(f)
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        targets: List[str] = []
+        for m in _WIKILINK_RE.finditer(text):
+            raw = m.group(1)
+            target_slug = wikilink_to_slug(raw)
+            if target_slug and target_slug != slug:
+                targets.append(target_slug)
+
+        # deduplicate while preserving order
+        seen = set()
+        deduped: List[str] = []
+        for t in targets:
+            if t not in seen:
+                seen.add(t)
+                deduped.append(t)
+
+        forward[slug] = deduped
+        for t in deduped:
+            reverse.setdefault(t, [])
+            if slug not in reverse[t]:
+                reverse[t].append(slug)
+
+    # ensure every forward key has a reverse entry (even if empty)
+    for slug in forward:
+        reverse.setdefault(slug, [])
+
+    return {"forward": forward, "reverse": reverse}
+
+
+def write_index(index: Dict) -> None:
+    """Persist the index to STATE_DIR/notes-backlinks.json."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "forward": index["forward"],
+        "reverse": index["reverse"],
+    }
+    tmp = INDEX_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(INDEX_FILE)
+
+
+def load_index() -> Optional[Dict]:
+    if not INDEX_FILE.exists():
+        return None
+    try:
+        return json.loads(INDEX_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+# ── file-change detection (mtime-based) ──────────────────────────────────────
+
+def notes_snapshot() -> Dict[str, float]:
+    """Return {path_str: mtime} for all *.md in NOTES_DIR."""
+    if not NOTES_DIR.exists():
+        return {}
+    return {
+        str(f): f.stat().st_mtime
+        for f in NOTES_DIR.glob("*.md")
+    }
+
+
+# ── CLI commands ──────────────────────────────────────────────────────────────
+
+def cmd_rebuild(verbose: bool = True) -> None:
+    index = build_index()
+    write_index(index)
+    if verbose:
+        n_notes = len(index["forward"])
+        n_links = sum(len(v) for v in index["forward"].values())
+        print(
+            f"◆ Backlinks rebuilt: {n_notes} notes, {n_links} forward links"
+            f"  →  {INDEX_FILE}"
+        )
+
+
+def cmd_watch() -> None:
+    print(
+        f"◆ turtle-notes-backlinks --watch  (polling {NOTES_DIR} every 2s)",
+        flush=True,
+    )
+    last_snap = notes_snapshot()
+    cmd_rebuild(verbose=True)
+
+    while True:
+        time.sleep(2)
+        try:
+            snap = notes_snapshot()
+        except Exception:
+            continue
+
+        if snap != last_snap:
+            last_snap = snap
+            try:
+                index = build_index()
+                write_index(index)
+                ts = datetime.now().strftime("%H:%M:%S")
+                n = len(index["forward"])
+                print(f"[{ts}] rebuilt — {n} notes", flush=True)
+            except Exception as exc:
+                print(f"[error] rebuild failed: {exc}", file=sys.stderr, flush=True)
+
+
+def cmd_backlinks(slug: str) -> None:
+    idx = load_index()
+    if idx is None:
+        # Build on the fly if no cache yet
+        idx = build_index()
+        write_index(idx)
+
+    reverse = idx.get("reverse", {})
+    linkers = reverse.get(slug, [])
+
+    if not linkers:
+        print(f"(no backlinks found for ‘{slug}’)")
+        return
+
+    print(f"◆ Backlinks for ‘{slug}’ ({len(linkers)}):")
+    for lnk in linkers:
+        # Try to find the actual file for display
+        matches = sorted(NOTES_DIR.glob(f"*-{lnk}.md")) + sorted(
+            NOTES_DIR.glob(f"{lnk}.md")
+        )
+        fpath = str(matches[0]) if matches else f"~/notes/.../{lnk}.md"
+        print(f"  {lnk}  →  {fpath}")
+
+
+def cmd_json() -> None:
+    idx = load_index()
+    if idx is None:
+        idx_data = build_index()
+        write_index(idx_data)
+        idx = load_index()
+    print(json.dumps(idx, indent=2, ensure_ascii=False))
+
+
+# ── entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="turtle-notes-backlinks",
+        description="Obsidian-style backlinks indexer for ~/notes/*.md",
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Poll ~/notes every 2s and rebuild on change",
+    )
+    parser.add_argument(
+        "--backlinks",
+        metavar="SLUG",
+        help="Print notes that link to SLUG",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Dump full index as JSON to stdout",
+    )
+    args = parser.parse_args()
+
+    if args.watch:
+        cmd_watch()
+    elif args.backlinks:
+        cmd_backlinks(args.backlinks)
+    elif args.json:
+        cmd_json()
+    else:
+        cmd_rebuild(verbose=True)
+
+
+if __name__ == "__main__":
+    main()
