@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+# MIT License
+# Copyright (c) 2026 @mdheller
+#
+# turtle-transcript-extract — Matrix room transcript → KB claims extractor.
+#
+# Config (env vars or ~/.config/sourceos/matrix.yaml):
+#   MATRIX_HOMESERVER_URL   e.g. https://matrix.org or http://localhost:8448
+#   MATRIX_ACCESS_TOKEN     bot user access token
+#   MATRIX_BOT_ROOM_ID      default room (!roomid:server)
+#
+# Usage:
+#   turtle-transcript-extract extract [-r <room_id>] [--since <hours>] [--dry-run]
+#   turtle-transcript-extract commit [--kb-dir <path>]
+#   turtle-transcript-extract list [--pending | --committed]
+#   turtle-transcript-extract status
+
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+from typing import Any
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+YAML_CONFIG = Path.home() / ".config" / "sourceos" / "matrix.yaml"
+STATE_DIR   = Path.home() / ".local" / "state" / "sourceos" / "transcript-claims"
+PENDING_FILE = STATE_DIR / "pending.jsonl"
+STATUS_FILE  = STATE_DIR / "status.json"
+
+DEFAULT_KB_DIR = Path.home() / "dev" / "systems-learning-loops" / "kb" / "claims"
+DEFAULT_SINCE_HOURS = 24
+DEFAULT_FETCH_LIMIT = 200
+
+NOETICA_URL = os.environ.get("TURTLE_NOETICA", os.environ.get("NOETICA_URL", "http://localhost:7700"))
+
+
+def _load_yaml_config() -> dict[str, str]:
+    if not YAML_CONFIG.exists():
+        return {}
+    try:
+        cfg: dict[str, str] = {}
+        with open(YAML_CONFIG) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or ":" not in line:
+                    continue
+                k, _, v = line.partition(":")
+                cfg[k.strip()] = v.strip().strip("\"'")
+        return cfg
+    except Exception:
+        return {}
+
+
+_yaml = _load_yaml_config()
+
+
+def _cfg(key: str, default: str = "") -> str:
+    return (
+        os.environ.get(key)
+        or _yaml.get(key)
+        or _yaml.get(key.lower())
+        or default
+    )
+
+
+HOMESERVER_URL  = _cfg("MATRIX_HOMESERVER_URL", "http://localhost:8448").rstrip("/")
+ACCESS_TOKEN    = _cfg("MATRIX_ACCESS_TOKEN", "")
+DEFAULT_ROOM_ID = _cfg("MATRIX_BOT_ROOM_ID", "")
+
+# ── Matrix CS API ─────────────────────────────────────────────────────────────
+
+
+def _headers() -> dict[str, str]:
+    h = {"Content-Type": "application/json"}
+    if ACCESS_TOKEN:
+        h["Authorization"] = f"Bearer {ACCESS_TOKEN}"
+    return h
+
+
+def _req(method: str, path: str, timeout: int = 10) -> dict:
+    url = f"{HOMESERVER_URL}{path}"
+    req = urllib.request.Request(url, headers=_headers(), method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Matrix {e.code}: {e.read().decode()[:300]}") from e
+
+
+def _fetch_messages(room_id: str, since_hours: int) -> list[dict]:
+    """Return messages from the last *since_hours* hours (reversed to chronological order)."""
+    room_enc = urllib.parse.quote(room_id, safe="")
+    cutoff_ms = int((time.time() - since_hours * 3600) * 1000)
+
+    filter_json = json.dumps({"types": ["m.room.message"]})
+    filter_enc  = urllib.parse.quote(filter_json, safe="")
+    path = (
+        f"/_matrix/client/v3/rooms/{room_enc}/messages"
+        f"?dir=b&limit={DEFAULT_FETCH_LIMIT}&filter={filter_enc}"
+    )
+
+    try:
+        result = _req("GET", path, timeout=15)
+    except RuntimeError as exc:
+        print(f"⚠ Matrix fetch error: {exc}", file=sys.stderr)
+        return []
+
+    msgs: list[dict] = []
+    for ev in result.get("chunk", []):
+        if ev.get("type") != "m.room.message":
+            continue
+        content = ev.get("content", {})
+        if content.get("msgtype") != "m.text":
+            continue
+        ts_ms = ev.get("origin_server_ts", 0)
+        if ts_ms < cutoff_ms:
+            continue
+        msgs.append({
+            "event_id": ev.get("event_id", ""),
+            "sender":   ev.get("sender", ""),
+            "body":     content.get("body", ""),
+            "ts_ms":    ts_ms,
+        })
+
+    # The API returns newest-first; reverse to chronological
+    msgs.reverse()
+    return msgs
+
+# ── Thread detection ──────────────────────────────────────────────────────────
+
+_THREAD_GAP_MS = 5 * 60 * 1000  # 5 minutes
+
+
+def _group_threads(messages: list[dict]) -> list[list[dict]]:
+    """Group messages into threads by time proximity (< 5 min gap = same thread)."""
+    if not messages:
+        return []
+    threads: list[list[dict]] = []
+    current: list[dict] = [messages[0]]
+    for msg in messages[1:]:
+        if msg["ts_ms"] - current[-1]["ts_ms"] < _THREAD_GAP_MS:
+            current.append(msg)
+        else:
+            threads.append(current)
+            current = [msg]
+    threads.append(current)
+    return threads
+
+
+def _is_substantive(thread: list[dict]) -> bool:
+    """Return True if the thread is worth distilling into a KB claim."""
+    if len(thread) >= 3:
+        return True
+    bodies = [m["body"] for m in thread]
+    joined = " ".join(bodies)
+    # Question + follow-up
+    if "?" in joined and len(thread) >= 2:
+        return True
+    # Operator command reply
+    if any("!qes" in b for b in bodies) and len(thread) >= 2:
+        return True
+    # Long single message
+    if len(thread) >= 2 and any(len(b) > 100 for b in bodies):
+        return True
+    return False
+
+# ── Noetica distillation ──────────────────────────────────────────────────────
+
+
+_NOETICA_PROMPT_TMPL = (
+    "Extract a single factual KB claim from this chat thread. "
+    "The claim should be a 1-3 sentence statement of fact, decision, or how-to "
+    "that would be useful in a knowledge base. "
+    "If the thread doesn't contain a clear factual claim, respond with 'NO_CLAIM'. "
+    "Thread:\n\n{thread_text}"
+)
+
+_NOETICA_TIMEOUT = 30
+
+
+def _format_thread_text(thread: list[dict]) -> str:
+    lines: list[str] = []
+    for msg in thread:
+        try:
+            dt = datetime.datetime.fromtimestamp(msg["ts_ms"] / 1000, tz=datetime.timezone.utc)
+            ts = dt.strftime("%H:%M")
+        except Exception:
+            ts = "??"
+        sender = msg["sender"].split(":")[0].lstrip("@")
+        lines.append(f"[{ts}] <{sender}> {msg['body']}")
+    return "\n".join(lines)
+
+
+def _distill_claim(thread: list[dict]) -> str | None:
+    """Call turtle-noetica-stream and return the distilled claim, or None."""
+    thread_text = _format_thread_text(thread)
+    prompt = _NOETICA_PROMPT_TMPL.format(thread_text=thread_text)
+
+    env = dict(os.environ)
+    env["TURTLE_PROMPT"] = prompt
+    env["TURTLE_MAX_TOKENS"] = "300"
+
+    # Find the binary alongside this script first, then on PATH
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        script_dir / "turtle-noetica-stream",
+        Path(os.environ.get("TURTLE_SOURCEOS_BIN", str(script_dir))) / "turtle-noetica-stream",
+    ]
+    noetica_bin: str | None = None
+    for c in candidates:
+        if c.is_file():
+            noetica_bin = str(c)
+            break
+
+    cmd = ["python3", noetica_bin] if noetica_bin else ["turtle-noetica-stream"]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_NOETICA_TIMEOUT,
+            env=env,
+        )
+        out = result.stdout.strip()
+        if not out or "NO_CLAIM" in out:
+            return None
+        return out
+    except subprocess.TimeoutExpired:
+        print("⚠ Noetica timed out for thread distillation", file=sys.stderr)
+        return None
+    except FileNotFoundError:
+        print("⚠ turtle-noetica-stream not found — is Noetica running?", file=sys.stderr)
+        return None
+    except Exception as exc:
+        print(f"⚠ Noetica error: {exc}", file=sys.stderr)
+        return None
+
+# ── Claim record helpers ──────────────────────────────────────────────────────
+
+
+def _uuid8() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _build_claim_record(
+    claim_text: str,
+    room_id: str,
+    thread: list[dict],
+) -> dict[str, Any]:
+    event_ids = [m["event_id"] for m in thread if m.get("event_id")]
+    msg_count = len(thread)
+
+    # Build a brief evidence summary
+    first_body = thread[0]["body"][:80] if thread else ""
+    evidence = (
+        f"Thread of {msg_count} message{'s' if msg_count != 1 else ''}: {first_body}"
+        + ("…" if len(thread[0]["body"]) > 80 else "")
+    )
+
+    return {
+        "id": f"claim-{_uuid8()}",
+        "extracted_at": _now_iso(),
+        "source": "matrix",
+        "room_id": room_id,
+        "thread_event_ids": event_ids,
+        "tags": ["auto-extracted", "matrix-transcript"],
+        "claim": claim_text,
+        "confidence": "medium",
+        "evidence_summary": evidence,
+    }
+
+
+def _claim_to_yaml(record: dict[str, Any]) -> str:
+    """Render a claim record to YAML (no external deps)."""
+    def _yaml_str(s: str, indent: int = 0) -> str:
+        """Multiline-safe YAML string renderer."""
+        s = s.strip()
+        if "\n" in s:
+            pad = " " * indent
+            lines = s.splitlines()
+            return "|\n" + "\n".join(f"{pad}  {line}" for line in lines)
+        # Single line — quote if contains special chars
+        needs_quote = any(c in s for c in (':', '#', '[', ']', '{', '}', ',', '&', '*', '?', '|', '<', '>', '=', '!', '%', '@', '`', '"', "'"))
+        if needs_quote:
+            escaped = s.replace('"', '\\"')
+            return f'"{escaped}"'
+        return s
+
+    event_ids_yaml = ""
+    for eid in record.get("thread_event_ids", []):
+        event_ids_yaml += f"\n  - \"{eid}\""
+
+    tags_yaml = ""
+    for tag in record.get("tags", []):
+        tags_yaml += f"\n  - {tag}"
+
+    claim_yaml = _yaml_str(record.get("claim", ""), indent=0)
+    evidence_yaml = _yaml_str(record.get("evidence_summary", ""), indent=0)
+
+    lines = [
+        f"id: {record['id']}",
+        f"extracted_at: \"{record['extracted_at']}\"",
+        f"source: {record['source']}",
+        f"room_id: \"{record['room_id']}\"",
+        f"thread_event_ids:{event_ids_yaml}",
+        f"tags:{tags_yaml}",
+        f"claim: {claim_yaml}",
+        f"confidence: {record['confidence']}",
+        f"evidence_summary: {evidence_yaml}",
+    ]
+    return "\n".join(lines) + "\n"
+
+# ── State helpers ─────────────────────────────────────────────────────────────
+
+
+def _ensure_state_dir() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_pending() -> list[dict]:
+    if not PENDING_FILE.exists():
+        return []
+    records: list[dict] = []
+    for line in PENDING_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return records
+
+
+def _append_pending(record: dict) -> None:
+    _ensure_state_dir()
+    with open(PENDING_FILE, "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def _clear_pending() -> None:
+    if PENDING_FILE.exists():
+        PENDING_FILE.write_text("")
+
+
+def _read_status() -> dict:
+    if not STATUS_FILE.exists():
+        return {}
+    try:
+        return json.loads(STATUS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _write_status(data: dict) -> None:
+    _ensure_state_dir()
+    STATUS_FILE.write_text(json.dumps(data, indent=2))
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+
+def cmd_extract(args: list[str]) -> int:
+    room_id = DEFAULT_ROOM_ID
+    since_hours = DEFAULT_SINCE_HOURS
+    dry_run = False
+
+    i = 0
+    while i < len(args):
+        if args[i] in ("-r", "--room") and i + 1 < len(args):
+            room_id = args[i + 1]; i += 2
+        elif args[i].startswith("-r="):
+            room_id = args[i][3:]; i += 1
+        elif args[i] == "--since" and i + 1 < len(args):
+            try:
+                since_hours = int(args[i + 1])
+            except ValueError:
+                print(f"⚠ --since expects an integer, got {args[i+1]!r}", file=sys.stderr)
+                return 1
+            i += 2
+        elif args[i].startswith("--since="):
+            try:
+                since_hours = int(args[i][8:])
+            except ValueError:
+                print(f"⚠ --since expects an integer", file=sys.stderr)
+                return 1
+            i += 1
+        elif args[i] == "--dry-run":
+            dry_run = True; i += 1
+        else:
+            i += 1
+
+    if not room_id:
+        print("⚠ No room ID. Set MATRIX_BOT_ROOM_ID or pass -r <room_id>", file=sys.stderr)
+        return 1
+
+    if not ACCESS_TOKEN:
+        print("⚠ MATRIX_ACCESS_TOKEN not set — cannot fetch messages", file=sys.stderr)
+        return 1
+
+    print(f"⏳ Fetching messages from {room_id} (last {since_hours}h)…")
+    messages = _fetch_messages(room_id, since_hours)
+    if not messages:
+        print("(no messages in time window)")
+        return 0
+
+    print(f"  {len(messages)} messages fetched — grouping threads…")
+    threads = _group_threads(messages)
+    substantive = [t for t in threads if _is_substantive(t)]
+    print(f"  {len(substantive)} substantive thread(s) of {len(threads)} total")
+
+    written = 0
+    for idx, thread in enumerate(substantive, 1):
+        print(f"  [{idx}/{len(substantive)}] distilling thread ({len(thread)} messages)…", end=" ", flush=True)
+        claim_text = _distill_claim(thread)
+        if claim_text is None:
+            print("NO_CLAIM — skipped")
+            continue
+        record = _build_claim_record(claim_text, room_id, thread)
+        if dry_run:
+            print(f"\n--- DRY RUN claim-{record['id']} ---")
+            print(claim_text)
+            print("---")
+        else:
+            _append_pending(record)
+            written += 1
+            print(f"→ {record['id']}")
+
+    # Update status
+    status = _read_status()
+    status["last_extract"] = _now_iso()
+    status["room_id"] = room_id
+    status["last_since_hours"] = since_hours
+    _write_status(status)
+
+    if not dry_run:
+        pending = _read_pending()
+        print(f"\n✓ {written} claim(s) written to pending ({len(pending)} total pending)")
+    else:
+        print(f"\n✓ dry-run complete — {written} claim(s) would have been written")
+    return 0
+
+
+def cmd_commit(args: list[str]) -> int:
+    kb_dir = DEFAULT_KB_DIR
+    i = 0
+    while i < len(args):
+        if args[i] == "--kb-dir" and i + 1 < len(args):
+            kb_dir = Path(args[i + 1]); i += 2
+        elif args[i].startswith("--kb-dir="):
+            kb_dir = Path(args[i][9:]); i += 1
+        else:
+            i += 1
+
+    pending = _read_pending()
+    if not pending:
+        print("(no pending claims to commit)")
+        return 0
+
+    kb_dir.mkdir(parents=True, exist_ok=True)
+    committed = 0
+    for record in pending:
+        claim_id = record.get("id", f"claim-{_uuid8()}")
+        yaml_text = _claim_to_yaml(record)
+        out_path = kb_dir / f"{claim_id}.yaml"
+        out_path.write_text(yaml_text)
+        print(f"  → {out_path}")
+        committed += 1
+
+    _clear_pending()
+    print(f"\n✓ {committed} claim(s) committed to {kb_dir}")
+    return 0
+
+
+def cmd_list(args: list[str]) -> int:
+    show_pending = "--pending" in args or not args
+    show_committed = "--committed" in args or not args
+
+    if show_pending:
+        records = _read_pending()
+        if not records:
+            print("(no pending claims)")
+        else:
+            print(f"Pending ({len(records)}):")
+            for r in records:
+                claim_id = r.get("id", "?")
+                extracted_at = r.get("extracted_at", "?")[:16]
+                claim_preview = r.get("claim", "")[:60].replace("\n", " ")
+                print(f"  {claim_id}  {extracted_at}  {claim_preview}…")
+
+    if show_committed:
+        kb_dir = DEFAULT_KB_DIR
+        if kb_dir.exists():
+            files = sorted(kb_dir.glob("claim-*.yaml"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not files:
+                print("(no committed claims)")
+            else:
+                print(f"\nCommitted ({len(files)}):")
+                for f in files[:20]:
+                    print(f"  {f.name}")
+        else:
+            print(f"(committed KB dir not found: {kb_dir})")
+
+    return 0
+
+
+def cmd_status(_args: list[str]) -> int:
+    status = _read_status()
+
+    print(f"homeserver       : {HOMESERVER_URL}")
+    print(f"token            : {'set (' + ACCESS_TOKEN[:8] + '…)' if ACCESS_TOKEN else 'NOT SET'}")
+    print(f"room             : {DEFAULT_ROOM_ID or 'NOT SET'}")
+    print(f"pending file     : {PENDING_FILE}")
+    pending = _read_pending()
+    print(f"pending count    : {len(pending)}")
+    print(f"last extract     : {status.get('last_extract', 'never')}")
+    print(f"last since hours : {status.get('last_since_hours', DEFAULT_SINCE_HOURS)}")
+    print(f"default kb dir   : {DEFAULT_KB_DIR}")
+    return 0
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+_USAGE = """\
+Usage:
+  turtle-transcript-extract extract [-r <room_id>] [--since <hours>] [--dry-run]
+  turtle-transcript-extract commit [--kb-dir <path>]
+  turtle-transcript-extract list [--pending | --committed]
+  turtle-transcript-extract status
+"""
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(_USAGE.strip())
+        return 0
+
+    cmd = argv[0]
+    rest = argv[1:]
+
+    if cmd == "extract":
+        return cmd_extract(rest)
+    elif cmd == "commit":
+        return cmd_commit(rest)
+    elif cmd == "list":
+        return cmd_list(rest)
+    elif cmd == "status":
+        return cmd_status(rest)
+    else:
+        print(f"Unknown command: {cmd!r}\n", file=sys.stderr)
+        print(_USAGE.strip(), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

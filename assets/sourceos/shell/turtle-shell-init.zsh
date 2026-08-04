@@ -2125,6 +2125,48 @@ docfaq() { python3 "$(_turtle_doc_feedback_bin)" faq "$@" }
 # docdistill [<doc_ref>]  — run Noetica distillation over feedback
 docdistill() { python3 "$(_turtle_doc_feedback_bin)" distill "$@" }
 
+# ── ARM (Architecture Reference Manual) ────────────────────────────────────────
+
+_turtle_arm_bin() {
+    local _b
+    for _b in \
+        "${TURTLE_SOURCEOS_BIN:-$HOME/.local/share/sourceos/bin}/turtle-arm-generate" \
+        "${${(%):-%x}:h}/turtle-arm-generate"; do
+        [[ -x "$_b" ]] && { printf '%s' "$_b"; return; }
+    done
+    printf '%s' "$(dirname "${(%):-%x}")/turtle-arm-generate"
+}
+
+# arm-gen [--adr-dir <path>]  — regenerate ARM from ADRs
+arm-gen() { python3 "$(_turtle_arm_bin)" generate "$@" }
+
+# arm-show [--section <title>]  — print the ARM
+arm-show() { python3 "$(_turtle_arm_bin)" show "$@" }
+
+# arm-search <query>  — search the ARM
+arm-search() { python3 "$(_turtle_arm_bin)" search "$@" }
+
+# ── Transcript → KB claim extraction ─────────────────────────────────────────
+
+_turtle_transcript_bin() {
+    local _b
+    for _b in \
+        "${TURTLE_SOURCEOS_BIN:-$HOME/.local/share/sourceos/bin}/turtle-transcript-extract" \
+        "${${(%):-%x}:h}/turtle-transcript-extract"; do
+        [[ -x "$_b" ]] && { printf '%s' "$_b"; return; }
+    done
+    printf '%s' "$(dirname "${(%):-%x}")/turtle-transcript-extract"
+}
+
+# txextract [-r <room>] [--since <hours>]  — extract KB claims from Matrix transcript
+txextract() { python3 "$(_turtle_transcript_bin)" extract "$@" }
+
+# txcommit [--kb-dir <path>]  — commit pending claims to KB
+txcommit() { python3 "$(_turtle_transcript_bin)" commit "$@" }
+
+# txlist [--pending|--committed]  — list extracted claims
+txlist() { python3 "$(_turtle_transcript_bin)" list "$@" }
+
 # Auto-start Matrix bridge daemon at shell init if config is present
 if [[ -f "${HOME}/.config/sourceos/matrix.yaml" ]] || \
    [[ -n "${MATRIX_ACCESS_TOKEN:-}" ]]; then

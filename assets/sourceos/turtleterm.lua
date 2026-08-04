@@ -1464,6 +1464,10 @@ local PALETTE_COMMANDS = {
   { label = '💬  Matrix: recent log (mxlog)     —',                  id = 'matrix_log'      },
   { label = '💬  Matrix: post context (mxctx)   —',                  id = 'matrix_ctx'      },
   { label = '💬  Matrix: bridge status (mxstatus) —',                id = 'matrix_status'   },
+  -- Transcript → KB
+  { label = '📜  Transcript: extract claims (txextract) —', id = 'tx_extract' },
+  { label = '📜  Transcript: commit to KB (txcommit)   —', id = 'tx_commit'  },
+  { label = '📜  Transcript: list claims (txlist)       —', id = 'tx_list'    },
   -- Support tickets
   { label = '🎫  Ticket: open (tko)              —',                  id = 'ticket_open'     },
   { label = '🎫  Ticket: list (tkl)              —',                  id = 'ticket_list'     },
@@ -1475,6 +1479,10 @@ local PALETTE_COMMANDS = {
   { label = '📖  Doc feedback: submit (docfb)   —',                  id = 'doc_feedback'    },
   { label = '📖  Doc FAQ: show stubs (docfaq)   —',                  id = 'doc_faq'         },
   { label = '📖  Doc FAQ: distill (docdistill)  —',                  id = 'doc_distill'     },
+  -- ARM
+  { label = '📐  ARM: regenerate (arm-gen)    —', id = 'arm_generate' },
+  { label = '📐  ARM: show (arm-show)         —', id = 'arm_show'     },
+  { label = '📐  ARM: search (arm-search)     —', id = 'arm_search'   },
 }
 
 local function turtle_command_palette()
@@ -1588,6 +1596,9 @@ local function turtle_command_palette()
             matrix_log         = act.SendString('mxlog\n'),
             matrix_ctx         = act.SendString('mxctx\n'),
             matrix_status      = act.SendString('mxstatus\n'),
+            tx_extract         = act.SendString('txextract\n'),
+            tx_commit          = act.SendString('txcommit\n'),
+            tx_list            = act.SendString('txlist\n'),
             ticket_open        = act.SendString('tko '),
             ticket_list        = act.SendString('tkl\n'),
             ticket_search      = act.SendString('tks '),
@@ -1597,6 +1608,9 @@ local function turtle_command_palette()
             doc_feedback       = act.SendString('docfb '),
             doc_faq            = act.SendString('docfaq\n'),
             doc_distill        = act.SendString('docdistill\n'),
+            arm_generate       = act.SendString('arm-gen\n'),
+            arm_show           = act.SendString('arm-show\n'),
+            arm_search         = act.SendString('arm-search '),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end
