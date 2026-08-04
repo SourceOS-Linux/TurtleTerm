@@ -64,17 +64,22 @@ for v in $ci_verifiers; do
 done
 [ "$drift" -eq 0 ] && printf '  %s✓%s preflight covers every CI packaging verifier\n' "$grn" "$rst"
 
-# ── Python test suite (laptop-safe, always runs) ────────────────────────────
-echo "${bold}Python suite${rst}"
-py_fail=0
-for t in assets/sourceos/tests/test_turtle_*.py assets/sourceos/tests/test_sourceos_*.py; do
+# ── Python tests: EXACTLY the set CI runs (derived from the workflows) ───────
+# Deriving from the workflows keeps parity honest — preflight can't run more or
+# fewer tests than CI, so a pytest-only helper that isn't a CI gate never trips
+# a false failure, and a test CI adds is picked up automatically.
+echo "${bold}Python suite (exactly the tests CI runs)${rst}"
+ci_tests="$(grep -rhoE 'assets/sourceos/tests/test_[a-z0-9_]+\.py' .github/workflows/*.yml 2>/dev/null | sort -u)"
+py_fail=0; py_ran=0
+for t in $ci_tests; do
   [ -f "$t" ] || continue
+  py_ran=$((py_ran+1))
   if ! python3 "$t" >"$log_dir/py.log" 2>&1; then
     printf '  %s✗ %s%s\n' "$red" "$(basename "$t")" "$rst"; sed 's/^/      /' "$log_dir/py.log" | tail -8
     py_fail=$((py_fail+1))
   fi
 done
-if [ "$py_fail" -eq 0 ]; then printf '  %s✓%s all python tests pass\n' "$grn" "$rst"; pass=$((pass+1))
+if [ "$py_fail" -eq 0 ]; then printf '  %s✓%s %s CI-gated python tests pass\n' "$grn" "$rst" "$py_ran"; pass=$((pass+1))
 else fail=$((fail+1)); failed_gates+=("python-suite ($py_fail failing)"); fi
 
 # ── Shell verifiers (real artifact builds) ──────────────────────────────────
