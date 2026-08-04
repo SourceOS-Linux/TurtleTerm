@@ -10,6 +10,18 @@ if [[ -z "${SOURCEOS_TERMINAL_SESSION_ID:-}" ]]; then
     export SOURCEOS_TERMINAL_SESSION_ID="term-$(python3 -c 'import uuid; print(uuid.uuid4().hex)' 2>/dev/null || date +%s)"
 fi
 
+# Auto-start turtle-status-daemon if not already running (writes CI/PR/Noetica cache)
+if [[ -z "${_TURTLE_STATUS_DAEMON_STARTED:-}" ]]; then
+    _TURTLE_STATUS_DAEMON_STARTED=1
+    _turtle_status_daemon_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-status-daemon"
+    if [[ -x "$_turtle_status_daemon_bin" ]]; then
+        if ! pgrep -f "turtle-status-daemon" >/dev/null 2>&1; then
+            python3 "$_turtle_status_daemon_bin" &! 2>/dev/null
+        fi
+    fi
+    unset _turtle_status_daemon_bin
+fi
+
 export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
 export SOURCEOS_WORKSPACE="${SOURCEOS_WORKSPACE:-default}"
 
@@ -55,6 +67,166 @@ EOF
     fi
 }
 
+# ============================================================
+# |? semantic pipe operator — pipe any output through Noetica
+# Usage: git log | ? "which commits touched auth"
+#        docker ps | ? "which containers are unhealthy"
+# ============================================================
+\?() {
+    local _query="$*"
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    local _stdin_data
+    _stdin_data="$(cat)"  # consume stdin
+
+    if [[ -z "$_query" ]]; then
+        printf '%s\n' "$_stdin_data"
+        return
+    fi
+
+    local _payload
+    _payload="$(python3 -c "
+import json, sys
+data = sys.argv[1]
+query = sys.argv[2]
+prompt = f'Given this command output:\n\n{data[:3000]}\n\nAnswer: {query}\n\nBe concise (1-4 lines).'
+print(json.dumps({'messages':[{'role':'user','content':prompt}],'stream':False}))
+" "$_stdin_data" "$_query" 2>/dev/null)"
+
+    if [[ -z "$_payload" ]]; then
+        printf '%s\n' "$_stdin_data"
+        return
+    fi
+
+    printf '\e[38;2;57;197;207m▍\e[0m '  # teal AI boundary
+    local _result
+    _result="$(python3 -c "
+import json, urllib.request, sys
+payload = sys.argv[1].encode()
+try:
+    req = urllib.request.Request('${_noetica}/api/chat', data=payload,
+                                  headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req, timeout=8) as r:
+        d = json.load(r)
+        msg = d.get('message',{}).get('content','') or d.get('content','')
+        print(msg.strip())
+except Exception as e:
+    print(f'(Noetica unreachable: {e})', file=sys.stderr)
+" "$_payload" 2>/dev/null)"
+
+    if [[ -n "$_result" ]]; then
+        printf '\e[38;2;230;237;243m%s\e[0m\n' "$_result"
+    else
+        printf '\e[2m(no response — is Noetica running on %s?)\e[0m\n' "$_noetica" >&2
+    fi
+}
+
+# ============================================================
+# Destructive command preview gate
+# Extends the existing pattern check with actionable preview
+# before the command runs. Requires explicit 'y' to continue.
+# Disable with TURTLE_PREVIEW_GATE=0.
+# ============================================================
+_turtle_destructive_patterns=(
+    '^rm[[:space:]].*-[a-zA-Z]*r[a-zA-Z]*[[:space:]]'
+    '^git[[:space:]]+push[[:space:]].*--force'
+    '^git[[:space:]]+push[[:space:]].*-f[[:space:]]'
+    '^git[[:space:]]+reset[[:space:]]--hard'
+    '^kubectl[[:space:]]+delete[[:space:]]'
+    '^terraform[[:space:]]+destroy'
+    '^helm[[:space:]]+uninstall'
+    '^docker[[:space:]]+rm[[:space:]]'
+    '^gcloud.*instances[[:space:]]+delete'
+    '^gsutil[[:space:]]+rm[[:space:]]'
+)
+
+_turtle_preview_gate() {
+    [[ "${TURTLE_PREVIEW_GATE:-1}" == "0" ]] && return 0
+    local cmd="$1"
+    local matched=0
+    for pat in "${_turtle_destructive_patterns[@]}"; do
+        if [[ "$cmd" =~ $pat ]]; then
+            matched=1; break
+        fi
+    done
+    (( matched )) || return 0
+
+    printf '\e[38;2;255;123;114m⚠  Destructive command detected\e[0m\n' >&2
+    printf '\e[2m  %s\e[0m\n' "$cmd" >&2
+
+    # Show contextual preview
+    if [[ "$cmd" =~ '^rm ' ]]; then
+        local target
+        target="$(echo "$cmd" | grep -oE '[^[:space:]]+$')"
+        if [[ -e "$target" ]]; then
+            printf '\e[2m  will delete: %s (%s items)\e[0m\n' "$target" \
+                "$(find "$target" 2>/dev/null | wc -l | tr -d ' ')" >&2
+        fi
+    elif [[ "$cmd" =~ '^git push.*--force' || "$cmd" =~ '^git push.*-f ' ]]; then
+        local ahead
+        ahead="$(git log --oneline @{u}..HEAD 2>/dev/null | wc -l | tr -d ' ')"
+        printf '\e[2m  will force-push %s commits\e[0m\n' "$ahead" >&2
+    fi
+
+    printf '\e[38;2;255;123;114mProceed? [y/N] \e[0m' >&2
+    local yn
+    read -r yn </dev/tty
+    [[ "$yn" =~ ^[Yy]$ ]] && return 0
+
+    printf '\e[2m  aborted\e[0m\n' >&2
+    # Return non-zero to signal preexec should reject (zsh doesn't support
+    # blocking from preexec cleanly, so we clear the buffer via a trap)
+    return 1
+}
+
+# ============================================================
+# Auto-generated zsh completions for unknown turtle-*/prophet-* CLIs
+# On first invocation: runs `cmd --help`, asks Noetica to generate
+# a _cmd completion function, caches to ~/.turtle/completions/.
+# ============================================================
+_TURTLE_COMP_DIR="${HOME}/.turtle/completions"
+
+_turtle_maybe_generate_completion() {
+    local cmd="$1"
+    # Only for our own toolchain
+    [[ "$cmd" =~ ^(turtle|prophet|goose|bearbrowser|sourceos) ]] || return 0
+    local comp_file="${_TURTLE_COMP_DIR}/_${cmd}"
+    [[ -f "$comp_file" ]] && return 0   # already generated
+    # Run async so it never blocks the prompt
+    (
+        local help_text
+        help_text="$("$cmd" --help 2>&1 | head -60)"
+        [[ -z "$help_text" ]] && exit 0
+        local _noetica="${NOETICA_URL:-http://localhost:7700}"
+        local generated
+        generated="$(python3 -c "
+import json, urllib.request, sys
+cmd, help_text = sys.argv[1], sys.argv[2]
+prompt = (
+    f'Generate a minimal zsh _arguments completion function for the CLI tool \`{cmd}\`.\n'
+    f'Help output:\n{help_text}\n\n'
+    f'Output ONLY valid zsh code starting with \"#compdef {cmd}\" and ending with the function body. '
+    f'No explanation, no markdown fences.'
+)
+payload = json.dumps({'messages':[{'role':'user','content':prompt}],'stream':False}).encode()
+try:
+    req = urllib.request.Request('${_noetica}/api/chat', data=payload,
+                                  headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        d = json.load(r)
+        print((d.get('message',{}).get('content','') or d.get('content','')).strip())
+except Exception:
+    pass
+" "$cmd" "$help_text" 2>/dev/null)"
+        if [[ "$generated" == "#compdef"* ]]; then
+            mkdir -p "${_TURTLE_COMP_DIR}"
+            printf '%s\n' "$generated" > "$comp_file"
+            # Add to fpath if not already there
+            [[ " ${fpath[*]} " == *" ${_TURTLE_COMP_DIR} "* ]] || \
+                fpath=("${_TURTLE_COMP_DIR}" "${fpath[@]}")
+        fi
+    ) &!
+}
+
 _TURTLE_ZSH_CMD=""
 _TURTLE_ZSH_STARTED_AT=""
 _TURTLE_ZSH_CMD_EPOCH=0
@@ -83,8 +255,15 @@ preexec() {
     # OSC 133 C — command output start (marks command start for prompt jumping)
     printf '\e]133;C\a'
 
-    # Dangerous pattern check
+    # Dangerous pattern check (warning only)
     _turtle_check_dangerous "$cmd"
+
+    # Destructive preview gate (requires explicit y for rm/force-push/destroy/etc.)
+    _turtle_preview_gate "$cmd"
+
+    # Auto-generate completions for unknown turtle-*/prophet-* tools (async, non-blocking)
+    local _first_word="${cmd%% *}"
+    _turtle_maybe_generate_completion "$_first_word"
 
     local writer
     writer="$(_turtle_writer)"

@@ -2597,6 +2597,39 @@ local function count_agents()
   return 0
 end
 
+-- ── status bar state reader ───────────────────────────────────────────────────
+-- Reads cached JSON files written by turtle-status-daemon (polls every 30s).
+-- All reads are synchronous file I/O — no network calls in the event loop.
+local _status_cache = {}
+local _status_cache_at = 0
+
+local function read_status_cache()
+  local now = os.time()
+  if now - _status_cache_at < 5 then return _status_cache end  -- reuse for 5s
+  local home = os.getenv('HOME') or ''
+  local base = home .. '/.local/state/sourceos/status/'
+  local cache = {}
+  for _, name in ipairs({'noetica', 'ci', 'pr', 'board'}) do
+    local f = io.open(base .. name .. '.json', 'r')
+    if f then
+      local raw = f:read('*a'); f:close()
+      local ok2, data = pcall(wezterm.json_parse, raw)
+      if ok2 and data then cache[name] = data end
+    end
+  end
+  _status_cache = cache
+  _status_cache_at = now
+  return cache
+end
+
+local function ci_icon(status, conclusion)
+  if conclusion == 'success'              then return '\xe2\x9c\x93 '  end  -- ✓
+  if conclusion == 'failure' or conclusion == 'error' then return '\xe2\x9c\x97 '  end  -- ✗
+  if status == 'in_progress' or status == 'running'   then return '\xe2\x9f\xb3 ' end  -- ⟳
+  if status == 'queued'                   then return '\xc2\xb7 '      end  -- ·
+  return ''
+end
+
 wezterm.on('update-right-status', function(window, pane)
   local domain = turtle_domain()
   local proc = ''
@@ -2604,6 +2637,8 @@ wezterm.on('update-right-status', function(window, pane)
   local cwd_uri = ''
   pcall(function() cwd_uri = tostring(pane.current_working_dir) or '' end)
   local is_ssh = proc:find('ssh') ~= nil or cwd_uri:find('^ssh://') ~= nil
+
+  local sc = read_status_cache()
 
   -- Plan step badge
   local plan_badge = ''
@@ -2617,7 +2652,7 @@ wezterm.on('update-right-status', function(window, pane)
       if ok2 and plan and plan.steps then
         local step = (plan.current_step or 0) + 1
         local total = #plan.steps
-        local goal = (plan.goal or ''):sub(1, 24)
+        local goal = (plan.goal or ''):sub(1, 20)
         if step <= total then
           plan_badge = string.format('\xe2\x9a\xa1 %s [%d/%d]  ', goal, step, total)
         end
@@ -2625,11 +2660,38 @@ wezterm.on('update-right-status', function(window, pane)
     end
   end
 
+  -- CI badge (from daemon cache)
+  local ci_part = ''
+  if sc.ci and (sc.ci.status or '') ~= '' then
+    local icon = ci_icon(sc.ci.status or '', sc.ci.conclusion or '')
+    if icon ~= '' then
+      ci_part = 'CI ' .. icon .. ' '
+    end
+  end
+
+  -- PR count badge
+  local pr_part = ''
+  if sc.pr and (sc.pr.count or 0) > 0 then
+    pr_part = string.format('\xe2\x9c\xa7 %d PR  ', sc.pr.count)  -- ✧ N PR
+  end
+
+  -- Noetica health dot
+  local noe_part = ''
+  if sc.noetica then
+    noe_part = sc.noetica.ok and '\xe2\x97\x8f ' or '\xe2\x97\x8b '  -- ● or ○
+  end
+
+  -- Board score (if recent — within 6h)
+  local board_part = ''
+  if sc.board and (sc.board.score or 0) > 0 then
+    board_part = string.format('%.1f%%  ', sc.board.score)
+  end
+
   -- Agent count
   local agent_part = ''
   local n_agents = count_agents()
   if n_agents > 0 then
-    agent_part = string.format('\xf0\x9f\xa4\x96 %d  ', n_agents)  -- 🤖 N
+    agent_part = string.format('\xf0\x9f\xa4\x96 %d  ', n_agents)
   end
 
   -- Clock
@@ -2638,6 +2700,10 @@ wezterm.on('update-right-status', function(window, pane)
   -- Build right status
   local parts = {}
   if plan_badge ~= '' then table.insert(parts, plan_badge) end
+  if noe_part   ~= '' then table.insert(parts, noe_part)   end
+  if ci_part    ~= '' then table.insert(parts, ci_part)    end
+  if pr_part    ~= '' then table.insert(parts, pr_part)    end
+  if board_part ~= '' then table.insert(parts, board_part) end
   if agent_part ~= '' then table.insert(parts, agent_part) end
 
   if is_ssh then
