@@ -676,6 +676,10 @@ note() {
 
     printf '\e[38;2;57;197;207m◆\e[0m Captured: \e[38;2;230;237;243m%s\e[0m\n' "$_fname"
     printf '  Open with: \e[2m$EDITOR %s\e[0m\n' "$_fname"
+    # Auto-extract facts to persistent memory (background, non-blocking)
+    local _mbin_note
+    _mbin_note="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-noetica-memory"
+    [[ -x "$_mbin_note" ]] && python3 "$_mbin_note" extract "$_title" &! 2>/dev/null
 }
 
 # note_watch — manually start/restart the backlinks watch daemon
@@ -1522,7 +1526,15 @@ In 1-2 lines: what likely went wrong and how to fix it. Be direct, no preamble."
         if (( _triage_age < 90 )); then
             local _triage; _triage="$(< "$_TURTLE_TRIAGE_FILE")"
             if [[ -n "$_triage" ]]; then
-                printf '\n\e[38;2;57;197;207m◆ Noetica:\e[0m \e[38;2;139;148;158m%s\e[0m\n' "$_triage"
+                printf '\n\e[38;2;57;197;197m◆ Noetica:\e[0m \e[38;2;139;148;158m%s\e[0m\n' "$_triage"
+                # Suggest a matching runbook alongside the triage
+                local _rb_bin
+                _rb_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-runbook"
+                if [[ -x "$_rb_bin" && -n "${_TURTLE_PERF_CMD:-}" ]]; then
+                    local _rb_match
+                    _rb_match="$(python3 "$_rb_bin" search "${_TURTLE_PERF_CMD:0:60}" 2>/dev/null | head -1)"
+                    [[ -n "$_rb_match" ]] && printf '  \e[2m◈ runbook: %s\e[0m\n' "$_rb_match"
+                fi
             fi
         fi
         rm -f "$_TURTLE_TRIAGE_FILE"
