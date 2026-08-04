@@ -2092,6 +2092,39 @@ tkn() {
     python3 "$(_turtle_ticket_bin)" comment "$@"
 }
 
+# ── Doc feedback ───────────────────────────────────────────────────────────────
+
+_turtle_doc_feedback_bin() {
+    local _b
+    for _b in \
+        "${TURTLE_SOURCEOS_BIN:-$HOME/.local/share/sourceos/bin}/turtle-doc-feedback" \
+        "${${(%):-%x}:h}/turtle-doc-feedback"; do
+        [[ -x "$_b" ]] && { printf '%s' "$_b"; return; }
+    done
+    printf '%s' "$(dirname "${(%):-%x}")/turtle-doc-feedback"
+}
+
+# docfb <doc_ref> <up|down|question|neutral> [comment]
+#   Submit doc feedback; emoji shortcuts: 👍=up, 👎=down, ❓=question
+docfb() {
+    local _doc="${1:?Usage: docfb <doc_ref> <sentiment> [comment]}"; shift
+    local _sent="$1"; shift
+    # emoji → word mapping
+    case "$_sent" in
+        👍|+1|up)        _sent=up       ;;
+        👎|-1|down)      _sent=down     ;;
+        ❓|'?'|question) _sent=question ;;
+        *)               ;;
+    esac
+    python3 "$(_turtle_doc_feedback_bin)" submit "$_doc" "$_sent" "$@"
+}
+
+# docfaq [<doc_ref>]   — show derived FAQ stubs
+docfaq() { python3 "$(_turtle_doc_feedback_bin)" faq "$@" }
+
+# docdistill [<doc_ref>]  — run Noetica distillation over feedback
+docdistill() { python3 "$(_turtle_doc_feedback_bin)" distill "$@" }
+
 # Auto-start Matrix bridge daemon at shell init if config is present
 if [[ -f "${HOME}/.config/sourceos/matrix.yaml" ]] || \
    [[ -n "${MATRIX_ACCESS_TOKEN:-}" ]]; then
