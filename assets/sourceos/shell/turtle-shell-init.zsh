@@ -93,54 +93,137 @@ EOF
 
 # ============================================================
 # |? semantic pipe operator — pipe any output through Noetica
+#    with active mesh context automatically injected.
 # Usage: git log | ? "which commits touched auth"
 #        docker ps | ? "which containers are unhealthy"
+#        kubectl get pods | ? "which are not ready and why"
 # ============================================================
+
+_turtle_noetica_query() {
+    # Low-level: send a prompt to Noetica, print the response.
+    # Args: $1=noetica URL  $2=prompt string
+    local _noetica="$1" _prompt="$2"
+    python3 -c "
+import json, urllib.request, sys
+noetica, prompt = sys.argv[1], sys.argv[2]
+payload = json.dumps({'messages':[{'role':'user','content':prompt}],'stream':False}).encode()
+try:
+    req = urllib.request.Request(noetica+'/api/chat', data=payload,
+                                  headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        d = json.load(r)
+        msg = (d.get('choices',[{}])[0].get('message',{}).get('content','')
+               or d.get('message',{}).get('content','')
+               or d.get('content',''))
+        print(msg.strip())
+except Exception as e:
+    print(f'(Noetica unreachable: {e})', file=sys.stderr)
+    sys.exit(1)
+" "$_noetica" "$_prompt" 2>&1
+}
+
+_turtle_active_context_snippet() {
+    # Returns a 1-3 line context string from active.json (cwd/branch/title).
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    python3 -c "
+import json, pathlib
+active = pathlib.Path('$_mesh_dir/active.json')
+if active.exists():
+    try:
+        d = json.loads(active.read_text())
+        parts = []
+        if d.get('cwd'):  parts.append('cwd: ' + d['cwd'])
+        if d.get('branch'): parts.append('branch: ' + d['branch'])
+        if d.get('title'):  parts.append('context: ' + d['title'])
+        print('\n'.join(parts))
+    except: pass
+" 2>/dev/null
+}
+
 \?() {
     local _query="$*"
     local _noetica="${NOETICA_URL:-http://localhost:7700}"
-    local _stdin_data
-    _stdin_data="$(cat)"  # consume stdin
+    local _stdin_data _ctx
+    _stdin_data="$(cat)"
 
     if [[ -z "$_query" ]]; then
         printf '%s\n' "$_stdin_data"
         return
     fi
 
-    local _payload
-    _payload="$(python3 -c "
-import json, sys
-data = sys.argv[1]
-query = sys.argv[2]
-prompt = f'Given this command output:\n\n{data[:3000]}\n\nAnswer: {query}\n\nBe concise (1-4 lines).'
-print(json.dumps({'messages':[{'role':'user','content':prompt}],'stream':False}))
-" "$_stdin_data" "$_query" 2>/dev/null)"
+    _ctx="$(_turtle_active_context_snippet)"
+    local _ctx_block=""
+    [[ -n "$_ctx" ]] && _ctx_block=$'\n\nShell context:\n'"$_ctx"
 
-    if [[ -z "$_payload" ]]; then
-        printf '%s\n' "$_stdin_data"
-        return
-    fi
+    local _prompt="Given this command output:
 
-    printf '\e[38;2;57;197;207m▍\e[0m '  # teal AI boundary
+${_stdin_data:0:3000}${_ctx_block}
+
+Answer: ${_query}
+
+Be concise (1-4 lines)."
+
+    printf '\e[38;2;57;197;207m▍\e[0m '
     local _result
-    _result="$(python3 -c "
-import json, urllib.request, sys
-payload = sys.argv[1].encode()
-try:
-    req = urllib.request.Request('${_noetica}/api/chat', data=payload,
-                                  headers={'Content-Type':'application/json'})
-    with urllib.request.urlopen(req, timeout=8) as r:
-        d = json.load(r)
-        msg = d.get('message',{}).get('content','') or d.get('content','')
-        print(msg.strip())
-except Exception as e:
-    print(f'(Noetica unreachable: {e})', file=sys.stderr)
-" "$_payload" 2>/dev/null)"
+    _result="$(_turtle_noetica_query "$_noetica" "$_prompt" 2>/dev/null)"
 
     if [[ -n "$_result" ]]; then
         printf '\e[38;2;230;237;243m%s\e[0m\n' "$_result"
     else
         printf '\e[2m(no response — is Noetica running on %s?)\e[0m\n' "$_noetica" >&2
+    fi
+}
+
+# ============================================================
+# noe — direct Noetica query (no pipe needed)
+#       Injects active mesh context automatically.
+# Usage: noe "explain this error: ECONNREFUSED"
+#        noe cap "what was that kubectl command I ran?"
+# ============================================================
+noe() {
+    local _query="$*"
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+
+    if [[ -z "$_query" ]]; then
+        echo "Usage: noe <question>" >&2
+        echo "       noe cap <question>  — ask about the last capture" >&2
+        return 1
+    fi
+
+    # 'noe cap' — include last capture/note from mesh in context
+    if [[ "${1:-}" == "cap" ]]; then
+        shift
+        _query="$*"
+        local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+        local _last_cap
+        _last_cap="$(python3 -c "
+import json, pathlib
+ctx = pathlib.Path('$_mesh_dir/context.jsonl')
+if ctx.exists():
+    for line in reversed(ctx.read_text(errors='replace').splitlines()):
+        try:
+            ev = json.loads(line)
+            if ev.get('kind') in ('capture','note','shell-cmd'):
+                print('# ' + ev.get('title','') + '\n' + ev.get('content','')[:800])
+                break
+        except: pass
+" 2>/dev/null)"
+        [[ -n "$_last_cap" ]] && _query="Context:\n${_last_cap}\n\nQuestion: ${_query}"
+    fi
+
+    local _ctx; _ctx="$(_turtle_active_context_snippet)"
+    [[ -n "$_ctx" ]] && _query="${_query}
+
+Shell context:
+${_ctx}"
+
+    printf '\e[38;2;57;197;207m▍ Noetica\e[0m\n'
+    local _result
+    _result="$(_turtle_noetica_query "$_noetica" "$_query")"
+    if [[ -n "$_result" ]]; then
+        printf '\e[38;2;230;237;243m%s\e[0m\n\n' "$_result"
+    else
+        printf '\e[2m(no response from Noetica at %s)\e[0m\n' "$_noetica" >&2
     fi
 }
 
@@ -460,8 +543,18 @@ bindkey '^R' _turtle_history_widget
 bindkey '\er' history-incremental-search-backward
 
 # ============================================================
-# Memory mesh: ?? recall, tc capture, mission control
+# Memory mesh: ?? recall, tc capture, ctx, mission control
 # ============================================================
+
+# ctx — pretty snapshot of current SourceOS context (mesh+CI+BB)
+# Example: ctx         # full panel
+#          ctx --short # single-line summary for copy-paste into AI prompts
+ctx() {
+    local _ctx_bin
+    _ctx_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-context"
+    [[ -x "$_ctx_bin" ]] || _ctx_bin="turtle-context"
+    "$_ctx_bin" "$@"
+}
 
 # ?? <query> — quick memory recall from any prompt
 # Example: ?? postgres replica setup

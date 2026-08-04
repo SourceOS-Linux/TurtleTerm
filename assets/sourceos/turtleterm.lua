@@ -1433,9 +1433,11 @@ local PALETTE_COMMANDS = {
   { label = '📂  Restore workspace           CMD+SHIFT+O',   id = 'workspace_restore' },
   -- Memory mesh / cross-app integration
   { label = '◆  Mission Control (agents)    CMD+SHIFT+M',   id = 'mission_control'   },
+  { label = '◆  Context snapshot (ctx)      CMD+SHIFT+X',   id = 'context_snapshot'  },
   { label = '◆  Capture to Goose Notes      CMD+SHIFT+C',   id = 'capture'           },
   { label = '◆  Memory Mesh Recall          CMD+SHIFT+L',   id = 'recall'            },
   { label = '◆  Sync mesh to GCS           CMD+SHIFT+U',   id = 'mesh_push'         },
+  { label = '🌐  Open in BearBrowser         CMD+SHIFT+B',   id = 'bb_open'           },
   -- Shell utilities
   { label = '🖼  Image gallery (current dir) CMD+SHIFT+G',   id = 'gallery'           },
   { label = '⏱  Resource usage (last cmd)   —',             id = 'rss_info'          },
@@ -1526,9 +1528,11 @@ local function turtle_command_palette()
             workspace_save     = turtle_workspace_save(),
             workspace_restore  = turtle_workspace_restore(),
             mission_control    = turtle_mission_control(),
+            context_snapshot   = act.SendString('ctx\n'),
             capture            = turtle_capture_selection(),
             recall             = turtle_recall(),
             mesh_push          = turtle_mesh_push(),
+            bb_open            = act.SendString('bb \n'),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end
@@ -2126,11 +2130,13 @@ config.keys = {
   { key = 'h', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_ssh_picker(w, p) end) },
   { key = 's', mods = 'CMD|SHIFT',  action = turtle_workspace_save()    },  -- Save workspace
   { key = 'o', mods = 'CMD|SHIFT',  action = turtle_workspace_restore() },  -- Restore workspace
-  -- Memory mesh integration
+  -- Memory mesh + cross-product integration
   { key = 'm', mods = 'CMD|SHIFT',  action = turtle_mission_control() },    -- Mission Control panel
+  { key = 'x', mods = 'CMD|SHIFT',  action = act.SendString('ctx\n') },     -- Context snapshot
   { key = 'c', mods = 'CMD|SHIFT',  action = turtle_capture_selection() },  -- Capture to Goose Notes
   { key = 'l', mods = 'CMD|SHIFT',  action = turtle_recall() },             -- Memory mesh recall
   { key = 'u', mods = 'CMD|SHIFT',  action = turtle_mesh_push() },          -- Sync mesh to GCS
+  { key = 'b', mods = 'CMD|SHIFT',  action = act.SendString('bb ') },       -- Open in BearBrowser
   -- Image gallery (lsi equivalent from WezTerm)
   { key = 'g', mods = 'CMD|SHIFT',  action = wezterm.action_callback(function(w, p)
       local cwd = ''

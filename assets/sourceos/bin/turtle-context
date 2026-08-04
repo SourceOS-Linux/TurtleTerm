@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""turtle-context — snapshot of active context across the SourceOS stack.
+
+Reads from:
+  memory-mesh/active.json          — current cwd/branch/title
+  memory-mesh/context.jsonl        — last N mesh events
+  ~/.local/state/sourceos/status/  — CI/PR/Noetica/board state
+  BearBrowser memory candidates     — last browsed pages w/ agent context
+  ~/notes/*.md                     — most recently modified notes
+
+Usage:
+  turtle-context            # pretty snapshot
+  turtle-context --json     # machine-readable JSON
+  turtle-context --short    # one-liner summary for use in prompts
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import sys
+from pathlib import Path
+
+MESH_DIR   = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
+STATUS_DIR = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "status"
+NOTES_DIR  = Path(os.getenv("GOOSE_NOTES_DIR", str(Path.home() / "notes")))
+BB_SUPPORT = Path.home() / "Library" / "Application Support" / "BearBrowser"
+
+C_RESET  = "\033[0m"
+C_BOLD   = "\033[1m"
+C_DIM    = "\033[2m"
+C_BLUE   = "\033[38;2;88;166;255m"
+C_TEAL   = "\033[38;2;63;185;80m"
+C_PURPLE = "\033[38;2;188;140;255m"
+C_CYAN   = "\033[38;2;0;200;200m"
+C_YELLOW = "\033[38;2;210;153;34m"
+C_WHITE  = "\033[38;2;230;237;243m"
+C_GREY   = "\033[38;2;139;148;158m"
+C_ORANGE = "\033[38;2;255;123;114m"
+
+
+def load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def load_jsonl_tail(path: Path, n: int = 10) -> list[dict]:
+    if not path.exists():
+        return []
+    items = []
+    try:
+        for line in path.read_text(errors="replace").splitlines()[-n * 3:]:
+            try:
+                items.append(json.loads(line))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return items[-n:]
+
+
+def age_str(iso: str) -> str:
+    if not iso:
+        return ""
+    try:
+        t = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        s = int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds())
+        if s < 60:
+            return f"{s}s ago"
+        if s < 3600:
+            return f"{s//60}m ago"
+        return f"{s//3600}h ago"
+    except Exception:
+        return ""
+
+
+def gather() -> dict:
+    active     = load_json(MESH_DIR / "active.json")
+    mesh_tail  = load_jsonl_tail(MESH_DIR / "context.jsonl", 8)
+    ci         = load_json(STATUS_DIR / "ci.json")
+    pr         = load_json(STATUS_DIR / "pr.json")
+    noetica    = load_json(STATUS_DIR / "noetica.json")
+    board      = load_json(STATUS_DIR / "board.json")
+
+    # BearBrowser recent activity (last 3 candidates)
+    bb_cands: list[dict] = []
+    bb_cand_path = BB_SUPPORT / "memory" / "candidates.jsonl"
+    if bb_cand_path.exists():
+        for line in bb_cand_path.read_text(errors="replace").splitlines()[-30:]:
+            try:
+                bb_cands.append(json.loads(line))
+            except Exception:
+                pass
+        bb_cands = bb_cands[-3:]
+
+    # Recent notes
+    notes: list[str] = []
+    if NOTES_DIR.exists():
+        md_files = sorted(NOTES_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in md_files[:3]:
+            notes.append(p.name)
+
+    return {
+        "active":    active,
+        "mesh":      mesh_tail,
+        "ci":        ci,
+        "pr":        pr,
+        "noetica":   noetica,
+        "board":     board,
+        "bb_cands":  bb_cands,
+        "notes":     notes,
+    }
+
+
+def print_pretty(ctx: dict) -> None:
+    def hr(w: int = 68) -> str:
+        return C_GREY + "─" * w + C_RESET
+
+    print()
+    print(f"  {C_BLUE}{C_BOLD}◆ SourceOS Context{C_RESET}  {C_GREY}{datetime.datetime.now().strftime('%H:%M:%S')}{C_RESET}")
+    print(f"  {hr()}")
+
+    # Active focus
+    active = ctx["active"]
+    if active:
+        cwd    = active.get("cwd", "")
+        branch = active.get("branch", "")
+        title  = active.get("title", "")
+        upd    = age_str(active.get("updated", ""))
+        print(f"  {C_BLUE}FOCUS{C_RESET}  {C_GREY}{upd}{C_RESET}")
+        if cwd:
+            print(f"    {C_WHITE}cwd:    {C_RESET}{cwd}")
+        if branch:
+            print(f"    {C_TEAL}branch: {C_RESET}{branch}")
+        if title:
+            print(f"    {C_GREY}title:  {C_RESET}{title}")
+    else:
+        print(f"  {C_DIM}  — no active context (use tc to capture){C_RESET}")
+    print(f"  {hr()}")
+
+    # Services
+    noe = ctx["noetica"]
+    ci  = ctx["ci"]
+    pr  = ctx["pr"]
+    bd  = ctx["board"]
+
+    noe_s = (C_TEAL + "● Noetica  ok") if noe.get("ok") else (C_ORANGE + "○ Noetica  down")
+    noe_d = f"  brain={noe.get('brain','?')}  queries={noe.get('queries','?')}" if noe.get("ok") else ""
+    print(f"  {noe_s}{C_GREY}{noe_d}{C_RESET}")
+
+    if ci:
+        conc = ci.get("conclusion", "")
+        ci_c = C_TEAL if conc == "success" else (C_ORANGE if conc == "failure" else C_YELLOW)
+        print(f"  {ci_c}● CI      {ci.get('status','?')} / {conc or '…'}{C_RESET}  {C_GREY}{ci.get('name','?')}{C_RESET}")
+
+    if pr:
+        print(f"  {C_YELLOW}● PRs     {pr.get('count', 0)} open{C_RESET}  {C_GREY}{pr.get('repo','')}{C_RESET}")
+
+    if bd:
+        score = bd.get("score", 0)
+        print(f"  {C_PURPLE}● Board   {score:.1f}%{C_RESET}  {C_GREY}{age_str(bd.get('ts',''))}{C_RESET}")
+
+    print(f"  {hr()}")
+
+    # Memory mesh events
+    mesh = ctx["mesh"]
+    if mesh:
+        print(f"  {C_PURPLE}MESH{C_RESET}  {C_GREY}(last {len(mesh)} events){C_RESET}")
+        for ev in reversed(mesh):
+            ts   = ev.get("ts", "")[:16]
+            kind = ev.get("kind", "?")[:10]
+            src  = ev.get("source", "?")[:10]
+            ttl  = (ev.get("title") or ev.get("content", ""))[:52]
+            print(f"    {C_PURPLE}·{C_RESET}  {C_GREY}{ts}  {C_YELLOW}{kind:<10}{C_GREY}[{src}]{C_RESET}  {C_WHITE}{ttl}{C_RESET}")
+    print(f"  {hr()}")
+
+    # BearBrowser
+    bb_cands = ctx["bb_cands"]
+    if bb_cands:
+        print(f"  {C_CYAN}BEARBROWSER{C_RESET}  {C_GREY}memory candidates{C_RESET}")
+        for c in reversed(bb_cands):
+            content = c.get("content", {})
+            ttl = (content.get("title", "") if isinstance(content, dict) else "?")[:52]
+            status = c.get("status", "proposed")
+            ts = c.get("timestamp", "")[:16]
+            sc = C_TEAL if status == "committed" else C_YELLOW
+            print(f"    {sc}{'✓' if status=='committed' else '·'}{C_RESET}  {C_GREY}{ts}{C_RESET}  {C_WHITE}{ttl}{C_RESET}")
+        print(f"  {hr()}")
+
+    # Notes
+    notes = ctx["notes"]
+    if notes:
+        print(f"  {C_BLUE}NOTES{C_RESET}  {C_GREY}(recent){C_RESET}")
+        for n in notes:
+            print(f"    {C_GREY}·{C_RESET}  {n}")
+
+    print()
+
+
+def print_short(ctx: dict) -> None:
+    """Single-line summary for injecting into prompts."""
+    active = ctx["active"]
+    parts = []
+    if active.get("cwd"):
+        parts.append(f"cwd={active['cwd']}")
+    if active.get("branch"):
+        parts.append(f"branch={active['branch']}")
+    noe = ctx["noetica"]
+    parts.append(f"noetica={'up' if noe.get('ok') else 'down'}")
+    ci = ctx["ci"]
+    if ci:
+        parts.append(f"ci={ci.get('conclusion', ci.get('status','?'))}")
+    mesh = ctx["mesh"]
+    if mesh:
+        last = mesh[-1]
+        parts.append(f"last_event={last.get('kind','?')}:{(last.get('title') or '')[:30]}")
+    print("  ".join(parts))
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    ctx = gather()
+
+    if "--json" in args:
+        print(json.dumps(ctx, indent=2, default=str))
+    elif "--short" in args:
+        print_short(ctx)
+    else:
+        print_pretty(ctx)
+
+
+if __name__ == "__main__":
+    main()
