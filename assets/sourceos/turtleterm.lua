@@ -1455,10 +1455,15 @@ local PALETTE_COMMANDS = {
   { label = '☁  k3s tunnel start (ktunnel)    —',             id = 'k3s_tunnel'        },
   { label = '☁  CloudShell status (csh-status) —',            id = 'cloudshell_status' },
   -- Matrix bridge
-  { label = '💬  Matrix: send message (mx)     CMD+SHIFT+ALT+M',  id = 'matrix_send'       },
-  { label = '💬  Matrix: send file (mxf)       —',            id = 'matrix_send_file'  },
-  { label = '🕳  Matrix: wormhole send (mxw)   —',            id = 'matrix_wormhole'   },
-  { label = '💬  Matrix: bridge status (mxstatus) —',         id = 'matrix_status'     },
+  { label = '💬  Matrix: send message (mx)     CMD+SHIFT+ALT+M',    id = 'matrix_send'     },
+  { label = '💬  Matrix: pipe output (| mxpipe) —',                  id = 'matrix_pipe'     },
+  { label = '💬  Matrix: send file (mxf)        —',                  id = 'matrix_send_file'},
+  { label = '🕳  Matrix: wormhole send (mxw)    CMD+SHIFT+ALT+W',   id = 'matrix_wormhole' },
+  { label = '🕳  Matrix: wormhole pipe (| mxw)  —',                  id = 'matrix_wh_pipe'  },
+  { label = '💬  Matrix: list rooms (mxrooms)   —',                  id = 'matrix_rooms'    },
+  { label = '💬  Matrix: recent log (mxlog)     —',                  id = 'matrix_log'      },
+  { label = '💬  Matrix: post context (mxctx)   —',                  id = 'matrix_ctx'      },
+  { label = '💬  Matrix: bridge status (mxstatus) —',                id = 'matrix_status'   },
 }
 
 local function turtle_command_palette()
@@ -1564,8 +1569,13 @@ local function turtle_command_palette()
             k3s_tunnel         = act.SendString('ktunnel start\n'),
             cloudshell_status  = act.SendString('csh-status\n'),
             matrix_send        = act.SendString('mx '),
+            matrix_pipe        = act.SendString('mxpipe'),
             matrix_send_file   = act.SendString('mxf '),
             matrix_wormhole    = act.SendString('mxw '),
+            matrix_wh_pipe     = act.SendString('mxw'),
+            matrix_rooms       = act.SendString('mxrooms\n'),
+            matrix_log         = act.SendString('mxlog\n'),
+            matrix_ctx         = act.SendString('mxctx\n'),
             matrix_status      = act.SendString('mxstatus\n'),
           }
           local a = dispatch[id]
