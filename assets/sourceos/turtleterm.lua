@@ -1435,6 +1435,7 @@ local PALETTE_COMMANDS = {
   { label = '◆  Mission Control (agents)    CMD+SHIFT+M',   id = 'mission_control'   },
   { label = '◆  Context snapshot (ctx)      CMD+SHIFT+X',   id = 'context_snapshot'  },
   { label = '◆  Voice note (tcv)            CMD+SHIFT+V',   id = 'voice_capture'     },
+  { label = '📸  Screen capture → Noetica   CMD+SHIFT+S',   id = 'screen_capture'    },
   { label = '◆  Capture to Goose Notes      CMD+SHIFT+C',   id = 'capture'           },
   { label = '◆  Memory Mesh Recall          CMD+SHIFT+L',   id = 'recall'            },
   { label = '◆  Sync mesh to GCS           CMD+SHIFT+U',   id = 'mesh_push'         },
@@ -1534,6 +1535,7 @@ local function turtle_command_palette()
             mission_control    = turtle_mission_control(),
             context_snapshot   = act.SendString('ctx\n'),
             voice_capture      = act.SendString('tcv\n'),
+            screen_capture     = act.SendString('tsc\n'),
             capture            = turtle_capture_selection(),
             recall             = turtle_recall(),
             mesh_push          = turtle_mesh_push(),
@@ -2142,6 +2144,7 @@ config.keys = {
   { key = 'm', mods = 'CMD|SHIFT',  action = turtle_mission_control() },    -- Mission Control panel
   { key = 'x', mods = 'CMD|SHIFT',  action = act.SendString('ctx\n') },     -- Context snapshot
   { key = 'v', mods = 'CMD|SHIFT',  action = act.SendString('tcv\n') },     -- Voice note capture
+  { key = 's', mods = 'CMD|SHIFT',  action = act.SendString('tsc\n') },     -- Screen capture → Noetica
   { key = 'c', mods = 'CMD|SHIFT',  action = turtle_capture_selection() },  -- Capture to Goose Notes
   { key = 'l', mods = 'CMD|SHIFT',  action = turtle_recall() },             -- Memory mesh recall
   { key = 'u', mods = 'CMD|SHIFT',  action = turtle_mesh_push() },          -- Sync mesh to GCS

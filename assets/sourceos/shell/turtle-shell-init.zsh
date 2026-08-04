@@ -46,6 +46,26 @@ if [[ -z "${_TURTLE_GOOSE_BRIDGE_STARTED:-}" ]]; then
     unset _goose_bridge
 fi
 
+# Auto-start backlinks indexer daemon (watches ~/notes for wikilink changes)
+if [[ -z "${_TURTLE_BACKLINKS_STARTED:-}" ]]; then
+    _TURTLE_BACKLINKS_STARTED=1
+    _blinks_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-notes-backlinks"
+    if [[ -x "$_blinks_bin" ]]; then
+        _blinks_pid_file="/tmp/turtle-notes-backlinks.pid"
+        _blinks_running=0
+        if [[ -f "$_blinks_pid_file" ]]; then
+            _blinks_pid="$(cat "$_blinks_pid_file" 2>/dev/null)"
+            kill -0 "$_blinks_pid" 2>/dev/null && _blinks_running=1
+        fi
+        if (( ! _blinks_running )); then
+            python3 "$_blinks_bin" --watch &! 2>/dev/null
+            echo $! > "$_blinks_pid_file" 2>/dev/null
+        fi
+        unset _blinks_pid_file _blinks_running _blinks_pid
+    fi
+    unset _blinks_bin
+fi
+
 export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
 export SOURCEOS_WORKSPACE="${SOURCEOS_WORKSPACE:-default}"
 
@@ -608,6 +628,18 @@ tcv() {
     _voice_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-voice-capture"
     [[ -x "$_voice_bin" ]] || _voice_bin="turtle-voice-capture"
     "$_voice_bin" "$@"
+}
+
+# tsc — screen-region capture → Noetica query (ChatGPT Desktop gap closure)
+# Usage: tsc                        (interactive region select, ask what it shows)
+#        tsc "what is the error?"   (ask specific question about captured region)
+#        tsc --full "summarise"     (full screen)
+#        tsc --ocr                  (OCR only, no Noetica)
+tsc() {
+    local _sc_bin
+    _sc_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-screen-capture"
+    [[ -x "$_sc_bin" ]] || _sc_bin="turtle-screen-capture"
+    "$_sc_bin" "$@"
 }
 
 # mc — toggle mission control panel (TurtleTerm only; graceful no-op elsewhere)
