@@ -13,5 +13,8 @@ ignore = [
   "RUSTSEC-2026-0099", # rustls-webpki < 0.103.12: wildcard name constraints issue
   "RUSTSEC-2026-0068", # tar < 0.4.45: PAX size header handling
   "RUSTSEC-2026-0067", # tar < 0.4.45: unpack_in symlink chmod behavior
-  "RUSTSEC-2026-0009"  # time < 0.3.47: stack exhaustion DoS
+  "RUSTSEC-2026-0009",  # time < 0.3.47: stack exhaustion DoS
+  # quick-xml 0.30/0.37 pinned by upstream WezTerm — fix requires WezTerm to update their dep tree
+  "RUSTSEC-2026-0194",  # quick-xml < 0.41.0: quadratic duplicate-attribute-name check
+  "RUSTSEC-2026-0195"   # quick-xml < 0.41.0: unbounded namespace-allocation DoS in NsReader
 ]
