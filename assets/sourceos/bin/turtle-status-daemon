@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""turtle-status-daemon — background poller for the TurtleTerm status bar.
+
+Writes cached state files every 30s so the WezTerm event loop can read them
+synchronously without blocking on network calls.
+
+State files written to ~/.local/state/sourceos/status/:
+  ci.json       — last CI run: {status, conclusion, name, repo, ts}
+  pr.json       — open PR count: {count, repo, ts}
+  noetica.json  — health: {ok, brain, queries, ts}
+  board.json    — last board result: {score, subjects, ts}
+
+Usage:
+  turtle-status-daemon            # run forever (daemonize yourself with &!)
+  turtle-status-daemon --once     # poll once and exit
+  turtle-status-daemon --status   # print current cached state
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from urllib import request as urlreq
+
+STATE_DIR = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "status"
+NOETICA_URL = os.getenv("NOETICA_URL", "http://localhost:7700")
+GCS_MANIFEST = os.getenv("SOURCEOS_BRAIN_MANIFEST", "gs://sourceos-artifacts-socioprophet/ocw-corpus/multipass-manifest.json")
+GITEA_URL = os.getenv("GITEA_URL", "")
+GITEA_TOKEN = os.getenv("GITEA_TOKEN", "")
+POLL_INTERVAL = int(os.getenv("TURTLE_STATUS_POLL", "30"))
+
+
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def write_state(name: str, data: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    data["ts"] = now_iso()
+    (STATE_DIR / f"{name}.json").write_text(json.dumps(data))
+
+
+def read_state(name: str) -> dict:
+    f = STATE_DIR / f"{name}.json"
+    if not f.exists():
+        return {}
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return {}
+
+
+# ── pollers ───────────────────────────────────────────────────────────────────
+
+def poll_noetica() -> dict:
+    try:
+        with urlreq.urlopen(f"{NOETICA_URL}/health", timeout=2) as r:
+            data = json.load(r)
+            return {"ok": True, "brain": data.get("brain", "?"), "queries": data.get("queries", 0)}
+    except Exception:
+        return {"ok": False}
+
+
+def poll_ci() -> dict:
+    # Try Gitea first
+    if GITEA_URL and GITEA_TOKEN:
+        try:
+            repo = _current_repo()
+            if repo:
+                url = f"{GITEA_URL.rstrip('/')}/api/v1/repos/{repo}/actions/runs?limit=1"
+                req = urlreq.Request(url, headers={"Authorization": f"token {GITEA_TOKEN}"})
+                with urlreq.urlopen(req, timeout=3) as r:
+                    data = json.load(r)
+                    runs = data.get("workflow_runs", [])
+                    if runs:
+                        run = runs[0]
+                        return {
+                            "status": run.get("status", "?"),
+                            "conclusion": run.get("conclusion", ""),
+                            "name": run.get("name", "?"),
+                            "repo": repo,
+                        }
+        except Exception:
+            pass
+
+    # Try gh CLI fallback
+    try:
+        out = subprocess.check_output(
+            ["gh", "run", "list", "--limit", "1", "--json", "status,conclusion,name,headBranch"],
+            timeout=5, text=True, stderr=subprocess.DEVNULL,
+        )
+        runs = json.loads(out)
+        if runs:
+            r = runs[0]
+            return {
+                "status": r.get("status", "?"),
+                "conclusion": r.get("conclusion", ""),
+                "name": r.get("name", "?"),
+                "repo": _current_repo() or "?",
+            }
+    except Exception:
+        pass
+
+    return {}
+
+
+def poll_prs() -> dict:
+    if GITEA_URL and GITEA_TOKEN:
+        try:
+            repo = _current_repo()
+            if repo:
+                url = f"{GITEA_URL.rstrip('/')}/api/v1/repos/{repo}/pulls?state=open&limit=50"
+                req = urlreq.Request(url, headers={"Authorization": f"token {GITEA_TOKEN}"})
+                with urlreq.urlopen(req, timeout=3) as r:
+                    data = json.load(r)
+                    return {"count": len(data), "repo": repo}
+        except Exception:
+            pass
+
+    try:
+        out = subprocess.check_output(
+            ["gh", "pr", "list", "--json", "number", "--state", "open"],
+            timeout=5, text=True, stderr=subprocess.DEVNULL,
+        )
+        prs = json.loads(out)
+        return {"count": len(prs), "repo": _current_repo() or "?"}
+    except Exception:
+        pass
+
+    return {}
+
+
+def poll_board() -> dict:
+    try:
+        out = subprocess.check_output(
+            ["gsutil", "cat", GCS_MANIFEST],
+            timeout=10, text=True, stderr=subprocess.DEVNULL,
+        )
+        manifest = json.loads(out)
+        # Look for board results in manifest
+        board = manifest.get("board", {})
+        if board:
+            return {
+                "score": board.get("prod", board.get("baseline", 0)),
+                "subjects": board.get("subjects", []),
+                "arm": "prod",
+            }
+    except Exception:
+        pass
+
+    # Try local board result cache
+    board_cache = Path.home() / ".local/state/sourceos/board-last.json"
+    if board_cache.exists():
+        try:
+            return json.loads(board_cache.read_text())
+        except Exception:
+            pass
+
+    return {}
+
+
+def _current_repo() -> str:
+    try:
+        remote = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"],
+            timeout=2, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        # Extract owner/repo from URL
+        import re
+        m = re.search(r'[:/]([^/]+/[^/]+?)(?:\.git)?$', remote)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return ""
+
+
+def poll_all() -> None:
+    write_state("noetica", poll_noetica())
+    write_state("ci", poll_ci())
+    write_state("pr", poll_prs())
+    write_state("board", poll_board())
+
+
+def print_status() -> None:
+    for name in ("noetica", "ci", "pr", "board"):
+        d = read_state(name)
+        if d:
+            age = ""
+            ts = d.get("ts", "")
+            if ts:
+                try:
+                    t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    s = int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds())
+                    age = f"  ({s}s ago)"
+                except Exception:
+                    pass
+            print(f"  {name:<10} {json.dumps({k: v for k, v in d.items() if k != 'ts'})}{age}")
+        else:
+            print(f"  {name:<10} (no data)")
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    if "--status" in args:
+        print_status()
+        return
+
+    if "--once" in args:
+        poll_all()
+        print("polled once")
+        return
+
+    # Daemon loop
+    while True:
+        try:
+            poll_all()
+        except Exception as e:
+            pass  # never crash the daemon
+        time.sleep(POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()

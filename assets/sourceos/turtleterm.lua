@@ -928,63 +928,77 @@ function turtle_ssh_picker(window, pane)
   )
 end
 
--- Feature: CTRL+SHIFT+P — preview file (image via imgcat, code via bat/cat)
+-- Feature: CTRL+SHIFT+P — smart inline file render (images/PDF/CSV/JSON/code)
+-- Uses turtle-render: images via iTerm2 protocol, PDFs, CSV tables, syntax highlight.
 local function turtle_preview_file()
   return wezterm.action_callback(function(window, pane)
+    local render_bin = turtle_bin('turtle-render')
+
+    local function spawn_render(w, p, path)
+      w:perform_action(
+        act.SpawnCommandInNewPane {
+          direction = 'Right', size = { Percent = 50 },
+          command = { args = {
+            'sh', '-c',
+            'python3 ' .. wezterm.shell_quote_arg(render_bin) .. ' ' .. wezterm.shell_quote_arg(path)
+            .. '; printf "\\n\\033[2m  press Enter to close \\033[0m"; read -r _',
+          }},
+        }, p
+      )
+      w:toast_notification('TurtleTerm Render', path:match('[^/]+$') or path, nil, 2000)
+    end
+
     -- 1. Try selection
     local path = ''
     local sel = window:get_selection_text_for_pane(pane)
-    if sel and sel:match('^[%w_/%.%-~]+$') and #sel < 300 then
+    if sel and sel:match('^[%w_/%.%-~%.]+$') and #sel < 400 then
       path = sel:gsub('^%s+', ''):gsub('%s+$', '')
     end
-    -- 2. Try input zone
+
+    -- 2. Try last output zone — scan for file path patterns
+    if path == '' then
+      pcall(function()
+        local zones = pane:get_semantic_zones()
+        for _, z in ipairs(zones) do
+          if z.semantic_type == 'Output' then
+            local text = pane:get_text_from_semantic_zone(z) or ''
+            -- Match absolute or relative paths with known visual extensions
+            local m = text:match('([%w_/%.%-~]+%.%a+)')
+            if m and m:match('%.(png|jpg|jpeg|gif|webp|bmp|svg|pdf|csv|json|md)$') then
+              path = m
+            end
+          end
+        end
+      end)
+    end
+
+    -- 3. Try input zone
     if path == '' then
       pcall(function()
         local zones = pane:get_semantic_zones()
         for _, z in ipairs(zones) do
           if z.semantic_type == 'Input' then
             local t = pane:get_text_from_semantic_zone(z)
-            if t then path = t:gsub('^%s+', ''):gsub('%s+$', '') end
+            if t then path = t:gsub('^%s+', ''):gsub('%s+$', ''):match('[^%s]+$') or '' end
           end
         end
       end)
     end
 
-    local image_exts = { png=1, jpg=1, jpeg=1, gif=1, bmp=1, webp=1, svg=1, tiff=1, tif=1, ico=1 }
-    local ext = path:lower():match('%.([a-z]+)$') or ''
-
-    if path == '' then
-      -- 3. Prompt
-      window:perform_action(act.PromptInputLine {
-        description = '🐢 Preview file: enter path',
-        action = wezterm.action_callback(function(w2, p2, line)
-          if line and line ~= '' then
-            local ext2 = line:lower():match('%.([a-z]+)$') or ''
-            local is_img = image_exts[ext2] ~= nil
-            w2:perform_action(act.SpawnCommandInNewPane {
-              direction = 'Right', size = { Percent = 50 },
-              command = { args = is_img
-                and {'sh', '-c', 'imgcat ' .. line .. '; printf "\\npress Enter..."; read -r _'}
-                or  {'sh', '-c', 'bat --paging=never ' .. line .. ' 2>/dev/null || cat ' .. line .. '; printf "\\npress Enter..."; read -r _'}
-              },
-            }, p2)
-          end
-        end),
-      }, pane)
+    if path ~= '' then
+      spawn_render(window, pane, path)
       return
     end
 
-    local is_img = image_exts[ext] ~= nil
-    window:perform_action(
-      act.SpawnCommandInNewPane {
-        direction = 'Right', size = { Percent = 50 },
-        command = { args = is_img
-          and {'sh', '-c', 'imgcat ' .. path .. ' 2>/dev/null; printf "\\npress Enter..."; read -r _'}
-          or  {'sh', '-c', 'bat --paging=never ' .. path .. ' 2>/dev/null || cat ' .. path .. '; printf "\\npress Enter..."; read -r _'}
-        },
-      }, pane
-    )
-    window:toast_notification('TurtleTerm Preview', path, nil, 2000)
+    -- 4. Prompt
+    window:perform_action(act.PromptInputLine {
+      description = '◆ Render file: enter path (image/PDF/CSV/JSON/code)',
+      action = wezterm.action_callback(function(w2, p2, line)
+        if line and line ~= '' then
+          spawn_render(w2, p2, line)
+        end
+      end),
+    }, pane)
   end)
 end
 
@@ -1398,7 +1412,7 @@ local PALETTE_COMMANDS = {
   -- Navigation
   { label = '🔍  History fuzzy search       CTRL+R',        id = 'history_search' },
   { label = '🔍  Search output              CTRL+SHIFT+F',  id = 'search_output' },
-  { label = '👁  Preview file (bat/imgcat)  CTRL+SHIFT+P',  id = 'preview' },
+  { label = '👁  Render file (img/PDF/CSV/JSON)  CTRL+SHIFT+P',  id = 'preview' },
   { label = '🗺  Atlas context              CTRL+SHIFT+A',  id = 'atlas_context' },
   -- Workflows
   { label = '⚙   Browse workflows           CTRL+SHIFT+W', id = 'workflows' },
@@ -1419,9 +1433,18 @@ local PALETTE_COMMANDS = {
   { label = '📂  Restore workspace           CMD+SHIFT+O',   id = 'workspace_restore' },
   -- Memory mesh / cross-app integration
   { label = '◆  Mission Control (agents)    CMD+SHIFT+M',   id = 'mission_control'   },
+  { label = '◆  Context snapshot (ctx)      CMD+SHIFT+X',   id = 'context_snapshot'  },
+  { label = '◆  Voice note (tcv)            CMD+SHIFT+V',   id = 'voice_capture'     },
   { label = '◆  Capture to Goose Notes      CMD+SHIFT+C',   id = 'capture'           },
   { label = '◆  Memory Mesh Recall          CMD+SHIFT+L',   id = 'recall'            },
   { label = '◆  Sync mesh to GCS           CMD+SHIFT+U',   id = 'mesh_push'         },
+  { label = '🌐  Open in BearBrowser         CMD+SHIFT+B',   id = 'bb_open'           },
+  { label = '◆  Mesh dashboard (browser)    —',             id = 'mesh_dashboard'    },
+  -- Shell utilities
+  { label = '🖼  Image gallery (current dir) CMD+SHIFT+G',   id = 'gallery'           },
+  { label = '⎇  Semantic git log (glog)     —',             id = 'glog'              },
+  { label = '⎇  Git diff highlight (td)     —',             id = 'tdiff'             },
+  { label = '⏱  Resource usage (last cmd)   —',             id = 'rss_info'          },
 }
 
 local function turtle_command_palette()
@@ -1509,9 +1532,15 @@ local function turtle_command_palette()
             workspace_save     = turtle_workspace_save(),
             workspace_restore  = turtle_workspace_restore(),
             mission_control    = turtle_mission_control(),
+            context_snapshot   = act.SendString('ctx\n'),
+            voice_capture      = act.SendString('tcv\n'),
             capture            = turtle_capture_selection(),
             recall             = turtle_recall(),
             mesh_push          = turtle_mesh_push(),
+            bb_open            = act.SendString('bb \n'),
+            mesh_dashboard     = act.SendString('mesh\n'),
+            glog               = act.SendString('glog\n'),
+            tdiff              = act.SendString('td\n'),
           }
           local a = dispatch[id]
           if a then w:perform_action(a, p) end
@@ -2109,11 +2138,29 @@ config.keys = {
   { key = 'h', mods = 'CTRL|SHIFT', action = wezterm.action_callback(function(w, p) turtle_ssh_picker(w, p) end) },
   { key = 's', mods = 'CMD|SHIFT',  action = turtle_workspace_save()    },  -- Save workspace
   { key = 'o', mods = 'CMD|SHIFT',  action = turtle_workspace_restore() },  -- Restore workspace
-  -- Memory mesh integration
+  -- Memory mesh + cross-product integration
   { key = 'm', mods = 'CMD|SHIFT',  action = turtle_mission_control() },    -- Mission Control panel
+  { key = 'x', mods = 'CMD|SHIFT',  action = act.SendString('ctx\n') },     -- Context snapshot
+  { key = 'v', mods = 'CMD|SHIFT',  action = act.SendString('tcv\n') },     -- Voice note capture
   { key = 'c', mods = 'CMD|SHIFT',  action = turtle_capture_selection() },  -- Capture to Goose Notes
   { key = 'l', mods = 'CMD|SHIFT',  action = turtle_recall() },             -- Memory mesh recall
   { key = 'u', mods = 'CMD|SHIFT',  action = turtle_mesh_push() },          -- Sync mesh to GCS
+  { key = 'b', mods = 'CMD|SHIFT',  action = act.SendString('bb ') },       -- Open in BearBrowser
+  -- Image gallery (lsi equivalent from WezTerm)
+  { key = 'g', mods = 'CMD|SHIFT',  action = wezterm.action_callback(function(w, p)
+      local cwd = ''
+      pcall(function() cwd = tostring(p.current_working_dir):gsub('file://[^/]*','') end)
+      if cwd == '' then cwd = os.getenv('HOME') or '.' end
+      w:perform_action(act.SpawnCommandInNewPane {
+        direction = 'Right', size = { Percent = 55 },
+        command = { args = { 'sh', '-c',
+          'python3 ' .. wezterm.shell_quote_arg(turtle_bin('turtle-render'))
+          .. ' --width 22 ' .. wezterm.shell_quote_arg(cwd) .. '/*.{png,jpg,jpeg,gif,webp,bmp,svg} 2>/dev/null'
+          .. ' || echo "no images in this directory"; echo; printf "press Enter..."; read -r _'
+        }},
+      }, p)
+      w:toast_notification('TurtleTerm Gallery', cwd, nil, 2000)
+    end) },
   {
     key = 's',
     mods = 'CTRL|SHIFT',
@@ -2583,6 +2630,39 @@ local function count_agents()
   return 0
 end
 
+-- ── status bar state reader ───────────────────────────────────────────────────
+-- Reads cached JSON files written by turtle-status-daemon (polls every 30s).
+-- All reads are synchronous file I/O — no network calls in the event loop.
+local _status_cache = {}
+local _status_cache_at = 0
+
+local function read_status_cache()
+  local now = os.time()
+  if now - _status_cache_at < 5 then return _status_cache end  -- reuse for 5s
+  local home = os.getenv('HOME') or ''
+  local base = home .. '/.local/state/sourceos/status/'
+  local cache = {}
+  for _, name in ipairs({'noetica', 'ci', 'pr', 'board'}) do
+    local f = io.open(base .. name .. '.json', 'r')
+    if f then
+      local raw = f:read('*a'); f:close()
+      local ok2, data = pcall(wezterm.json_parse, raw)
+      if ok2 and data then cache[name] = data end
+    end
+  end
+  _status_cache = cache
+  _status_cache_at = now
+  return cache
+end
+
+local function ci_icon(status, conclusion)
+  if conclusion == 'success'              then return '\xe2\x9c\x93 '  end  -- ✓
+  if conclusion == 'failure' or conclusion == 'error' then return '\xe2\x9c\x97 '  end  -- ✗
+  if status == 'in_progress' or status == 'running'   then return '\xe2\x9f\xb3 ' end  -- ⟳
+  if status == 'queued'                   then return '\xc2\xb7 '      end  -- ·
+  return ''
+end
+
 wezterm.on('update-right-status', function(window, pane)
   local domain = turtle_domain()
   local proc = ''
@@ -2590,6 +2670,8 @@ wezterm.on('update-right-status', function(window, pane)
   local cwd_uri = ''
   pcall(function() cwd_uri = tostring(pane.current_working_dir) or '' end)
   local is_ssh = proc:find('ssh') ~= nil or cwd_uri:find('^ssh://') ~= nil
+
+  local sc = read_status_cache()
 
   -- Plan step badge
   local plan_badge = ''
@@ -2603,7 +2685,7 @@ wezterm.on('update-right-status', function(window, pane)
       if ok2 and plan and plan.steps then
         local step = (plan.current_step or 0) + 1
         local total = #plan.steps
-        local goal = (plan.goal or ''):sub(1, 24)
+        local goal = (plan.goal or ''):sub(1, 20)
         if step <= total then
           plan_badge = string.format('\xe2\x9a\xa1 %s [%d/%d]  ', goal, step, total)
         end
@@ -2611,11 +2693,38 @@ wezterm.on('update-right-status', function(window, pane)
     end
   end
 
+  -- CI badge (from daemon cache)
+  local ci_part = ''
+  if sc.ci and (sc.ci.status or '') ~= '' then
+    local icon = ci_icon(sc.ci.status or '', sc.ci.conclusion or '')
+    if icon ~= '' then
+      ci_part = 'CI ' .. icon .. ' '
+    end
+  end
+
+  -- PR count badge
+  local pr_part = ''
+  if sc.pr and (sc.pr.count or 0) > 0 then
+    pr_part = string.format('\xe2\x9c\xa7 %d PR  ', sc.pr.count)  -- ✧ N PR
+  end
+
+  -- Noetica health dot
+  local noe_part = ''
+  if sc.noetica then
+    noe_part = sc.noetica.ok and '\xe2\x97\x8f ' or '\xe2\x97\x8b '  -- ● or ○
+  end
+
+  -- Board score (if recent — within 6h)
+  local board_part = ''
+  if sc.board and (sc.board.score or 0) > 0 then
+    board_part = string.format('%.1f%%  ', sc.board.score)
+  end
+
   -- Agent count
   local agent_part = ''
   local n_agents = count_agents()
   if n_agents > 0 then
-    agent_part = string.format('\xf0\x9f\xa4\x96 %d  ', n_agents)  -- 🤖 N
+    agent_part = string.format('\xf0\x9f\xa4\x96 %d  ', n_agents)
   end
 
   -- Clock
@@ -2624,6 +2733,10 @@ wezterm.on('update-right-status', function(window, pane)
   -- Build right status
   local parts = {}
   if plan_badge ~= '' then table.insert(parts, plan_badge) end
+  if noe_part   ~= '' then table.insert(parts, noe_part)   end
+  if ci_part    ~= '' then table.insert(parts, ci_part)    end
+  if pr_part    ~= '' then table.insert(parts, pr_part)    end
+  if board_part ~= '' then table.insert(parts, board_part) end
   if agent_part ~= '' then table.insert(parts, agent_part) end
 
   if is_ssh then
@@ -2665,21 +2778,45 @@ wezterm.on('update-right-status', function(window, pane)
   window:set_right_status(table.concat(parts, ''))
 end)
 
+-- left-status git cache: re-read every 4s max (avoid hammering git on every tick)
+local _git_status_cache = { branch='', stat='', at=0, cwd='' }
+
+local function refresh_git_status(cwd)
+  local now = os.time()
+  if cwd == _git_status_cache.cwd and now - _git_status_cache.at < 4 then
+    return _git_status_cache
+  end
+  local branch, stat = '', ''
+  local ok1, out1, _ = wezterm.run_child_process({ 'git', '-C', cwd, 'branch', '--show-current' })
+  if ok1 and out1 then branch = out1:match('([^\n]+)') or '' end
+  -- shortstat: " 3 files changed, 12 insertions(+), 4 deletions(-)"
+  local ok2, out2, _ = wezterm.run_child_process({ 'git', '-C', cwd, 'diff', '--shortstat' })
+  if ok2 and out2 and out2:match('%S') then
+    local added   = out2:match('(%d+) insertion') or ''
+    local removed = out2:match('(%d+) deletion')  or ''
+    if added   ~= '' then stat = stat .. '+' .. added   end
+    if removed ~= '' then
+      stat = stat .. (stat ~= '' and ' ' or '') .. '\xe2\x88\x92' .. removed  -- −
+    end
+  end
+  _git_status_cache = { branch=branch, stat=stat, at=now, cwd=cwd }
+  return _git_status_cache
+end
+
 wezterm.on('update-left-status', function(window, pane)
   local parts = {}
 
-  -- Git branch from pane cwd
+  -- Git branch + diff stats from pane cwd
   if pane and pane.current_working_dir then
     local cwd = tostring(pane.current_working_dir):gsub('file://[^/]*', '')
     if cwd ~= '' then
-      local ok, stdout, _ = wezterm.run_child_process({
-        'git', '-C', cwd, 'branch', '--show-current',
-      })
-      if ok and stdout and stdout:match('%S') then
-        local branch = stdout:match('([^\n]+)')
-        if branch then
-          table.insert(parts, ' \xe2\x8e\x87 ' .. branch)  -- ⎇ UTF-8
+      local gs = refresh_git_status(cwd)
+      if gs.branch ~= '' then
+        local branch_part = ' \xe2\x8e\x87 ' .. gs.branch  -- ⎇
+        if gs.stat ~= '' then
+          branch_part = branch_part .. '  \xe2\x80\x8b' .. gs.stat  -- zero-width + stat
         end
+        table.insert(parts, branch_part)
       end
     end
   end

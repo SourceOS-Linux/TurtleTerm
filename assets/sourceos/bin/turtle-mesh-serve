@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""turtle-mesh-serve — local HTTP dashboard for the SourceOS memory mesh.
+
+Serves a live web dashboard at http://localhost:7788 showing:
+  • Recent mesh events (auto-refreshes every 3s via SSE)
+  • Active context (cwd/branch/focus)
+  • CI/PR/Noetica/board status bar
+  • BearBrowser memory candidates
+  • Recent ~/notes/ files
+
+Open with:  bb http://localhost:7788
+Or:         open http://localhost:7788
+
+Usage:
+  turtle-mesh-serve               # serve on :7788
+  turtle-mesh-serve --port 8899   # custom port
+  turtle-mesh-serve --once        # dump JSON and exit (no server)
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import queue
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+MESH_DIR   = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
+STATUS_DIR = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "status"
+NOTES_DIR  = Path(os.getenv("GOOSE_NOTES_DIR", str(Path.home() / "notes")))
+BB_SUPPORT = Path.home() / "Library" / "Application Support" / "BearBrowser"
+
+DEFAULT_PORT = int(os.getenv("TURTLE_MESH_PORT", "7788"))
+
+
+def load_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        return {}
+
+
+def load_jsonl_tail(path: Path, n: int = 50) -> list[dict]:
+    if not path.exists():
+        return []
+    items: list[dict] = []
+    try:
+        for line in path.read_text(errors="replace").splitlines()[-n * 3:]:
+            try:
+                items.append(json.loads(line))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return items[-n:]
+
+
+def gather_state() -> dict:
+    mesh   = load_jsonl_tail(MESH_DIR / "context.jsonl", 60)
+    active = load_json(MESH_DIR / "active.json")
+    ci     = load_json(STATUS_DIR / "ci.json")
+    pr     = load_json(STATUS_DIR / "pr.json")
+    noetica= load_json(STATUS_DIR / "noetica.json")
+    board  = load_json(STATUS_DIR / "board.json")
+
+    bb_cands: list[dict] = []
+    cand_path = BB_SUPPORT / "memory" / "candidates.jsonl"
+    if cand_path.exists():
+        for line in cand_path.read_text(errors="replace").splitlines()[-60:]:
+            try:
+                bb_cands.append(json.loads(line))
+            except Exception:
+                pass
+        bb_cands = bb_cands[-10:]
+
+    notes: list[dict] = []
+    if NOTES_DIR.exists():
+        for p in sorted(NOTES_DIR.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)[:8]:
+            notes.append({"name": p.name, "mtime": p.stat().st_mtime})
+
+    return {
+        "ts":       datetime.datetime.now().isoformat(),
+        "active":   active,
+        "mesh":     mesh,
+        "ci":       ci,
+        "pr":       pr,
+        "noetica":  noetica,
+        "board":    board,
+        "bb_cands": bb_cands,
+        "notes":    notes,
+    }
+
+
+# ── SSE broadcast ─────────────────────────────────────────────────────────────
+
+_sse_clients: list[queue.Queue] = []
+_sse_lock = threading.Lock()
+
+
+def broadcast_state() -> None:
+    state = gather_state()
+    data  = json.dumps(state, default=str)
+    with _sse_lock:
+        dead = []
+        for q in _sse_clients:
+            try:
+                q.put_nowait(data)
+            except Exception:
+                dead.append(q)
+        for q in dead:
+            _sse_clients.remove(q)
+
+
+def poller_thread() -> None:
+    while True:
+        try:
+            broadcast_state()
+        except Exception:
+            pass
+        time.sleep(3)
+
+
+# ── HTML dashboard ─────────────────────────────────────────────────────────────
+
+DASHBOARD_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SourceOS Mesh · Dashboard</title>
+<style>
+:root{
+  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;
+  --border:#30363d;--text:#e6edf3;--dim:#8b949e;
+  --teal:#3fb950;--blue:#58a6ff;--purple:#bc8cff;
+  --cyan:#00c8c8;--orange:#ff7b72;--yellow:#d29922;
+  --red:#ff7b72;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:13px/1.5 'SF Mono','Fira Code',monospace;padding:16px}
+h1{font-size:15px;color:var(--blue);margin-bottom:12px;letter-spacing:.02em}
+h2{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:16px 0 6px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:12px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot-green{background:var(--teal)}.dot-red{background:var(--red)}.dot-yellow{background:var(--yellow)}
+.badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;margin-left:4px}
+.badge-green{background:#1a3a1a;color:var(--teal)}
+.badge-red{background:#3a1a1a;color:var(--red)}
+.badge-yellow{background:#2d2200;color:var(--yellow)}
+.mesh-event{padding:4px 0;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:baseline}
+.mesh-event:last-child{border-bottom:none}
+.kind{color:var(--yellow);min-width:80px;font-size:11px}
+.src{color:var(--dim);min-width:80px;font-size:11px}
+.ttl{color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ts{color:var(--dim);font-size:10px;min-width:90px;text-align:right}
+.active-row{display:flex;gap:6px;margin-bottom:4px}
+.active-label{color:var(--dim);min-width:60px}
+.active-val{color:var(--text)}
+.branch{color:var(--teal)}
+.pulse{animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+#status-bar{background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:6px 10px;
+  margin-bottom:12px;display:flex;gap:16px;align-items:center;font-size:12px;flex-wrap:wrap}
+.note-item{padding:3px 0;color:var(--dim);font-size:11px}
+.bb-cand{padding:4px 0;border-bottom:1px solid var(--border);font-size:11px}
+.bb-cand:last-child{border-bottom:none}
+.footer{color:var(--dim);font-size:10px;margin-top:16px;text-align:center}
+</style>
+</head>
+<body>
+<h1>◆ SourceOS Memory Mesh</h1>
+<div id="status-bar">
+  <span id="noe-badge"><span class="dot dot-yellow pulse"></span>Noetica …</span>
+  <span id="ci-badge">CI —</span>
+  <span id="pr-badge">PRs —</span>
+  <span id="board-badge">Board —</span>
+  <span id="ts-badge" style="margin-left:auto;color:var(--dim)">—</span>
+</div>
+
+<div id="active-card" class="card" style="margin-bottom:12px">
+  <h2>Active Focus</h2>
+  <div id="active-content"><span style="color:var(--dim)">—</span></div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Memory Mesh <span id="mesh-count" style="color:var(--dim)"></span></h2>
+    <div id="mesh-events"></div>
+  </div>
+  <div>
+    <div class="card" style="margin-bottom:12px">
+      <h2>BearBrowser Memory <span id="bb-count" style="color:var(--dim)"></span></h2>
+      <div id="bb-cands"></div>
+    </div>
+    <div class="card">
+      <h2>Recent Notes</h2>
+      <div id="notes"></div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">turtle-mesh-serve · auto-refresh via SSE · <a href="/api/state" style="color:var(--blue)">raw JSON</a></div>
+
+<script>
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+const age = iso => {
+  const s = Math.floor((Date.now() - new Date(iso)) / 1000)
+  if (s < 60) return s + 's'
+  if (s < 3600) return Math.floor(s/60) + 'm'
+  return Math.floor(s/3600) + 'h'
+}
+
+function render(state) {
+  // Status bar
+  const noe = state.noetica || {}
+  document.getElementById('noe-badge').innerHTML = noe.ok
+    ? `<span class="dot dot-green"></span>Noetica <span class="badge badge-green">up</span>`
+    : `<span class="dot dot-red"></span>Noetica <span class="badge badge-red">down</span>`
+
+  const ci = state.ci || {}
+  const ciClass = ci.conclusion === 'success' ? 'badge-green' : ci.conclusion === 'failure' ? 'badge-red' : 'badge-yellow'
+  document.getElementById('ci-badge').innerHTML = ci.status
+    ? `CI <span class="badge ${ciClass}">${esc(ci.conclusion || ci.status)}</span>`
+    : 'CI —'
+
+  const pr = state.pr || {}
+  document.getElementById('pr-badge').innerHTML = pr.count !== undefined
+    ? `PRs <span class="badge badge-yellow">${pr.count}</span>` : 'PRs —'
+
+  const bd = state.board || {}
+  document.getElementById('board-badge').innerHTML = bd.score !== undefined
+    ? `Board <span class="badge badge-green">${Number(bd.score).toFixed(1)}%</span>` : 'Board —'
+
+  document.getElementById('ts-badge').textContent = new Date(state.ts).toLocaleTimeString()
+
+  // Active focus
+  const act = state.active || {}
+  document.getElementById('active-content').innerHTML = act.cwd ? `
+    <div class="active-row"><span class="active-label">cwd</span><span class="active-val">${esc(act.cwd)}</span></div>
+    ${act.branch ? `<div class="active-row"><span class="active-label">branch</span><span class="branch">${esc(act.branch)}</span></div>` : ''}
+    ${act.title  ? `<div class="active-row"><span class="active-label">focus</span><span class="active-val">${esc(act.title)}</span></div>` : ''}
+    ${act.updated ? `<div class="active-row"><span class="active-label">updated</span><span style="color:var(--dim)">${age(act.updated)} ago</span></div>` : ''}
+  ` : '<span style="color:var(--dim)">— no active context</span>'
+
+  // Mesh events
+  const mesh = (state.mesh || []).slice().reverse().slice(0, 40)
+  document.getElementById('mesh-count').textContent = `(${mesh.length})`
+  document.getElementById('mesh-events').innerHTML = mesh.map(ev => `
+    <div class="mesh-event">
+      <span class="kind">${esc(ev.kind || '?')}</span>
+      <span class="src">[${esc(ev.source || '?')}]</span>
+      <span class="ttl">${esc(ev.title || ev.content || '')}</span>
+      <span class="ts">${ev.ts ? age(ev.ts) + ' ago' : ''}</span>
+    </div>`).join('') || '<span style="color:var(--dim)">— no events yet</span>'
+
+  // BB candidates
+  const bbc = (state.bb_cands || []).slice().reverse()
+  document.getElementById('bb-count').textContent = `(${bbc.length})`
+  document.getElementById('bb-cands').innerHTML = bbc.map(c => {
+    const content = typeof c.content === 'object' ? c.content : {}
+    const title = content.title || c.title || '?'
+    const status = c.status || 'proposed'
+    const cls = status === 'committed' ? 'badge-green' : 'badge-yellow'
+    return `<div class="bb-cand">${esc(title)} <span class="badge ${cls}">${esc(status)}</span></div>`
+  }).join('') || '<span style="color:var(--dim)">— no candidates</span>'
+
+  // Notes
+  document.getElementById('notes').innerHTML = (state.notes || []).map(n =>
+    `<div class="note-item">📝 ${esc(n.name)}</div>`
+  ).join('') || '<span style="color:var(--dim)">— no notes</span>'
+}
+
+// SSE connection with auto-reconnect
+function connect() {
+  const es = new EventSource('/events')
+  es.onmessage = e => { try { render(JSON.parse(e.data)) } catch(err) {} }
+  es.onerror = () => { es.close(); setTimeout(connect, 3000) }
+}
+connect()
+
+// Initial load
+fetch('/api/state').then(r => r.json()).then(render).catch(() => {})
+</script>
+</body>
+</html>"""
+
+
+class DashHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass  # quiet
+
+    def do_GET(self):
+        if self.path in ("/", "/index.html"):
+            body = DASHBOARD_HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/api/state":
+            state = gather_state()
+            body = json.dumps(state, default=str).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif self.path == "/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            q: queue.Queue = queue.Queue(maxsize=8)
+            with _sse_lock:
+                _sse_clients.append(q)
+            try:
+                # Send initial state
+                initial = json.dumps(gather_state(), default=str)
+                self.wfile.write(f"data: {initial}\n\n".encode())
+                self.wfile.flush()
+                while True:
+                    try:
+                        data = q.get(timeout=20)
+                        self.wfile.write(f"data: {data}\n\n".encode())
+                        self.wfile.flush()
+                    except queue.Empty:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+            except Exception:
+                pass
+            finally:
+                with _sse_lock:
+                    try:
+                        _sse_clients.remove(q)
+                    except ValueError:
+                        pass
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--once", action="store_true", help="dump JSON and exit")
+    args = parser.parse_args()
+
+    if args.once:
+        print(json.dumps(gather_state(), indent=2, default=str))
+        return
+
+    t = threading.Thread(target=poller_thread, daemon=True)
+    t.start()
+
+    server = HTTPServer(("127.0.0.1", args.port), DashHandler)
+    print(f"  ◆ Mesh dashboard → http://localhost:{args.port}  (Ctrl+C to stop)", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

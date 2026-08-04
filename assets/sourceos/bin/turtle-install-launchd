@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# turtle-install-launchd — install SourceOS mesh launchd agents on macOS.
+#
+# Installs:
+#   com.sourceos.turtle-mesh-push  — GCS mesh sync every 5 minutes
+#   com.sourceos.turtle-mesh-serve — local mesh dashboard on :7788
+#
+# Usage:
+#   turtle-install-launchd          # install both
+#   turtle-install-launchd --unload # stop + unload both
+#   turtle-install-launchd --status # show launchctl status
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="$SCRIPT_DIR"
+LAUNCHD_DIR="$SCRIPT_DIR/../launchd"
+LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
+LABELS=(com.sourceos.turtle-mesh-push com.sourceos.turtle-mesh-serve)
+
+usage() {
+  echo "Usage: turtle-install-launchd [--unload|--status]"
+}
+
+status_mode=false
+unload_mode=false
+for arg in "$@"; do
+  case "$arg" in
+    --status) status_mode=true ;;
+    --unload) unload_mode=true ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown arg: $arg" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+if $status_mode; then
+  for label in "${LABELS[@]}"; do
+    echo -n "  $label: "
+    launchctl list "$label" 2>/dev/null | grep '"PID"' || echo "(not loaded)"
+  done
+  exit 0
+fi
+
+if $unload_mode; then
+  for label in "${LABELS[@]}"; do
+    launchctl unload "$LAUNCH_AGENTS/$label.plist" 2>/dev/null && echo "  unloaded $label" || echo "  $label not loaded"
+  done
+  exit 0
+fi
+
+mkdir -p "$LAUNCH_AGENTS"
+
+for plist_name in "${LABELS[@]}"; do
+  src="$LAUNCHD_DIR/$plist_name.plist"
+  dst="$LAUNCH_AGENTS/$plist_name.plist"
+
+  if [[ ! -f "$src" ]]; then
+    echo "  WARN: plist not found: $src" >&2
+    continue
+  fi
+
+  # Substitute placeholders
+  sed -e "s|TURTLE_BIN_DIR|$BIN_DIR|g" \
+      -e "s|HOME_DIR|$HOME|g" \
+      "$src" > "$dst"
+
+  # Unload first if already loaded
+  launchctl unload "$dst" 2>/dev/null ||:
+  launchctl load -w "$dst"
+  echo "  loaded $plist_name"
+done
+
+echo ""
+echo "  Mesh dashboard → http://localhost:7788"
+echo "  GCS sync       → every 5 minutes (requires SOURCEOS_GCS_BUCKET env in ~/.zshrc)"

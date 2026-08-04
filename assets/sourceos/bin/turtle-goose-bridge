@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""turtle-goose-bridge — bidirectional sync between memory mesh and Goose Notes.
+
+Direction 1 (mesh → Goose Notes):
+  Watches memory-mesh/context.jsonl for new `capture` events.
+  Converts them to ~/notes/{date}-{slug}.md (Goose Notes pickup format).
+  Also POSTs to Goose Notes HTTP API on :8765 if running.
+
+Direction 2 (Goose Notes → mesh):
+  Scans ~/notes/*.md for notes not yet in the mesh.
+  Adds them as `note` events in context.jsonl.
+
+Usage:
+  turtle-goose-bridge            # run bidirectional sync once
+  turtle-goose-bridge --watch    # watch mode: poll every 30s
+  turtle-goose-bridge --status   # show sync state
+  turtle-goose-bridge --push     # push new mesh events → Goose Notes only
+  turtle-goose-bridge --pull     # pull new Goose Notes → mesh only
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from urllib import request as urlreq
+
+MESH_DIR  = Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "sourceos" / "memory-mesh"
+NOTES_DIR = Path(os.getenv("GOOSE_NOTES_DIR", str(Path.home() / "notes")))
+GOOSE_API = os.getenv("GOOSE_NOTES_API", "http://localhost:8765")
+SYNC_DB   = MESH_DIR / ".goose-sync.json"   # tracks which events/notes already synced
+
+
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def slugify(s: str) -> str:
+    s = s.lower().strip()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"[\s_-]+", "-", s)
+    return s[:60]
+
+
+def load_sync_db() -> dict:
+    if SYNC_DB.exists():
+        try:
+            return json.loads(SYNC_DB.read_text())
+        except Exception:
+            pass
+    return {"mesh_to_notes": [], "notes_to_mesh": []}
+
+
+def save_sync_db(db: dict) -> None:
+    MESH_DIR.mkdir(parents=True, exist_ok=True)
+    SYNC_DB.write_text(json.dumps(db, indent=2))
+
+
+def load_mesh_events() -> list[dict]:
+    ctx = MESH_DIR / "context.jsonl"
+    if not ctx.exists():
+        return []
+    events = []
+    try:
+        for line in ctx.read_text(errors="replace").splitlines():
+            try:
+                events.append(json.loads(line))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return events
+
+
+def append_mesh_event(event: dict) -> None:
+    MESH_DIR.mkdir(parents=True, exist_ok=True)
+    ctx = MESH_DIR / "context.jsonl"
+    with ctx.open("a") as f:
+        f.write(json.dumps(event) + "\n")
+
+
+def write_note_file(title: str, body: str, ts: str, tags: list[str]) -> Path:
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    date = ts[:10] if ts else datetime.date.today().isoformat()
+    slug = slugify(title)
+    path = NOTES_DIR / f"{date}-{slug}.md"
+    if path.exists():
+        return path  # already exists
+    front = f"""---
+title: "{title}"
+date: {ts or now_iso()}
+source: memory-mesh
+tags: [{", ".join(tags)}]
+---
+
+"""
+    path.write_text(front + body)
+    return path
+
+
+def post_goose_api(title: str, body: str, tags: list[str]) -> bool:
+    try:
+        payload = json.dumps({"title": title, "body": body, "tags": tags,
+                              "source_type": "terminal"}).encode()
+        req = urlreq.Request(f"{GOOSE_API}/api/notes", data=payload,
+                             headers={"Content-Type": "application/json"})
+        with urlreq.urlopen(req, timeout=2) as r:
+            return r.status < 300
+    except Exception:
+        return False
+
+
+def mesh_to_notes(db: dict) -> int:
+    """Convert new capture events from mesh → Goose Notes files."""
+    synced = set(db.get("mesh_to_notes", []))
+    events = load_mesh_events()
+    pushed = 0
+
+    for ev in events:
+        key = ev.get("ts", "") + ev.get("title", "")
+        if key in synced:
+            continue
+        if ev.get("kind") not in ("capture", "note"):
+            continue
+
+        title   = ev.get("title", "Untitled")
+        content = ev.get("content", "")
+        source  = ev.get("source", "terminal")
+        ts      = ev.get("ts", "")
+        tags    = ["mesh", source]
+
+        body = f"**Source:** `{source}`\n\n```\n{content.rstrip()}\n```\n"
+        write_note_file(title, body, ts, tags)
+        post_goose_api(title, body, tags)
+
+        synced.add(key)
+        pushed += 1
+
+    db["mesh_to_notes"] = list(synced)
+    return pushed
+
+
+def notes_to_mesh(db: dict) -> int:
+    """Ingest Goose Notes files into the memory mesh."""
+    synced = set(db.get("notes_to_mesh", []))
+    if not NOTES_DIR.exists():
+        return 0
+
+    ingested = 0
+    for path in sorted(NOTES_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime):
+        key = path.name
+        if key in synced:
+            continue
+
+        try:
+            text = path.read_text(errors="replace")
+        except Exception:
+            continue
+
+        # Parse frontmatter title
+        m_title = re.search(r'^title:\s*"?([^"\n]+)"?', text, re.M)
+        m_date  = re.search(r'^date:\s*(\S+)', text, re.M)
+        title   = m_title.group(1).strip() if m_title else path.stem
+        ts      = m_date.group(1).strip() if m_date else now_iso()
+
+        # Strip frontmatter for content
+        body = re.sub(r'^---\n.*?\n---\n', '', text, count=1, flags=re.DOTALL).strip()
+
+        append_mesh_event({
+            "ts": ts,
+            "kind": "note",
+            "source": "goose-notes",
+            "title": title,
+            "content": body[:400],
+            "path": str(path),
+        })
+
+        synced.add(key)
+        ingested += 1
+
+    db["notes_to_mesh"] = list(synced)
+    return ingested
+
+
+def sync_once(push_only: bool = False, pull_only: bool = False) -> tuple[int, int]:
+    db = load_sync_db()
+    pushed = mesh_to_notes(db) if not pull_only else 0
+    pulled = notes_to_mesh(db) if not push_only else 0
+    save_sync_db(db)
+    return pushed, pulled
+
+
+def print_status() -> None:
+    db = load_sync_db()
+    mesh_count = len(load_mesh_events())
+    notes_count = len(list(NOTES_DIR.glob("*.md"))) if NOTES_DIR.exists() else 0
+    print(f"mesh events:     {mesh_count}")
+    print(f"goose notes:     {notes_count}")
+    print(f"mesh→notes sync: {len(db.get('mesh_to_notes', []))} items")
+    print(f"notes→mesh sync: {len(db.get('notes_to_mesh', []))} items")
+    # Goose API reachability
+    try:
+        with urlreq.urlopen(f"{GOOSE_API}/health", timeout=1):
+            print(f"goose-notes api: reachable ({GOOSE_API})")
+    except Exception:
+        print(f"goose-notes api: unreachable ({GOOSE_API})")
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    if "--status" in args:
+        print_status()
+        return
+
+    push_only = "--push" in args
+    pull_only = "--pull" in args
+    watch     = "--watch" in args
+
+    if watch:
+        print("turtle-goose-bridge: watching (poll every 30s, Ctrl+C to stop)")
+        while True:
+            try:
+                pushed, pulled = sync_once(push_only, pull_only)
+                if pushed or pulled:
+                    print(f"  [{now_iso()[:19]}] pushed={pushed} pulled={pulled}")
+            except Exception as e:
+                print(f"  sync error: {e}", file=sys.stderr)
+            time.sleep(30)
+    else:
+        pushed, pulled = sync_once(push_only, pull_only)
+        print(f"pushed {pushed} → Goose Notes  ·  pulled {pulled} → mesh")
+
+
+if __name__ == "__main__":
+    main()

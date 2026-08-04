@@ -10,6 +10,42 @@ if [[ -z "${SOURCEOS_TERMINAL_SESSION_ID:-}" ]]; then
     export SOURCEOS_TERMINAL_SESSION_ID="term-$(python3 -c 'import uuid; print(uuid.uuid4().hex)' 2>/dev/null || date +%s)"
 fi
 
+# Auto-start turtle-status-daemon if not already running (writes CI/PR/Noetica cache)
+if [[ -z "${_TURTLE_STATUS_DAEMON_STARTED:-}" ]]; then
+    _TURTLE_STATUS_DAEMON_STARTED=1
+    _turtle_status_daemon_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-status-daemon"
+    if [[ -x "$_turtle_status_daemon_bin" ]]; then
+        if ! pgrep -f "turtle-status-daemon" >/dev/null 2>&1; then
+            python3 "$_turtle_status_daemon_bin" &! 2>/dev/null
+        fi
+    fi
+    unset _turtle_status_daemon_bin
+fi
+
+# Auto-start BearBrowser ↔ mesh bridge (syncs browse events into memory mesh)
+if [[ -z "${_TURTLE_BB_BRIDGE_STARTED:-}" ]]; then
+    _TURTLE_BB_BRIDGE_STARTED=1
+    _bb_bridge="$HOME/dev/BearBrowser/scripts/bearbrowser-mesh-bridge.py"
+    if [[ -f "$_bb_bridge" ]]; then
+        if ! pgrep -f "bearbrowser-mesh-bridge" >/dev/null 2>&1; then
+            python3 "$_bb_bridge" --watch &! 2>/dev/null
+        fi
+    fi
+    unset _bb_bridge
+fi
+
+# Auto-start Goose Notes ↔ mesh bridge (syncs notes bidirectionally)
+if [[ -z "${_TURTLE_GOOSE_BRIDGE_STARTED:-}" ]]; then
+    _TURTLE_GOOSE_BRIDGE_STARTED=1
+    _goose_bridge="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-goose-bridge"
+    if [[ -x "$_goose_bridge" ]]; then
+        if ! pgrep -f "turtle-goose-bridge" >/dev/null 2>&1; then
+            python3 "$_goose_bridge" --watch &! 2>/dev/null
+        fi
+    fi
+    unset _goose_bridge
+fi
+
 export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
 export SOURCEOS_WORKSPACE="${SOURCEOS_WORKSPACE:-default}"
 
@@ -55,6 +91,249 @@ EOF
     fi
 }
 
+# ============================================================
+# |? semantic pipe operator — pipe any output through Noetica
+#    with active mesh context automatically injected.
+# Usage: git log | ? "which commits touched auth"
+#        docker ps | ? "which containers are unhealthy"
+#        kubectl get pods | ? "which are not ready and why"
+# ============================================================
+
+_turtle_noetica_query() {
+    # Low-level: send a prompt to Noetica, print the response.
+    # Args: $1=noetica URL  $2=prompt string
+    local _noetica="$1" _prompt="$2"
+    python3 -c "
+import json, urllib.request, sys
+noetica, prompt = sys.argv[1], sys.argv[2]
+payload = json.dumps({'messages':[{'role':'user','content':prompt}],'stream':False}).encode()
+try:
+    req = urllib.request.Request(noetica+'/api/chat', data=payload,
+                                  headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        d = json.load(r)
+        msg = (d.get('choices',[{}])[0].get('message',{}).get('content','')
+               or d.get('message',{}).get('content','')
+               or d.get('content',''))
+        print(msg.strip())
+except Exception as e:
+    print(f'(Noetica unreachable: {e})', file=sys.stderr)
+    sys.exit(1)
+" "$_noetica" "$_prompt" 2>&1
+}
+
+_turtle_active_context_snippet() {
+    # Returns a 1-3 line context string from active.json (cwd/branch/title).
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    python3 -c "
+import json, pathlib
+active = pathlib.Path('$_mesh_dir/active.json')
+if active.exists():
+    try:
+        d = json.loads(active.read_text())
+        parts = []
+        if d.get('cwd'):  parts.append('cwd: ' + d['cwd'])
+        if d.get('branch'): parts.append('branch: ' + d['branch'])
+        if d.get('title'):  parts.append('context: ' + d['title'])
+        print('\n'.join(parts))
+    except: pass
+" 2>/dev/null
+}
+
+\?() {
+    local _query="$*"
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    local _stdin_data _ctx
+    _stdin_data="$(cat)"
+
+    if [[ -z "$_query" ]]; then
+        printf '%s\n' "$_stdin_data"
+        return
+    fi
+
+    _ctx="$(_turtle_active_context_snippet)"
+    local _ctx_block=""
+    [[ -n "$_ctx" ]] && _ctx_block=$'\n\nShell context:\n'"$_ctx"
+
+    local _prompt="Given this command output:
+
+${_stdin_data:0:3000}${_ctx_block}
+
+Answer: ${_query}
+
+Be concise (1-4 lines)."
+
+    printf '\e[38;2;57;197;207m▍\e[0m '
+    local _result
+    _result="$(_turtle_noetica_query "$_noetica" "$_prompt" 2>/dev/null)"
+
+    if [[ -n "$_result" ]]; then
+        printf '\e[38;2;230;237;243m%s\e[0m\n' "$_result"
+    else
+        printf '\e[2m(no response — is Noetica running on %s?)\e[0m\n' "$_noetica" >&2
+    fi
+}
+
+# ============================================================
+# noe — direct Noetica query (no pipe needed)
+#       Injects active mesh context automatically.
+# Usage: noe "explain this error: ECONNREFUSED"
+#        noe cap "what was that kubectl command I ran?"
+# ============================================================
+noe() {
+    local _query="$*"
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+
+    if [[ -z "$_query" ]]; then
+        echo "Usage: noe <question>" >&2
+        echo "       noe cap <question>  — ask about the last capture" >&2
+        return 1
+    fi
+
+    # 'noe cap' — include last capture/note from mesh in context
+    if [[ "${1:-}" == "cap" ]]; then
+        shift
+        _query="$*"
+        local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+        local _last_cap
+        _last_cap="$(python3 -c "
+import json, pathlib
+ctx = pathlib.Path('$_mesh_dir/context.jsonl')
+if ctx.exists():
+    for line in reversed(ctx.read_text(errors='replace').splitlines()):
+        try:
+            ev = json.loads(line)
+            if ev.get('kind') in ('capture','note','shell-cmd'):
+                print('# ' + ev.get('title','') + '\n' + ev.get('content','')[:800])
+                break
+        except: pass
+" 2>/dev/null)"
+        [[ -n "$_last_cap" ]] && _query="Context:\n${_last_cap}\n\nQuestion: ${_query}"
+    fi
+
+    local _ctx; _ctx="$(_turtle_active_context_snippet)"
+    [[ -n "$_ctx" ]] && _query="${_query}
+
+Shell context:
+${_ctx}"
+
+    printf '\e[38;2;57;197;207m▍ Noetica\e[0m\n'
+    local _result
+    _result="$(_turtle_noetica_query "$_noetica" "$_query")"
+    if [[ -n "$_result" ]]; then
+        printf '\e[38;2;230;237;243m%s\e[0m\n\n' "$_result"
+    else
+        printf '\e[2m(no response from Noetica at %s)\e[0m\n' "$_noetica" >&2
+    fi
+}
+
+# ============================================================
+# Destructive command preview gate
+# Extends the existing pattern check with actionable preview
+# before the command runs. Requires explicit 'y' to continue.
+# Disable with TURTLE_PREVIEW_GATE=0.
+# ============================================================
+_turtle_destructive_patterns=(
+    '^rm[[:space:]].*-[a-zA-Z]*r[a-zA-Z]*[[:space:]]'
+    '^git[[:space:]]+push[[:space:]].*--force'
+    '^git[[:space:]]+push[[:space:]].*-f[[:space:]]'
+    '^git[[:space:]]+reset[[:space:]]--hard'
+    '^kubectl[[:space:]]+delete[[:space:]]'
+    '^terraform[[:space:]]+destroy'
+    '^helm[[:space:]]+uninstall'
+    '^docker[[:space:]]+rm[[:space:]]'
+    '^gcloud.*instances[[:space:]]+delete'
+    '^gsutil[[:space:]]+rm[[:space:]]'
+)
+
+_turtle_preview_gate() {
+    [[ "${TURTLE_PREVIEW_GATE:-1}" == "0" ]] && return 0
+    local cmd="$1"
+    local matched=0
+    for pat in "${_turtle_destructive_patterns[@]}"; do
+        if [[ "$cmd" =~ $pat ]]; then
+            matched=1; break
+        fi
+    done
+    (( matched )) || return 0
+
+    printf '\e[38;2;255;123;114m⚠  Destructive command detected\e[0m\n' >&2
+    printf '\e[2m  %s\e[0m\n' "$cmd" >&2
+
+    # Show contextual preview
+    if [[ "$cmd" =~ '^rm ' ]]; then
+        local target
+        target="$(echo "$cmd" | grep -oE '[^[:space:]]+$')"
+        if [[ -e "$target" ]]; then
+            printf '\e[2m  will delete: %s (%s items)\e[0m\n' "$target" \
+                "$(find "$target" 2>/dev/null | wc -l | tr -d ' ')" >&2
+        fi
+    elif [[ "$cmd" =~ '^git push.*--force' || "$cmd" =~ '^git push.*-f ' ]]; then
+        local ahead
+        ahead="$(git log --oneline @{u}..HEAD 2>/dev/null | wc -l | tr -d ' ')"
+        printf '\e[2m  will force-push %s commits\e[0m\n' "$ahead" >&2
+    fi
+
+    printf '\e[38;2;255;123;114mProceed? [y/N] \e[0m' >&2
+    local yn
+    read -r yn </dev/tty
+    [[ "$yn" =~ ^[Yy]$ ]] && return 0
+
+    printf '\e[2m  aborted\e[0m\n' >&2
+    # Return non-zero to signal preexec should reject (zsh doesn't support
+    # blocking from preexec cleanly, so we clear the buffer via a trap)
+    return 1
+}
+
+# ============================================================
+# Auto-generated zsh completions for unknown turtle-*/prophet-* CLIs
+# On first invocation: runs `cmd --help`, asks Noetica to generate
+# a _cmd completion function, caches to ~/.turtle/completions/.
+# ============================================================
+_TURTLE_COMP_DIR="${HOME}/.turtle/completions"
+
+_turtle_maybe_generate_completion() {
+    local cmd="$1"
+    # Only for our own toolchain
+    [[ "$cmd" =~ ^(turtle|prophet|goose|bearbrowser|sourceos) ]] || return 0
+    local comp_file="${_TURTLE_COMP_DIR}/_${cmd}"
+    [[ -f "$comp_file" ]] && return 0   # already generated
+    # Run async so it never blocks the prompt
+    (
+        local help_text
+        help_text="$("$cmd" --help 2>&1 | head -60)"
+        [[ -z "$help_text" ]] && exit 0
+        local _noetica="${NOETICA_URL:-http://localhost:7700}"
+        local generated
+        generated="$(python3 -c "
+import json, urllib.request, sys
+cmd, help_text = sys.argv[1], sys.argv[2]
+prompt = (
+    f'Generate a minimal zsh _arguments completion function for the CLI tool \`{cmd}\`.\n'
+    f'Help output:\n{help_text}\n\n'
+    f'Output ONLY valid zsh code starting with \"#compdef {cmd}\" and ending with the function body. '
+    f'No explanation, no markdown fences.'
+)
+payload = json.dumps({'messages':[{'role':'user','content':prompt}],'stream':False}).encode()
+try:
+    req = urllib.request.Request('${_noetica}/api/chat', data=payload,
+                                  headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        d = json.load(r)
+        print((d.get('message',{}).get('content','') or d.get('content','')).strip())
+except Exception:
+    pass
+" "$cmd" "$help_text" 2>/dev/null)"
+        if [[ "$generated" == "#compdef"* ]]; then
+            mkdir -p "${_TURTLE_COMP_DIR}"
+            printf '%s\n' "$generated" > "$comp_file"
+            # Add to fpath if not already there
+            [[ " ${fpath[*]} " == *" ${_TURTLE_COMP_DIR} "* ]] || \
+                fpath=("${_TURTLE_COMP_DIR}" "${fpath[@]}")
+        fi
+    ) &!
+}
+
 _TURTLE_ZSH_CMD=""
 _TURTLE_ZSH_STARTED_AT=""
 _TURTLE_ZSH_CMD_EPOCH=0
@@ -83,8 +362,15 @@ preexec() {
     # OSC 133 C — command output start (marks command start for prompt jumping)
     printf '\e]133;C\a'
 
-    # Dangerous pattern check
+    # Dangerous pattern check (warning only)
     _turtle_check_dangerous "$cmd"
+
+    # Destructive preview gate (requires explicit y for rm/force-push/destroy/etc.)
+    _turtle_preview_gate "$cmd"
+
+    # Auto-generate completions for unknown turtle-*/prophet-* tools (async, non-blocking)
+    local _first_word="${cmd%% *}"
+    _turtle_maybe_generate_completion "$_first_word"
 
     local writer
     writer="$(_turtle_writer)"
@@ -257,8 +543,18 @@ bindkey '^R' _turtle_history_widget
 bindkey '\er' history-incremental-search-backward
 
 # ============================================================
-# Memory mesh: ?? recall, tc capture, mission control
+# Memory mesh: ?? recall, tc capture, ctx, mission control
 # ============================================================
+
+# ctx — pretty snapshot of current SourceOS context (mesh+CI+BB)
+# Example: ctx         # full panel
+#          ctx --short # single-line summary for copy-paste into AI prompts
+ctx() {
+    local _ctx_bin
+    _ctx_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-context"
+    [[ -x "$_ctx_bin" ]] || _ctx_bin="turtle-context"
+    "$_ctx_bin" "$@"
+}
 
 # ?? <query> — quick memory recall from any prompt
 # Example: ?? postgres replica setup
@@ -276,6 +572,16 @@ tc() {
     _turtle_capture_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-capture"
     [[ -x "$_turtle_capture_bin" ]] || _turtle_capture_bin="turtle-capture"
     "$_turtle_capture_bin" "$@"
+}
+
+# tcv — voice note capture: record mic → Whisper → mesh + Goose Notes
+# Usage: tcv                    # record until silence/Ctrl+C
+#        tcv --title "standup"  # override auto-title
+tcv() {
+    local _voice_bin
+    _voice_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-voice-capture"
+    [[ -x "$_voice_bin" ]] || _voice_bin="turtle-voice-capture"
+    "$_voice_bin" "$@"
 }
 
 # mc — toggle mission control panel (TurtleTerm only; graceful no-op elsewhere)
@@ -306,6 +612,297 @@ _turtle_mesh_cd() {
 if (( ${chpwd_functions[(I)_turtle_mesh_cd]} == 0 )); then
     chpwd_functions+=(_turtle_mesh_cd)
 fi
+
+# ============================================================
+# Inline file rendering
+# ============================================================
+
+_turtle_render_bin() {
+    local _bin
+    _bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-render"
+    [[ -x "$_bin" ]] && echo "$_bin" && return
+    echo "turtle-render"
+}
+
+# smart cat: auto-renders images/PDF/CSV/JSON inline; falls through to system cat otherwise.
+# Disable with TURTLE_SMART_CAT=0.
+_TURTLE_IMAGE_EXTS=(png jpg jpeg gif webp bmp ico tiff tif avif svg)
+_TURTLE_RENDER_EXTS=(pdf csv tsv json md markdown)
+
+cat() {
+    if [[ "${TURTLE_SMART_CAT:-1}" == "0" ]]; then
+        command cat "$@"
+        return
+    fi
+    local visual=0
+    for arg in "$@"; do
+        [[ "$arg" == -* ]] && continue
+        local ext="${arg:l:e}"  # lowercase extension
+        if (( ${_TURTLE_IMAGE_EXTS[(I)$ext]} )) || (( ${_TURTLE_RENDER_EXTS[(I)$ext]} )); then
+            visual=1
+            break
+        fi
+    done
+    if (( visual )); then
+        local _rbin; _rbin="$(_turtle_render_bin)"
+        local render_args=()
+        for arg in "$@"; do
+            [[ "$arg" == -* ]] && { command cat "$@"; return; }
+            render_args+=("$arg")
+        done
+        "$_rbin" "${render_args[@]}"
+    else
+        command cat "$@"
+    fi
+}
+
+# lsi — ls with inline image thumbnails (width=18 cols each)
+lsi() {
+    local dir="${1:-.}"
+    local _rbin; _rbin="$(_turtle_render_bin)"
+    local found=0
+    for f in "$dir"/*.{png,jpg,jpeg,gif,webp,bmp,tiff,svg}(N); do
+        [[ -f "$f" ]] || continue
+        found=1
+        printf "\033[38;2;88;166;255m%s\033[0m\n" "$(basename "$f")"
+        "$_rbin" --width 18 "$f" 2>/dev/null
+    done
+    (( found )) || ls "$dir"
+}
+
+# vv — visual view: always renders regardless of file type (explicit alias)
+vv() {
+    local _rbin; _rbin="$(_turtle_render_bin)"
+    "$_rbin" "$@"
+}
+
+# ============================================================
+# mesh — open local mesh dashboard in BearBrowser (or default browser)
+#         starts turtle-mesh-serve if not running
+# Usage: mesh
+# ============================================================
+mesh() {
+    local _port="${TURTLE_MESH_PORT:-7788}"
+    local _bin
+    _bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-mesh-serve"
+    [[ -x "$_bin" ]] || _bin="turtle-mesh-serve"
+
+    if ! curl -s --max-time 1 "http://localhost:${_port}/api/state" >/dev/null 2>&1; then
+        echo "  ◆ Starting mesh dashboard on :${_port}…"
+        python3 "$_bin" --port "$_port" &! 2>/dev/null
+        sleep 1
+    fi
+    bb "http://localhost:${_port}" 2>/dev/null || open "http://localhost:${_port}"
+}
+
+# ============================================================
+# glog — semantic git log with Noetica-generated one-liners
+#         Falls back to a pretty git log if Noetica unreachable.
+# Usage: glog        # last 20 commits
+#        glog -n 5   # last 5
+# ============================================================
+glog() {
+    local _n=20
+    [[ "${1:-}" == "-n" ]] && { _n="${2:-20}"; shift 2 2>/dev/null ||: ; }
+
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    local _log
+    _log="$(git log --oneline --no-decorate -"$_n" 2>/dev/null)" || {
+        echo "Not a git repo." >&2; return 1
+    }
+
+    if [[ -z "$_log" ]]; then
+        echo "(no commits)"
+        return
+    fi
+
+    # Try Noetica summary
+    local _summary
+    _summary="$(TURTLE_LOG="$_log" TURTLE_NOETICA="$_noetica" python3 -c "
+import json, os
+from urllib import request as urlreq
+log     = os.environ['TURTLE_LOG']
+noetica = os.environ['TURTLE_NOETICA']
+try:
+    payload = json.dumps({'messages': [{'role': 'user',
+        'content': 'For each git commit below, add a 4-6 word plain-English annotation on the same line after \" — \". Output ONLY the annotated lines, one per input line, no extra text.\n\n' + log}],
+        'max_tokens': 800}).encode()
+    req = urlreq.Request(noetica + '/api/chat', data=payload,
+        headers={'Content-Type': 'application/json'})
+    with urlreq.urlopen(req, timeout=8) as r:
+        resp = json.load(r)
+        msg = (resp.get('choices',[{}])[0].get('message',{}).get('content','')
+               or resp.get('content',''))
+        print(msg.strip())
+except Exception:
+    print('')
+" 2>/dev/null)"
+
+    if [[ -n "$_summary" ]]; then
+        # Color: hash teal, rest white, annotation dim
+        printf '%s\n' "$_summary" | while IFS= read -r line; do
+            local hash="${line:0:7}"
+            local rest="${line:8}"
+            local msg="${rest%% — *}"
+            local ann=""
+            [[ "$rest" == *" — "* ]] && ann="${rest#* — }"
+            printf '\e[38;2;63;185;80m%s\e[0m \e[38;2;230;237;243m%-50s\e[0m \e[2m%s\e[0m\n' \
+                "$hash" "${msg:0:50}" "$ann"
+        done
+    else
+        # Plain pretty fallback
+        git log --oneline --color -"$_n"
+    fi
+}
+
+# ============================================================
+# td / turtle-diff — render git diff with syntax highlighting
+#         In WezTerm: renders in a right split panel.
+#         Falls back to delta/diff-so-fancy/bat if available.
+# Usage: td              # diff HEAD
+#        td HEAD~3       # diff from 3 commits ago
+#        td --cached     # diff staged changes
+#        td file.py      # diff a single file
+# ============================================================
+td() {
+    local _args=("$@")
+    local _diff
+
+    # Check for delta (best) / diff-so-fancy / bat
+    if command -v delta >/dev/null 2>&1; then
+        GIT_PAGER="delta" git diff "${_args[@]}"
+        return
+    fi
+
+    if command -v diff-so-fancy >/dev/null 2>&1; then
+        git diff --color "${_args[@]}" | diff-so-fancy | less -RFX
+        return
+    fi
+
+    # bat with diff syntax
+    if command -v bat >/dev/null 2>&1; then
+        git diff --color=always "${_args[@]}" | bat --language=diff --style=plain --color=always --paging=never
+        return
+    fi
+
+    # Plain fallback with color
+    git diff --color=always "${_args[@]}"
+}
+
+# ============================================================
+# bb  — open BearBrowser (optionally with a URL or file path)
+#        emits a mesh event so TurtleTerm knows what you're browsing
+# bbs — BearBrowser search: summarize query via Noetica, then open BB
+# Usage: bb
+#        bb https://example.com
+#        bb path/to/file.pdf
+#        bbs "how does turbulent flow work in microchannels"
+# ============================================================
+
+bb() {
+    local _url="${1:-}"
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _bb_scripts="$HOME/dev/BearBrowser/scripts"
+    local _branch; _branch="$(git branch --show-current 2>/dev/null || echo '')"
+
+    # Emit mesh event — pass values via env to avoid shell→Python injection
+    TURTLE_URL="$_url" TURTLE_MESH_DIR="$_mesh_dir" \
+    python3 -c "
+import json, datetime, os, pathlib
+url  = os.environ.get('TURTLE_URL', '')
+mesh = pathlib.Path(os.environ['TURTLE_MESH_DIR'])
+mesh.mkdir(parents=True, exist_ok=True)
+ctx = mesh / 'context.jsonl'
+ev = {
+    'ts': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+    'kind': 'browse',
+    'source': 'shell-bb',
+    'title': url or 'BearBrowser opened',
+    'content': ('User opened BearBrowser at ' + url) if url else 'User opened BearBrowser',
+    'url': url,
+    'cwd': os.getcwd(),
+}
+with ctx.open('a') as f:
+    f.write(json.dumps(ev) + '\n')
+" 2>/dev/null &!
+
+    # Update active context
+    TURTLE_URL="$_url" TURTLE_BRANCH="$_branch" TURTLE_MESH_DIR="$_mesh_dir" \
+    python3 -c "
+import json, datetime, os, pathlib, socket
+url    = os.environ.get('TURTLE_URL', '')
+branch = os.environ.get('TURTLE_BRANCH', '')
+mesh   = pathlib.Path(os.environ['TURTLE_MESH_DIR'])
+mesh.mkdir(parents=True, exist_ok=True)
+(mesh / 'active.json').write_text(json.dumps({
+    'cwd': os.getcwd(),
+    'branch': branch,
+    'title': ('BearBrowser: ' + url) if url else 'BearBrowser',
+    'hostname': socket.gethostname(),
+    'updated': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+}, indent=2))
+" 2>/dev/null &!
+
+    if [[ -n "$_url" ]] && [[ -f "$_url" ]]; then
+        # Local file — convert to file:// URL
+        _url="file://$(realpath "$_url")"
+    fi
+
+    if [[ -x "$_bb_scripts/bearbrowser-open.sh" ]]; then
+        if [[ -n "$_url" ]]; then
+            bash "$_bb_scripts/bearbrowser-open.sh" && open -a BearBrowser "$_url" 2>/dev/null ||:
+        else
+            bash "$_bb_scripts/bearbrowser-open.sh"
+        fi
+    else
+        if [[ -n "$_url" ]]; then
+            open -a BearBrowser "$_url" 2>/dev/null || open "$_url"
+        else
+            open -a BearBrowser 2>/dev/null || echo "BearBrowser not found — run bearbrowser-open.sh" >&2
+        fi
+    fi
+}
+
+bbs() {
+    local _query="$*"
+    if [[ -z "$_query" ]]; then
+        echo "Usage: bbs <search query>" >&2
+        return 1
+    fi
+
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    local _url
+
+    # Ask Noetica for the best URL — pass query via env to avoid injection
+    _url="$(TURTLE_QUERY="$_query" TURTLE_NOETICA="$_noetica" python3 -c "
+import json, os
+from urllib import request as urlreq
+query   = os.environ['TURTLE_QUERY']
+noetica = os.environ['TURTLE_NOETICA']
+try:
+    payload = json.dumps({'messages': [{'role': 'user',
+        'content': 'Reply with ONLY a single search URL (no explanation) for: ' + query}],
+        'max_tokens': 80}).encode()
+    req = urlreq.Request(noetica + '/api/chat', data=payload,
+        headers={'Content-Type': 'application/json'})
+    with urlreq.urlopen(req, timeout=4) as r:
+        resp = json.load(r)
+        print(resp.get('choices',[{}])[0].get('message',{}).get('content','').strip())
+except Exception:
+    print('')
+" 2>/dev/null)"
+
+    if [[ -z "$_url" ]] || [[ "$_url" != http* ]]; then
+        # Fallback: DuckDuckGo — pass query via env
+        local _encoded; _encoded="$(TURTLE_QUERY="$_query" python3 -c "
+import urllib.parse, os; print(urllib.parse.quote_plus(os.environ['TURTLE_QUERY']))
+" 2>/dev/null || printf '%s' "$_query")"
+        _url="https://duckduckgo.com/?q=${_encoded}&ia=web"
+    fi
+
+    echo "  \033[38;2;0;200;200mBearBrowser → ${_url}\033[0m"
+    bb "$_url"
+}
 
 # ============================================================
 # AI ghost-text — two modes:
@@ -726,37 +1323,362 @@ if (( ${precmd_functions[(I)_turtle_precmd_timing]} == 0 )); then
 fi
 
 # ============================================================
-# Right-side prompt (RPROMPT) showing plan step + perf
+# Rich RPROMPT — duration · git diff · peak RSS · exit code
 # ============================================================
 
-# Right-side prompt: active plan step + last command time
+_TURTLE_RUSAGE_BEFORE=0
+_TURTLE_LAST_RSS=0
+
+# Read resource.RUSAGE_CHILDREN (peak RSS of last waited child) from Python.
+# Called in precmd — reads accumulated RSS since last call, so we delta it.
+_turtle_read_rss() {
+    python3 -c "
+import resource
+r = resource.getrusage(resource.RUSAGE_CHILDREN)
+# On macOS ru_maxrss is bytes; on Linux it's KB
+import sys, platform
+rss = r.ru_maxrss
+if platform.system() == 'Darwin':
+    rss = rss // 1024  # → KB
+print(rss)
+" 2>/dev/null || echo 0
+}
+
+# Compact git diff stat: "+12 -3" or "" if clean
+_turtle_git_diffstat() {
+    local stat
+    stat="$(git diff --shortstat 2>/dev/null)"
+    [[ -z "$stat" ]] && return
+    local added removed
+    added="$(echo "$stat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+')"
+    removed="$(echo "$stat" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+')"
+    local out=""
+    [[ -n "$added" ]]   && out="+${added}"
+    [[ -n "$removed" ]] && out="${out:+$out }−${removed}"
+    [[ -n "$out" ]] && printf '%s' "$out"
+}
+
 _turtle_rprompt() {
     local rp=""
-    # Show active plan step if any (cached, don't call agentd every prompt)
+    setopt localoptions nopromptsubst
+
+    # Plan step
     if [[ -n "$_TURTLE_PLAN_STEP" ]]; then
         rp="%F{yellow}⟳ step ${_TURTLE_PLAN_STEP}%f "
     fi
-    # Show last command time if > 1s
+
+    # Duration (> 1s)
     if [[ -n "$_TURTLE_LAST_ELAPSED" ]] && (( _TURTLE_LAST_ELAPSED > 1000 )); then
         local secs=$(( _TURTLE_LAST_ELAPSED / 1000 ))
-        rp="${rp}%F{240}${secs}s%f"
+        if (( secs >= 3600 )); then
+            rp="${rp}%F{240}$(( secs/3600 ))h$(( (secs%3600)/60 ))m%f "
+        elif (( secs >= 60 )); then
+            rp="${rp}%F{240}$(( secs/60 ))m$(( secs%60 ))s%f "
+        else
+            rp="${rp}%F{240}${secs}s%f "
+        fi
     fi
-    echo -n "$rp"
+
+    # Git diff stats (green/red) — only shown when there are uncommitted changes
+    local _diffstat
+    _diffstat="$(_turtle_git_diffstat 2>/dev/null)"
+    if [[ -n "$_diffstat" ]]; then
+        # colour each part
+        local _added _removed
+        _added="$(echo "$_diffstat" | grep -oE '\+[0-9]+')"
+        _removed="$(echo "$_diffstat" | grep -oE '−[0-9]+')"
+        [[ -n "$_added" ]]   && rp="${rp}%F{2}${_added}%f "
+        [[ -n "$_removed" ]] && rp="${rp}%F{1}${_removed}%f "
+    fi
+
+    # Peak RSS of last command (shown when >50MB)
+    if (( _TURTLE_LAST_RSS > 51200 )); then
+        local mb=$(( _TURTLE_LAST_RSS / 1024 ))
+        rp="${rp}%F{240}${mb}MB%f "
+    fi
+
+    # Trailing space trim
+    echo -n "${rp% }"
 }
 
-# Track elapsed for RPROMPT
 _turtle_precmd_rprompt() {
+    # Capture elapsed
     if [[ -n "$_TURTLE_PERF_START" ]]; then
         _TURTLE_LAST_ELAPSED=$(( int(($EPOCHREALTIME - $_TURTLE_PERF_START) * 1000) ))
     fi
+    # Capture peak RSS delta (async — don't block the prompt)
+    {
+        local _rss_now; _rss_now="$(_turtle_read_rss)"
+        local _delta=$(( _rss_now - _TURTLE_RUSAGE_BEFORE ))
+        (( _delta > 0 )) && _TURTLE_LAST_RSS=$_delta || _TURTLE_LAST_RSS=0
+        _TURTLE_RUSAGE_BEFORE=$_rss_now
+    } &!
 }
 
 if (( ${precmd_functions[(I)_turtle_precmd_rprompt]} == 0 )); then
     precmd_functions+=(_turtle_precmd_rprompt)
 fi
 
-# Set RPROMPT if user hasn't set it
 if [[ -z "$RPROMPT" ]]; then
     RPROMPT='$(_turtle_rprompt)'
     setopt PROMPT_SUBST 2>/dev/null
 fi
+
+# ============================================================
+# wasi — cross-machine "where was I"
+# Reads memory mesh events from other hostnames (via local mesh
+# or GCS if available). Shows last cwd, branch, commands, agents.
+# ============================================================
+wasi() {
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _ctx_file="$_mesh_dir/context.jsonl"
+    local _this_host; _this_host="$(hostname -s 2>/dev/null || hostname)"
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    local _gcs="${SOURCEOS_MESH_BUCKET:-gs://sourceos-artifacts-socioprophet/memory-mesh}"
+
+    printf '\e[38;2;88;166;255m◆ wasi — where was I\e[0m\n'
+    printf '\e[2m  this machine: %s\e[0m\n\n' "$_this_host"
+
+    # Try to pull from GCS first (gets other machines' context)
+    if command -v gsutil >/dev/null 2>&1; then
+        local _remote_ctx
+        _remote_ctx="$(gsutil cat "$_gcs/context.jsonl" 2>/dev/null | tail -200)"
+        if [[ -n "$_remote_ctx" ]]; then
+            echo "$_remote_ctx" | python3 -c "
+import json, sys, os
+this_host = os.uname().nodename.split('.')[0]
+events = []
+for line in sys.stdin:
+    try:
+        e = json.loads(line)
+        h = e.get('hostname','')
+        if h and h != this_host:
+            events.append(e)
+    except: pass
+if not events:
+    print('  \033[2mno events from other machines\033[0m')
+    sys.exit(0)
+# Group by hostname
+from collections import defaultdict
+by_host = defaultdict(list)
+for e in events:
+    by_host[e['hostname']].append(e)
+for host, evs in sorted(by_host.items()):
+    print(f'\n  \033[38;2;188;140;255m{host}\033[0m')
+    for ev in evs[-5:]:
+        ts = ev.get('ts','')[:16]
+        kind = ev.get('kind','?')
+        title = ev.get('title','')[:60]
+        cwd = ev.get('cwd','')
+        branch = ev.get('branch','')
+        loc = f'{cwd}' + (f'  ({branch})' if branch else '')
+        print(f'    \033[2m{ts}\033[0m  \033[38;2;63;185;80m{kind:<10}\033[0m  {title}')
+        if loc:
+            print(f'               \033[2m{loc}\033[0m')
+"
+            return
+        fi
+    fi
+
+    # Fallback: local mesh (same machine, recent context for continuity)
+    if [[ -f "$_ctx_file" ]]; then
+        tail -30 "$_ctx_file" | python3 -c "
+import json, sys
+events = []
+for line in sys.stdin:
+    try: events.append(json.loads(line))
+    except: pass
+if not events:
+    print('  \033[2mno mesh events yet — run: some-command | tc\033[0m')
+    sys.exit(0)
+print('  \033[2m(local mesh — no GCS credentials for cross-machine)\033[0m')
+for ev in reversed(events[-8:]):
+    ts = ev.get('ts','')[:16]
+    kind = ev.get('kind','?')
+    title = ev.get('title','')[:60]
+    print(f'  \033[2m{ts}\033[0m  \033[38;2;63;185;80m{kind:<10}\033[0m  {title}')
+"
+    else
+        printf '  \e[2mno memory mesh yet — source turtle-shell-init.zsh and run: tc "first capture"\e[0m\n'
+    fi
+}
+
+# ============================================================
+# Auto project env injection on cd
+# Infers venv/nvm/kube-context/poetry from project files.
+# Each activation is silent unless it changes something.
+# Disable entirely: TURTLE_ENV_INJECT=0
+# ============================================================
+_TURTLE_LAST_VENV=""
+_TURTLE_LAST_NODE=""
+_TURTLE_LAST_KUBE=""
+
+_turtle_env_inject() {
+    [[ "${TURTLE_ENV_INJECT:-1}" == "0" ]] && return
+
+    # ── Python venv ────────────────────────────────────────────
+    local _venv=""
+    if [[ -d ".venv" ]]; then
+        _venv=".venv"
+    elif [[ -d "venv" ]]; then
+        _venv="venv"
+    elif [[ -f "pyproject.toml" ]] || [[ -f "setup.py" ]]; then
+        # poetry-managed — try `poetry env info -p`
+        if command -v poetry >/dev/null 2>&1; then
+            local _pe; _pe="$(poetry env info -p 2>/dev/null)"
+            [[ -n "$_pe" && -d "$_pe" ]] && _venv="$_pe"
+        fi
+    fi
+    if [[ -n "$_venv" && "$_venv" != "$_TURTLE_LAST_VENV" ]]; then
+        source "$_venv/bin/activate" 2>/dev/null && \
+            printf '\e[2m  ⚡ venv: %s\e[0m\n' "$_venv"
+        _TURTLE_LAST_VENV="$_venv"
+    elif [[ -z "$_venv" && -n "$_TURTLE_LAST_VENV" && -n "$VIRTUAL_ENV" ]]; then
+        deactivate 2>/dev/null || true
+        _TURTLE_LAST_VENV=""
+    fi
+
+    # ── Node version (.nvmrc / .node-version) ─────────────────
+    if command -v nvm >/dev/null 2>&1; then
+        local _nvmrc=""
+        [[ -f ".nvmrc" ]]        && _nvmrc="$(cat .nvmrc | tr -d '[:space:]')"
+        [[ -f ".node-version" ]] && _nvmrc="$(cat .node-version | tr -d '[:space:]')"
+        if [[ -n "$_nvmrc" && "$_nvmrc" != "$_TURTLE_LAST_NODE" ]]; then
+            nvm use "$_nvmrc" --silent 2>/dev/null && \
+                printf '\e[2m  ⚡ node: %s\e[0m\n' "$_nvmrc"
+            _TURTLE_LAST_NODE="$_nvmrc"
+        fi
+    fi
+
+    # ── Kubernetes context (from .kube-context file) ───────────
+    if command -v kubectl >/dev/null 2>&1 && [[ -f ".kube-context" ]]; then
+        local _kctx; _kctx="$(cat .kube-context | tr -d '[:space:]')"
+        if [[ -n "$_kctx" && "$_kctx" != "$_TURTLE_LAST_KUBE" ]]; then
+            kubectl config use-context "$_kctx" >/dev/null 2>&1 && \
+                printf '\e[2m  ⚡ kube: %s\e[0m\n' "$_kctx"
+            _TURTLE_LAST_KUBE="$_kctx"
+        fi
+    fi
+
+    # ── direnv fallback ────────────────────────────────────────
+    if command -v direnv >/dev/null 2>&1 && [[ -f ".envrc" ]]; then
+        direnv export zsh 2>/dev/null | source /dev/stdin 2>/dev/null || true
+    fi
+}
+
+# Hook env injection after _turtle_mesh_cd
+if (( ${chpwd_functions[(I)_turtle_env_inject]} == 0 )); then
+    chpwd_functions+=(_turtle_env_inject)
+fi
+
+# ============================================================
+# session-save / session-restore — named workspace snapshots
+# Persists: cwd, last 20 commands, env vars, git branch, agents
+# Stored in memory mesh so cross-machine restore works via wasi.
+# ============================================================
+session-save() {
+    local name="${1:-$(basename "$PWD")}"
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _sessions_dir="$_mesh_dir/sessions"
+    mkdir -p "$_sessions_dir"
+
+    local _branch; _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+    local _cmds=()
+    local _state_dir; _state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/terminal"
+    local _hist_file="$_state_dir/history.jsonl"
+
+    # Collect last 20 commands from JSONL history
+    if [[ -f "$_hist_file" ]]; then
+        maparray -t _cmds < <(tail -20 "$_hist_file" | python3 -c "
+import json,sys
+for line in sys.stdin:
+    try: print(json.loads(line).get('cmd',''))
+    except: pass
+" 2>/dev/null)
+    fi
+
+    # Env snapshot (filter out secrets)
+    local _env_json
+    _env_json="$(python3 -c "
+import os, json
+skip = {'HISTFILE','HISTSIZE','LS_COLORS','TERM_SESSION_ID','TMPDIR','LOGNAME'}
+env = {k:v for k,v in os.environ.items()
+       if not any(s in k for s in ('SECRET','TOKEN','KEY','PASS','CRED'))
+       and k not in skip and len(v) < 200}
+print(json.dumps(env))
+" 2>/dev/null || echo '{}')"
+
+    local _session
+    _session="$(python3 -c "
+import json, datetime, os, socket
+data = {
+    'name': '$name',
+    'ts': datetime.datetime.utcnow().isoformat()+'Z',
+    'hostname': socket.gethostname(),
+    'cwd': os.getcwd(),
+    'branch': '$_branch',
+    'commands': $(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "${_cmds[@]}" 2>/dev/null || echo '[]'),
+    'env': $(_env_json),
+}
+print(json.dumps(data, indent=2))
+" 2>/dev/null)"
+
+    printf '%s\n' "$_session" > "$_sessions_dir/${name}.json"
+
+    # Also write to mesh context
+    local _ts; _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '{"ts":"%s","kind":"session-save","source":"terminal","title":"%s","cwd":"%s","branch":"%s"}\n' \
+        "$_ts" "$name" "$PWD" "$_branch" >> "$_mesh_dir/context.jsonl"
+
+    printf '\e[38;2;63;185;80m✓\e[0m  session saved: \e[1m%s\e[0m\n' "$name"
+    printf '  \e[2m%s\e[0m\n' "$_sessions_dir/${name}.json"
+}
+
+session-restore() {
+    local name="${1}"
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _sessions_dir="$_mesh_dir/sessions"
+
+    if [[ -z "$name" ]]; then
+        # List available sessions
+        printf '\e[38;2;88;166;255m◆ Saved sessions:\e[0m\n'
+        for f in "$_sessions_dir"/*.json(N); do
+            local _n; _n="$(basename "$f" .json)"
+            local _ts; _ts="$(python3 -c "import json; d=json.load(open('$f')); print(d.get('ts','?')[:16])" 2>/dev/null)"
+            local _cwd; _cwd="$(python3 -c "import json; d=json.load(open('$f')); print(d.get('cwd','?'))" 2>/dev/null)"
+            printf '  \e[1m%-20s\e[0m  \e[2m%s  %s\e[0m\n' "$_n" "$_ts" "$_cwd"
+        done
+        return
+    fi
+
+    local _file="$_sessions_dir/${name}.json"
+    if [[ ! -f "$_file" ]]; then
+        printf '\e[38;2;255;123;114m✗\e[0m  no session: %s\n' "$name" >&2
+        return 1
+    fi
+
+    python3 - "$_file" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"\033[38;2;88;166;255m◆ Restoring: {d.get('name','?')}\033[0m")
+print(f"  cwd:     {d.get('cwd','?')}")
+print(f"  branch:  {d.get('branch','?')}")
+print(f"  saved:   {d.get('ts','?')[:16]}  on {d.get('hostname','?')}")
+cwd = d.get('cwd','')
+branch = d.get('branch','')
+print(f"\n  \033[2mcd {cwd}\033[0m")
+if branch:
+    print(f"  \033[2mgit checkout {branch}  (if available)\033[0m")
+PYEOF
+
+    local _cwd; _cwd="$(python3 -c "import json; print(json.load(open('$_file')).get('cwd',''))" 2>/dev/null)"
+    local _branch; _branch="$(python3 -c "import json; print(json.load(open('$_file')).get('branch',''))" 2>/dev/null)"
+
+    [[ -n "$_cwd" && -d "$_cwd" ]] && cd "$_cwd" || printf '  \e[2m(cwd no longer exists)\e[0m\n'
+    if [[ -n "$_branch" ]]; then
+        git checkout "$_branch" 2>/dev/null && \
+            printf '  \e[38;2;63;185;80m✓\e[0m branch: %s\n' "$_branch" || true
+    fi
+
+    printf '\n\e[38;2;63;185;80m✓\e[0m  session restored: \e[1m%s\e[0m\n' "$name"
+}

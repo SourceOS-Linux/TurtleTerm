@@ -130,6 +130,45 @@ def recent_mesh_events(limit: int = 8) -> list[dict]:
     return events[-limit:]
 
 
+BB_SUPPORT   = Path.home() / "Library" / "Application Support" / "BearBrowser"
+BB_CANDIDATES = BB_SUPPORT / "memory" / "candidates.jsonl"
+BB_EVENTS    = BB_SUPPORT / "provenance" / "events.jsonl"
+
+
+def bearbrowser_candidates(limit: int = 4) -> list[dict]:
+    """Most-recent BearBrowser memory candidates (proposed + committed)."""
+    if not BB_CANDIDATES.exists():
+        return []
+    items = []
+    try:
+        for line in BB_CANDIDATES.read_text(errors="replace").splitlines()[-100:]:
+            try:
+                items.append(json.loads(line))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return items[-limit:]
+
+
+def bearbrowser_recent_nav(limit: int = 3) -> list[dict]:
+    """Most-recent navigation.committed events from BearBrowser provenance log."""
+    if not BB_EVENTS.exists():
+        return []
+    navs = []
+    try:
+        for line in BB_EVENTS.read_text(errors="replace").splitlines()[-200:]:
+            try:
+                ev = json.loads(line)
+                if ev.get("eventType") in ("navigation.committed", "page.shared_with_agent"):
+                    navs.append(ev)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return navs[-limit:]
+
+
 def recent_commands(limit: int = 5) -> list[dict]:
     if not HISTORY_FILE.exists():
         return []
@@ -150,7 +189,10 @@ def hr(width: int = 70) -> str:
     return C_GREY + "─" * width + C_RESET
 
 
-def format_panel(agents: list[dict], noetica: dict, bb: dict, mesh: list[dict], cmds: list[dict], now: str) -> str:
+def format_panel(agents: list[dict], noetica: dict, bb: dict, mesh: list[dict],
+                 cmds: list[dict], now: str,
+                 bb_candidates: list[dict] | None = None,
+                 bb_navs: list[dict] | None = None) -> str:
     lines = []
     W = 72
 
@@ -192,7 +234,32 @@ def format_panel(agents: list[dict], noetica: dict, bb: dict, mesh: list[dict], 
     bb_detail = f"  {bb.get('tabs', 0)} tab(s)" if bb["ok"] else "  unreachable — open BearBrowser"
     lines.append(f"  {bb_dot}{C_RESET}  {C_WHITE}BearBrowser{C_RESET}  {C_GREY}{bb_detail}{C_RESET}")
 
+    # BearBrowser recent navigation
+    if bb_navs:
+        for nav in reversed(bb_navs):
+            payload = nav.get("payload", {})
+            url = (payload.get("url", "") or payload.get("navigationUrl", ""))[:60] if isinstance(payload, dict) else ""
+            title = (payload.get("title", "") or url)[:50]
+            ts = nav.get("timestamp", "")[:16]
+            lines.append(f"     {C_CYAN}↗{C_RESET}  {C_GREY}{ts}{C_RESET}  {C_WHITE}{title}{C_RESET}")
+
     lines.append(f"  {hr(W)}")
+
+    # BearBrowser memory candidates (cross-product context from browser to terminal)
+    if bb_candidates:
+        lines.append(f"  {C_CYAN}BEARBROWSER MEMORY{C_RESET}  {C_GREY}(mesh candidates){C_RESET}")
+        for cand in reversed(bb_candidates):
+            content = cand.get("content", {})
+            title = content.get("title", "?")[:50] if isinstance(content, dict) else str(cand.get("title", "?"))[:50]
+            status = cand.get("status", "proposed")
+            ts = cand.get("timestamp", "")[:16]
+            status_c = C_TEAL if status == "committed" else C_YELLOW
+            lines.append(
+                f"  {status_c}{'✓' if status=='committed' else '·'}{C_RESET}"
+                f"  {C_GREY}{ts}{C_RESET}  {C_WHITE}{title}{C_RESET}"
+                f"  {C_GREY}[{status}]{C_RESET}"
+            )
+        lines.append(f"  {hr(W)}")
 
     # Memory mesh section
     lines.append(f"  {C_PURPLE}MEMORY MESH{C_RESET}  {C_GREY}(recent events){C_RESET}")
@@ -239,8 +306,10 @@ def main():
         bb = bearbrowser_status()
         mesh = recent_mesh_events()
         cmds = recent_commands()
+        bb_cands = bearbrowser_candidates()
+        bb_navs  = bearbrowser_recent_nav()
         now = datetime.datetime.now().strftime("%H:%M:%S")
-        print(format_panel(agents, noetica, bb, mesh, cmds, now))
+        print(format_panel(agents, noetica, bb, mesh, cmds, now, bb_cands, bb_navs))
         return
 
     # Live refresh loop
@@ -251,8 +320,10 @@ def main():
             bb = bearbrowser_status()
             mesh = recent_mesh_events()
             cmds = recent_commands()
+            bb_cands = bearbrowser_candidates()
+            bb_navs  = bearbrowser_recent_nav()
             now = datetime.datetime.now().strftime("%H:%M:%S")
-            panel = format_panel(agents, noetica, bb, mesh, cmds, now)
+            panel = format_panel(agents, noetica, bb, mesh, cmds, now, bb_cands, bb_navs)
 
             # Count lines for in-place rewrite
             panel_lines = panel.splitlines()
