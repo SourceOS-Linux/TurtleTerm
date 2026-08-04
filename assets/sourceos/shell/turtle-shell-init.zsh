@@ -22,6 +22,30 @@ if [[ -z "${_TURTLE_STATUS_DAEMON_STARTED:-}" ]]; then
     unset _turtle_status_daemon_bin
 fi
 
+# Auto-start BearBrowser ↔ mesh bridge (syncs browse events into memory mesh)
+if [[ -z "${_TURTLE_BB_BRIDGE_STARTED:-}" ]]; then
+    _TURTLE_BB_BRIDGE_STARTED=1
+    _bb_bridge="$HOME/dev/BearBrowser/scripts/bearbrowser-mesh-bridge.py"
+    if [[ -f "$_bb_bridge" ]]; then
+        if ! pgrep -f "bearbrowser-mesh-bridge" >/dev/null 2>&1; then
+            python3 "$_bb_bridge" --watch &! 2>/dev/null
+        fi
+    fi
+    unset _bb_bridge
+fi
+
+# Auto-start Goose Notes ↔ mesh bridge (syncs notes bidirectionally)
+if [[ -z "${_TURTLE_GOOSE_BRIDGE_STARTED:-}" ]]; then
+    _TURTLE_GOOSE_BRIDGE_STARTED=1
+    _goose_bridge="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-goose-bridge"
+    if [[ -x "$_goose_bridge" ]]; then
+        if ! pgrep -f "turtle-goose-bridge" >/dev/null 2>&1; then
+            python3 "$_goose_bridge" --watch &! 2>/dev/null
+        fi
+    fi
+    unset _goose_bridge
+fi
+
 export SOURCEOS_TERMINAL_FRONTEND="${SOURCEOS_TERMINAL_FRONTEND:-turtle-term}"
 export SOURCEOS_WORKSPACE="${SOURCEOS_WORKSPACE:-default}"
 
@@ -547,6 +571,112 @@ lsi() {
 vv() {
     local _rbin; _rbin="$(_turtle_render_bin)"
     "$_rbin" "$@"
+}
+
+# ============================================================
+# bb  — open BearBrowser (optionally with a URL or file path)
+#        emits a mesh event so TurtleTerm knows what you're browsing
+# bbs — BearBrowser search: summarize query via Noetica, then open BB
+# Usage: bb
+#        bb https://example.com
+#        bb path/to/file.pdf
+#        bbs "how does turbulent flow work in microchannels"
+# ============================================================
+
+bb() {
+    local _url="${1:-}"
+    local _mesh_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sourceos/memory-mesh"
+    local _bb_scripts="$HOME/dev/BearBrowser/scripts"
+
+    # Emit mesh event
+    python3 -c "
+import json, datetime, os, pathlib
+mesh = pathlib.Path('$_mesh_dir')
+mesh.mkdir(parents=True, exist_ok=True)
+ctx = mesh / 'context.jsonl'
+ev = {
+    'ts': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+    'kind': 'browse',
+    'source': 'shell-bb',
+    'title': '$_url' or 'BearBrowser opened',
+    'content': 'User opened BearBrowser' + (' at $_url' if '$_url' else ''),
+    'url': '$_url',
+    'cwd': os.getcwd(),
+}
+with ctx.open('a') as f:
+    f.write(json.dumps(ev) + '\n')
+" 2>/dev/null &!
+
+    # Update active context
+    local _branch; _branch="$(git branch --show-current 2>/dev/null || echo '')"
+    python3 -c "
+import json, datetime, os, pathlib, socket
+mesh = pathlib.Path('$_mesh_dir')
+mesh.mkdir(parents=True, exist_ok=True)
+(mesh / 'active.json').write_text(json.dumps({
+    'cwd': os.getcwd(),
+    'branch': '$_branch',
+    'title': 'BearBrowser: $_url',
+    'hostname': socket.gethostname(),
+    'updated': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+}, indent=2))
+" 2>/dev/null &!
+
+    if [[ -n "$_url" ]] && [[ -f "$_url" ]]; then
+        # Local file — convert to file:// URL
+        _url="file://$(realpath "$_url")"
+    fi
+
+    if [[ -x "$_bb_scripts/bearbrowser-open.sh" ]]; then
+        if [[ -n "$_url" ]]; then
+            bash "$_bb_scripts/bearbrowser-open.sh" && open -a BearBrowser "$_url" 2>/dev/null ||:
+        else
+            bash "$_bb_scripts/bearbrowser-open.sh"
+        fi
+    else
+        if [[ -n "$_url" ]]; then
+            open -a BearBrowser "$_url" 2>/dev/null || open "$_url"
+        else
+            open -a BearBrowser 2>/dev/null || echo "BearBrowser not found — run bearbrowser-open.sh" >&2
+        fi
+    fi
+}
+
+bbs() {
+    local _query="$*"
+    if [[ -z "$_query" ]]; then
+        echo "Usage: bbs <search query>" >&2
+        return 1
+    fi
+
+    local _noetica="${NOETICA_URL:-http://localhost:7700}"
+    local _url
+
+    # Ask Noetica for the best URL to open for this query
+    _url="$(python3 -c "
+import json, sys
+from urllib import request as urlreq
+try:
+    payload = json.dumps({'messages': [{'role': 'user',
+        'content': 'Reply with ONLY a single search URL (no explanation) for: $_query'}],
+        'max_tokens': 80}).encode()
+    req = urlreq.Request('$_noetica/api/chat', data=payload,
+        headers={'Content-Type': 'application/json'})
+    with urlreq.urlopen(req, timeout=4) as r:
+        resp = json.load(r)
+        print(resp.get('choices',[{}])[0].get('message',{}).get('content','').strip())
+except Exception:
+    print('')
+" 2>/dev/null)"
+
+    if [[ -z "$_url" ]] || [[ "$_url" != http* ]]; then
+        # Fallback: DuckDuckGo
+        local _encoded; _encoded="$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote_plus('$_query'))" 2>/dev/null || echo "$_query")"
+        _url="https://duckduckgo.com/?q=${_encoded}&ia=web"
+    fi
+
+    echo "  \033[38;2;0;200;200mBearBrowser → ${_url}\033[0m"
+    bb "$_url"
 }
 
 # ============================================================
