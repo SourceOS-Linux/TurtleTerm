@@ -574,6 +574,16 @@ tc() {
     "$_turtle_capture_bin" "$@"
 }
 
+# tcv — voice note capture: record mic → Whisper → mesh + Goose Notes
+# Usage: tcv                    # record until silence/Ctrl+C
+#        tcv --title "standup"  # override auto-title
+tcv() {
+    local _voice_bin
+    _voice_bin="$(dirname "$(readlink -f "${(%):-%x}" 2>/dev/null || echo "${0:A}")")/../bin/turtle-voice-capture"
+    [[ -x "$_voice_bin" ]] || _voice_bin="turtle-voice-capture"
+    "$_voice_bin" "$@"
+}
+
 # mc — toggle mission control panel (TurtleTerm only; graceful no-op elsewhere)
 _turtle_mc() {
     local _mc_bin
